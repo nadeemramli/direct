@@ -1,0 +1,17 @@
+[package]
+name = "direct-desktop"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[features]
+custom-protocol = ["tauri/custom-protocol"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+tauri = { version = "2", features = [] }
+direct.workspace = true
+direct-core.workspace = true
+serde_json.workspace = true
