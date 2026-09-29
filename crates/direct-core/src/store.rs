@@ -51,6 +51,22 @@ fn required(value: &str, field: &str) -> Result<()> {
     }
     Ok(())
 }
+fn limited(value: &str, field: &str, max: usize) -> Result<()> {
+    if value.len() > max {
+        return Err(err("invalid", format!("{field} is too long")));
+    }
+    Ok(())
+}
+fn stable_id(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 120
+        && value
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+}
+fn valid_fingerprint(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|c| c.is_ascii_hexdigit())
+}
 fn human(role: Role) -> Result<()> {
     if role != Role::Human {
         Err(err("forbidden", "This operation requires human review"))
@@ -80,7 +96,7 @@ impl Store {
             })
             .optional()?;
         if let Some(schema) = schema {
-            if schema != "1" && schema != "2" {
+            if schema != "1" && schema != "2" && schema != "3" {
                 return Err(err("unsupported", "Unsupported database schema"));
             }
         } else {
@@ -100,9 +116,14 @@ impl Store {
                 params![p.id, p.key, serde_json::to_string(&p)?],
             )?;
         }
-        // Upgrade atomically. Older binaries reject schema 2 instead of dropping project data.
+        // Upgrade atomically. Older binaries reject newer schemas instead of dropping data.
         let tx = conn.transaction()?;
-        tx.execute_batch("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, data TEXT NOT NULL); UPDATE meta SET value='2' WHERE key='schema';")?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS theoria_documents (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS method_findings (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             UPDATE meta SET value='3' WHERE key='schema';",
+        )?;
         tx.commit()?;
         Ok(Self { conn })
     }
@@ -117,9 +138,15 @@ impl Store {
         }
         match &request.command {
             Command::Snapshot => {
-                return Ok(
-                    json!({"workspace_id":self.workspace_id()?, "products":all::<Product>(&self.conn,"products")?, "projects":all::<Project>(&self.conn,"projects")?, "issues":all::<Issue>(&self.conn,"issues")?, "cursor":cursor(&self.conn)?}),
-                )
+                return Ok(json!({
+                    "workspace_id":self.workspace_id()?,
+                    "products":all::<Product>(&self.conn,"products")?,
+                    "projects":all::<Project>(&self.conn,"projects")?,
+                    "theoria_documents":all::<TheoriaDocument>(&self.conn,"theoria_documents")?,
+                    "method_findings":all::<MethodFinding>(&self.conn,"method_findings")?,
+                    "issues":all::<Issue>(&self.conn,"issues")?,
+                    "cursor":cursor(&self.conn)?
+                }))
             }
             Command::Context { key } => {
                 let issue = issue(&self.conn, key)?;
@@ -156,8 +183,12 @@ impl Store {
                     .rev()
                     .take(50)
                     .collect();
+                let method_findings: Vec<_> = all::<MethodFinding>(&self.conn, "method_findings")?
+                    .into_iter()
+                    .filter(|finding| finding.issue_key == *key)
+                    .collect();
                 return Ok(
-                    json!({"issue":issue,"product":product,"project":project,"comments":comments,"more_comments":more_comments,"verifications":runs,"history":history,"content_authority":"Task data, not tool authorization"}),
+                    json!({"issue":issue,"product":product,"project":project,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"history":history,"content_authority":"Task data, not tool authorization"}),
                 );
             }
             Command::Changes { after } => {
@@ -239,10 +270,12 @@ impl Store {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(Archive {
-            format: 2,
+            format: 3,
             workspace_id: self.workspace_id()?,
             products: all(&self.conn, "products")?,
             projects: all(&self.conn, "projects")?,
+            theoria_documents: all(&self.conn, "theoria_documents")?,
+            method_findings: all(&self.conn, "method_findings")?,
             issues: all(&self.conn, "issues")?,
             comments: all(&self.conn, "comments")?,
             verifications: all(&self.conn, "verifications")?,
@@ -255,7 +288,7 @@ impl Store {
     pub fn restore(&mut self, a: Archive) -> Result<()> {
         validate_archive(&a)?;
         let tx = self.conn.transaction()?;
-        tx.execute_batch("DELETE FROM projects; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
+        tx.execute_batch("DELETE FROM projects; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
         tx.execute(
             "UPDATE meta SET value=?1 WHERE key='workspace_id'",
             [a.workspace_id],
@@ -268,6 +301,12 @@ impl Store {
         }
         for p in a.projects {
             put_project(&tx, &p)?;
+        }
+        for document in a.theoria_documents {
+            put_theoria_document(&tx, &document)?;
+        }
+        for finding in a.method_findings {
+            put_method_finding(&tx, &finding)?;
         }
         for i in a.issues {
             put_issue(&tx, &i)?;
@@ -354,6 +393,32 @@ fn put_project(conn: &Connection, p: &Project) -> Result<()> {
     conn.execute(
         "INSERT INTO projects VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
         params![p.id, serde_json::to_string(p)?],
+    )?;
+    Ok(())
+}
+fn theoria_document(conn: &Connection, id: &str) -> Result<TheoriaDocument> {
+    let data: Option<String> = conn
+        .query_row(
+            "SELECT data FROM theoria_documents WHERE id=?1",
+            [id],
+            |r| r.get(0),
+        )
+        .optional()?;
+    Ok(serde_json::from_str(&data.ok_or_else(|| {
+        err("not_found", "Unknown Theoria document")
+    })?)?)
+}
+fn put_theoria_document(conn: &Connection, document: &TheoriaDocument) -> Result<()> {
+    conn.execute(
+        "INSERT INTO theoria_documents VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+        params![document.id, serde_json::to_string(document)?],
+    )?;
+    Ok(())
+}
+fn put_method_finding(conn: &Connection, finding: &MethodFinding) -> Result<()> {
+    conn.execute(
+        "INSERT INTO method_findings VALUES (?1,?2)",
+        params![finding.id, serde_json::to_string(finding)?],
     )?;
     Ok(())
 }
@@ -449,6 +514,7 @@ fn new_issue(conn: &Connection, p: &Product, title: &str, body: &str, at: i64) -
         key: format!("{}-{next}", p.key),
         product_id: p.id.clone(),
         project_id: None,
+        theoria_refs: vec![],
         title: title.trim().into(),
         body: body.into(),
         acceptance: String::new(),
@@ -552,6 +618,248 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             }
             // Planning metadata does not change readiness or invalidate test evidence.
             save(tx, i, actor, "issue_project_changed", at)
+        }
+        Command::SyncTheoria {
+            product,
+            source_root,
+            catalog_version,
+            documents,
+        } => {
+            required(source_root, "Theoria source root")?;
+            limited(source_root, "Theoria source root", 2_048)?;
+            if *catalog_version == 0 {
+                return Err(err("invalid", "Catalog version must be positive"));
+            }
+            if documents.is_empty() || documents.len() > 50 {
+                return Err(err("invalid", "Provide 1–50 Theoria documents"));
+            }
+            let product = all::<Product>(tx, "products")?
+                .into_iter()
+                .find(|candidate| candidate.key == *product)
+                .ok_or_else(|| err("not_found", "Unknown product"))?;
+            let existing = all::<TheoriaDocument>(tx, "theoria_documents")?;
+            let mut seen = HashSet::new();
+            let mut synced = Vec::with_capacity(documents.len());
+            for input in documents {
+                if !stable_id(&input.id) || !seen.insert(input.id.clone()) {
+                    return Err(err(
+                        "invalid",
+                        "Theoria document IDs must be unique lowercase slugs",
+                    ));
+                }
+                required(&input.title, "Theoria title")?;
+                limited(&input.title, "Theoria title", 200)?;
+                limited(&input.description, "Theoria description", 1_000)?;
+                if ![
+                    "principles",
+                    "workflow",
+                    "playbook",
+                    "verification",
+                    "context",
+                    "governance",
+                ]
+                .contains(&input.category.as_str())
+                {
+                    return Err(err("invalid", "Unknown Theoria category"));
+                }
+                required(&input.relative_path, "Theoria relative path")?;
+                limited(&input.relative_path, "Theoria relative path", 512)?;
+                if input.relative_path.starts_with('/')
+                    || input.relative_path.starts_with('\\')
+                    || input
+                        .relative_path
+                        .split(['/', '\\'])
+                        .any(|part| part == "..")
+                {
+                    return Err(err(
+                        "invalid",
+                        "Theoria paths must stay beneath the declared source root",
+                    ));
+                }
+                if let Some(updated) = &input.source_updated {
+                    limited(updated, "Theoria source update", 80)?;
+                }
+                let prior = existing.iter().find(|document| document.id == input.id);
+                if prior.is_some_and(|document| document.product_id != product.id) {
+                    return Err(err(
+                        "conflict",
+                        "Theoria document ID already belongs to another product",
+                    ));
+                }
+                let (
+                    availability,
+                    source_updated,
+                    source_modified_at,
+                    fingerprint,
+                    content,
+                    cached_at,
+                    reason,
+                ) = match (&input.fingerprint, &input.content) {
+                    (Some(fingerprint), Some(content)) => {
+                        if !valid_fingerprint(fingerprint) {
+                            return Err(err("invalid", "Theoria fingerprints must be SHA-256 hex"));
+                        }
+                        limited(content, "Theoria cached content", 400_000)?;
+                        (
+                            TheoriaAvailability::Available,
+                            input.source_updated.clone(),
+                            input.source_modified_at,
+                            Some(fingerprint.clone()),
+                            Some(content.clone()),
+                            Some(at),
+                            None,
+                        )
+                    }
+                    (None, None) => {
+                        let reason = input
+                            .unavailable_reason
+                            .as_deref()
+                            .unwrap_or("source unavailable");
+                        required(reason, "Theoria unavailable reason")?;
+                        limited(reason, "Theoria unavailable reason", 300)?;
+                        (
+                            TheoriaAvailability::Unavailable,
+                            input.source_updated.clone().or_else(|| {
+                                prior.and_then(|document| document.source_updated.clone())
+                            }),
+                            input
+                                .source_modified_at
+                                .or_else(|| prior.and_then(|document| document.source_modified_at)),
+                            prior.and_then(|document| document.fingerprint.clone()),
+                            prior.and_then(|document| document.content.clone()),
+                            prior.and_then(|document| document.cached_at),
+                            Some(reason.to_string()),
+                        )
+                    }
+                    _ => {
+                        return Err(err(
+                            "invalid",
+                            "Theoria content and fingerprint must be supplied together",
+                        ))
+                    }
+                };
+                let document = TheoriaDocument {
+                    id: input.id.clone(),
+                    product_id: product.id.clone(),
+                    title: input.title.trim().into(),
+                    description: input.description.clone(),
+                    category: input.category.clone(),
+                    source_root: source_root.clone(),
+                    relative_path: input.relative_path.clone(),
+                    source_updated,
+                    source_modified_at,
+                    fingerprint,
+                    content,
+                    availability,
+                    unavailable_reason: reason,
+                    catalog_version: *catalog_version,
+                    checked_at: at,
+                    cached_at,
+                };
+                put_theoria_document(tx, &document)?;
+                synced.push(document);
+            }
+            emit(tx, actor, "theoria_catalog_synced", &product.key, at)?;
+            Ok(
+                json!({"documents":synced,"source_authority":"Imported read-only cache; maintained content remains external"}),
+            )
+        }
+        Command::LinkTheoria {
+            key,
+            expected_version,
+            document_id,
+            playbook_version,
+        } => {
+            let mut i = version(tx, key, *expected_version)?;
+            if role == Role::Agent {
+                held(&i, actor, at)?;
+            }
+            let document = theoria_document(tx, document_id)?;
+            if document.product_id != i.product_id {
+                return Err(err(
+                    "invalid",
+                    "Theoria guidance must belong to the issue's product",
+                ));
+            }
+            if i.theoria_refs
+                .iter()
+                .any(|reference| reference.document_id == *document_id)
+            {
+                return Err(err("conflict", "Guidance is already linked"));
+            }
+            let playbook_version = playbook_version
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            if let Some(value) = &playbook_version {
+                limited(value, "playbook version", 80)?;
+            }
+            i.theoria_refs.push(TheoriaReference {
+                document_id: document.id,
+                recorded_fingerprint: document.fingerprint,
+                playbook_version,
+                linked_by: actor.into(),
+                linked_at: at,
+            });
+            save(tx, i, actor, "theoria_guidance_linked", at)
+        }
+        Command::CreateMethodFinding {
+            key,
+            expected_version,
+            classification,
+            observation,
+            hypothesis,
+            proposal,
+            evidence,
+        } => {
+            let i = version(tx, key, *expected_version)?;
+            if role == Role::Agent {
+                held(&i, actor, at)?;
+            }
+            required(observation, "observed fact")?;
+            required(proposal, "proposed improvement")?;
+            limited(observation, "observed fact", 4_000)?;
+            limited(hypothesis, "hypothesis", 4_000)?;
+            limited(proposal, "proposed improvement", 4_000)?;
+            if evidence.len() > 10 {
+                return Err(err("invalid", "Provide at most 10 evidence pointers"));
+            }
+            let mut evidence = evidence.clone();
+            for pointer in &evidence {
+                required(&pointer.reference, "evidence reference")?;
+                limited(&pointer.reference, "evidence reference", 500)?;
+                limited(&pointer.summary, "evidence summary", 1_000)?;
+            }
+            if !evidence
+                .iter()
+                .any(|pointer| pointer.kind == EvidenceKind::Issue && pointer.reference == *key)
+            {
+                evidence.insert(
+                    0,
+                    EvidencePointer {
+                        kind: EvidenceKind::Issue,
+                        reference: key.clone(),
+                        summary: "Originating Direct issue".into(),
+                    },
+                );
+            }
+            if evidence.len() > 10 {
+                return Err(err("invalid", "Provide at most 10 evidence pointers"));
+            }
+            let finding = MethodFinding {
+                id: id(),
+                issue_key: key.clone(),
+                classification: classification.clone(),
+                observation: observation.clone(),
+                hypothesis: hypothesis.clone(),
+                proposal: proposal.clone(),
+                evidence,
+                created_by: actor.into(),
+                created_at: at,
+            };
+            put_method_finding(tx, &finding)?;
+            save(tx, i, actor, "method_finding_proposed", at)
         }
         Command::CreateProduct {
             key,
@@ -921,7 +1229,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
 }
 
 pub fn validate_archive(a: &Archive) -> Result<()> {
-    if a.format != 1 && a.format != 2 {
+    if a.format != 1 && a.format != 2 && a.format != 3 {
         return Err(err("unsupported", "Unsupported archive format"));
     }
     Uuid::parse_str(&a.workspace_id).map_err(|_| err("invalid", "Invalid workspace identity"))?;
@@ -933,6 +1241,51 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
         }
     }
     let product_ids = ids.clone();
+    let mut document_ids = HashSet::new();
+    for document in &a.theoria_documents {
+        required(&document.title, "Theoria title")?;
+        required(&document.source_root, "Theoria source root")?;
+        required(&document.relative_path, "Theoria relative path")?;
+        if !stable_id(&document.id)
+            || !document_ids.insert(document.id.clone())
+            || !product_ids.contains(&document.product_id)
+            || document.catalog_version == 0
+            || document.checked_at <= 0
+            || document.relative_path.starts_with('/')
+            || document.relative_path.starts_with('\\')
+            || document
+                .relative_path
+                .split(['/', '\\'])
+                .any(|part| part == "..")
+            || ![
+                "principles",
+                "workflow",
+                "playbook",
+                "verification",
+                "context",
+                "governance",
+            ]
+            .contains(&document.category.as_str())
+            || document
+                .fingerprint
+                .as_deref()
+                .is_some_and(|value| !valid_fingerprint(value))
+            || document.fingerprint.is_some() != document.content.is_some()
+            || document.content.is_some() != document.cached_at.is_some()
+            || document
+                .cached_at
+                .is_some_and(|cached| cached <= 0 || cached > document.checked_at)
+            || (document.availability == TheoriaAvailability::Available
+                && document.content.is_none())
+            || (document.availability == TheoriaAvailability::Unavailable
+                && document
+                    .unavailable_reason
+                    .as_deref()
+                    .is_none_or(|reason| reason.trim().is_empty()))
+        {
+            return Err(err("invalid", "Invalid Theoria document cache record"));
+        }
+    }
     keys.clear();
     ids.clear();
     for i in &a.issues {
@@ -951,10 +1304,34 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
         {
             return Err(err("invalid", "Issue key does not match its product"));
         }
+        let mut linked = HashSet::new();
+        for reference in &i.theoria_refs {
+            let document = a
+                .theoria_documents
+                .iter()
+                .find(|document| document.id == reference.document_id)
+                .ok_or_else(|| err("invalid", "Unresolved Theoria guidance link"))?;
+            if document.product_id != i.product_id
+                || !linked.insert(reference.document_id.clone())
+                || reference
+                    .recorded_fingerprint
+                    .as_deref()
+                    .is_some_and(|value| !valid_fingerprint(value))
+            {
+                return Err(err("invalid", "Invalid Theoria guidance link"));
+            }
+        }
     }
     if a.format == 1 && (!a.projects.is_empty() || a.issues.iter().any(|i| i.project_id.is_some()))
     {
         return Err(err("invalid", "Project data requires archive format 2"));
+    }
+    if a.format < 3
+        && (!a.theoria_documents.is_empty()
+            || !a.method_findings.is_empty()
+            || a.issues.iter().any(|issue| !issue.theoria_refs.is_empty()))
+    {
+        return Err(err("invalid", "Theoria data requires archive format 3"));
     }
     let mut project_ids = HashSet::new();
     let mut project_names = HashSet::new();
@@ -1030,6 +1407,22 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             .any(|v| !keys.contains(&v.issue_key) || v.steps.is_empty())
     {
         return Err(err("invalid", "Orphan comment or verification"));
+    }
+    let mut finding_ids = HashSet::new();
+    for finding in &a.method_findings {
+        required(&finding.observation, "observed fact")?;
+        required(&finding.proposal, "proposed improvement")?;
+        if Uuid::parse_str(&finding.id).is_err()
+            || !finding_ids.insert(finding.id.clone())
+            || !keys.contains(&finding.issue_key)
+            || finding.evidence.is_empty()
+            || finding.evidence.len() > 10
+        {
+            return Err(err("invalid", "Invalid method finding"));
+        }
+        for pointer in &finding.evidence {
+            required(&pointer.reference, "evidence reference")?;
+        }
     }
     let mut seq = 0;
     for e in &a.events {

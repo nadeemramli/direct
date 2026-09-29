@@ -45,6 +45,100 @@ pub struct Project {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TheoriaAvailability {
+    Available,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TheoriaDocumentInput {
+    pub id: String,
+    pub title: String,
+    #[serde(default)]
+    pub description: String,
+    pub category: String,
+    pub relative_path: String,
+    #[serde(default)]
+    pub source_updated: Option<String>,
+    #[serde(default)]
+    pub source_modified_at: Option<i64>,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    #[serde(default)]
+    pub content: Option<String>,
+    #[serde(default)]
+    pub unavailable_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TheoriaDocument {
+    pub id: String,
+    pub product_id: String,
+    pub title: String,
+    pub description: String,
+    pub category: String,
+    pub source_root: String,
+    pub relative_path: String,
+    pub source_updated: Option<String>,
+    pub source_modified_at: Option<i64>,
+    pub fingerprint: Option<String>,
+    pub content: Option<String>,
+    pub availability: TheoriaAvailability,
+    pub unavailable_reason: Option<String>,
+    pub catalog_version: u32,
+    pub checked_at: i64,
+    pub cached_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TheoriaReference {
+    pub document_id: String,
+    pub recorded_fingerprint: Option<String>,
+    pub playbook_version: Option<String>,
+    pub linked_by: String,
+    pub linked_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum FindingClassification {
+    ProductDefect,
+    MethodFriction,
+    Both,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum EvidenceKind {
+    Issue,
+    Build,
+    Check,
+    OwnerReview,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvidencePointer {
+    pub kind: EvidenceKind,
+    pub reference: String,
+    #[serde(default)]
+    pub summary: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MethodFinding {
+    pub id: String,
+    pub issue_key: String,
+    pub classification: FindingClassification,
+    pub observation: String,
+    pub hypothesis: String,
+    pub proposal: String,
+    pub evidence: Vec<EvidencePointer>,
+    pub created_by: String,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Issue {
     pub id: String,
@@ -52,6 +146,8 @@ pub struct Issue {
     pub product_id: String,
     #[serde(default)]
     pub project_id: Option<String>,
+    #[serde(default)]
+    pub theoria_refs: Vec<TheoriaReference>,
     pub title: String,
     pub body: String,
     pub acceptance: String,
@@ -165,6 +261,29 @@ pub enum Command {
         expected_version: u64,
         project_id: Option<String>,
     },
+    SyncTheoria {
+        product: String,
+        source_root: String,
+        catalog_version: u32,
+        documents: Vec<TheoriaDocumentInput>,
+    },
+    LinkTheoria {
+        key: String,
+        expected_version: u64,
+        document_id: String,
+        #[serde(default)]
+        playbook_version: Option<String>,
+    },
+    CreateMethodFinding {
+        key: String,
+        expected_version: u64,
+        classification: FindingClassification,
+        observation: String,
+        #[serde(default)]
+        hypothesis: String,
+        proposal: String,
+        evidence: Vec<EvidencePointer>,
+    },
     CreateProduct {
         key: String,
         name: String,
@@ -265,6 +384,10 @@ pub struct Archive {
     pub products: Vec<Product>,
     #[serde(default)]
     pub projects: Vec<Project>,
+    #[serde(default)]
+    pub theoria_documents: Vec<TheoriaDocument>,
+    #[serde(default)]
+    pub method_findings: Vec<MethodFinding>,
     pub issues: Vec<Issue>,
     pub comments: Vec<Comment>,
     pub verifications: Vec<Verification>,

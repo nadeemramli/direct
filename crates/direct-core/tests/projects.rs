@@ -212,7 +212,7 @@ fn legacy_database_and_archive_upgrade_without_losing_identity_or_replays() {
         conn.query_row("SELECT value FROM meta WHERE key='schema'", [], |r| r
             .get::<_, String>(0))
             .unwrap(),
-        "2"
+        "3"
     );
     let mut restored = Store::open(&dir.path().join("restore-v1")).unwrap();
     restored

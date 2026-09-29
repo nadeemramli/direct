@@ -9,11 +9,16 @@
     Status,
     Outcome,
     Project,
+    TheoriaDocument,
+    FindingClassification,
+    EvidenceKind,
   } from "./api";
   let data = $state<Snapshot>({
     workspace_id: "",
     products: [],
     projects: [],
+    theoria_documents: [],
+    method_findings: [],
     issues: [],
     cursor: 0,
   });
@@ -86,6 +91,18 @@
   let reopenReason = $state("");
   let clock = $state(Date.now() / 1000);
   let activeRunId = "";
+  let selectedGuidanceId = $state("");
+  let guidanceDocumentId = $state("");
+  let guidanceVersion = $state("");
+  let finding = $state({
+    classification: "method_friction" as FindingClassification,
+    observation: "",
+    hypothesis: "",
+    proposal: "",
+    evidenceKind: "check" as EvidenceKind,
+    evidenceReference: "",
+    evidenceSummary: "",
+  });
   function showDialog(element: HTMLDialogElement) {
     element.showModal();
   }
@@ -109,6 +126,17 @@
   let current = $derived(data.issues.find((i) => i.key === selected));
   let activeRun = $derived(
     context?.verifications.find((v) => v.id === current?.current_run),
+  );
+  let selectedGuidance = $derived(
+    data.theoria_documents.find((document) => document.id === selectedGuidanceId),
+  );
+  let issueGuidance = $derived(
+    (current?.theoria_refs || []).map((reference) => ({
+      reference,
+      document: data.theoria_documents.find(
+        (document) => document.id === reference.document_id,
+      ),
+    })),
   );
   function needsMe(i: Issue) {
     return (
@@ -142,7 +170,9 @@
       ),
   );
   let title = $derived(
-    product !== "all"
+    view === "theoria"
+      ? "Theoria"
+      : product !== "all"
       ? data.products.find((p) => p.id === product)?.name || "Product"
       : view === "needs"
         ? "Needs me"
@@ -161,6 +191,67 @@
       hour: "2-digit",
       minute: "2-digit",
     });
+  }
+  function guidanceState(
+    document: TheoriaDocument | undefined,
+    recordedFingerprint?: string | null,
+  ) {
+    if (!document || document.availability === "unavailable")
+      return "unavailable";
+    if (
+      recordedFingerprint !== undefined &&
+      recordedFingerprint !== document.fingerprint
+    )
+      return "stale";
+    return "cached";
+  }
+  async function linkGuidance(event: SubmitEvent) {
+    event.preventDefault();
+    if (!current || !guidanceDocumentId) return;
+    if (
+      await act({
+        op: "link_theoria",
+        key: current.key,
+        expected_version: current.version,
+        document_id: guidanceDocumentId,
+        playbook_version: guidanceVersion.trim() || null,
+      })
+    ) {
+      guidanceDocumentId = "";
+      guidanceVersion = "";
+    }
+  }
+  async function createFinding(event: SubmitEvent) {
+    event.preventDefault();
+    if (!current) return;
+    if (
+      await act({
+        op: "create_method_finding",
+        key: current.key,
+        expected_version: current.version,
+        classification: finding.classification,
+        observation: finding.observation,
+        hypothesis: finding.hypothesis,
+        proposal: finding.proposal,
+        evidence: [
+          {
+            kind: finding.evidenceKind,
+            reference: finding.evidenceReference,
+            summary: finding.evidenceSummary,
+          },
+        ],
+      })
+    ) {
+      finding = {
+        classification: "method_friction",
+        observation: "",
+        hypothesis: "",
+        proposal: "",
+        evidenceKind: "check",
+        evidenceReference: "",
+        evidenceSummary: "",
+      };
+    }
   }
   async function loadContext(key = selected) {
     if (!key) return;
@@ -181,6 +272,13 @@
   async function refresh() {
     const snapshot = await api<Snapshot>({ op: "snapshot" });
     data = snapshot;
+    if (
+      !selectedGuidanceId ||
+      !snapshot.theoria_documents.some(
+        (document) => document.id === selectedGuidanceId,
+      )
+    )
+      selectedGuidanceId = snapshot.theoria_documents[0]?.id || "";
     connected = true;
     if (selected) await loadContext();
   }
@@ -446,8 +544,8 @@
     <button class="compose" onclick={newIssue} disabled={!connected}
       ><span>＋</span> New issue <kbd>N</kbd></button
     >
-    <div class="nav-label">WORKSPACE</div>
-    <nav aria-label="Workspace">
+    <div class="nav-label">PRAXIS</div>
+    <nav aria-label="Praxis">
       <button
         class:active={view === "all" && product === "all"}
         onclick={() => {
@@ -487,6 +585,21 @@
           view = "done";
           product = "all";
         }}><span>✓</span> Completed</button
+      >
+    </nav>
+    <div class="nav-label products-label">THEORIA</div>
+    <nav aria-label="Theoria">
+      <button
+        class:active={view === "theoria"}
+        onclick={() => {
+          view = "theoria";
+          product = "all";
+          selected = "";
+          context = null;
+          if (!selectedGuidanceId)
+            selectedGuidanceId = data.theoria_documents[0]?.id || "";
+        }}><span>◫</span> Guidance & findings <small>{data.method_findings.length}</small
+        ></button
       >
     </nav>
     <div class="nav-label products-label">
@@ -547,6 +660,138 @@
         >
       </div>{/if}
     <div class="work-area">
+      {#if view === "theoria"}
+        <section class="list-panel theoria-list">
+          <div class="page-heading">
+            <div class="eyebrow">WHY · HOW · LEARN</div>
+            <div class="heading-row">
+              <h1>Theoria</h1>
+              <span class="count-pill">{data.theoria_documents.length}</span>
+            </div>
+            <p>Guidance for the work, shaped by evidence from the work.</p>
+          </div>
+          <div class="authority-note">
+            <b>One source of truth</b>
+            <p>
+              Maintained principles and playbooks remain in the Development
+              Operating System. Direct holds a read-only cache, fingerprints,
+              operational findings, and review evidence.
+            </p>
+          </div>
+          <div class="list-label"><span>GUIDANCE</span><span>SOURCE</span></div>
+          <div class="guidance-list">
+            {#each data.theoria_documents as document}<button
+                class="guidance-row"
+                class:selected={selectedGuidanceId === document.id}
+                onclick={() => (selectedGuidanceId = document.id)}
+              >
+                <span class="guidance-mark">{document.category.slice(0, 1).toUpperCase()}</span>
+                <span>
+                  <b>{document.title}</b>
+                  <small>{document.description}</small>
+                </span>
+                <span class="source-state {document.availability}"
+                  >{document.availability === "available"
+                    ? "Cached"
+                    : "Unavailable"}</span
+                >
+              </button>{/each}
+          </div>
+          <div class="section-label spaced">
+            PROPOSED IMPROVEMENTS <span>{data.method_findings.length}</span>
+          </div>
+          {#each data.method_findings as proposal}<button
+              class="proposal-row"
+              onclick={async () => {
+                view = "all";
+                await choose(proposal.issue_key);
+                tab = "theoria";
+              }}
+            >
+              <span class="proposal-state">PROPOSAL · NOT ACCEPTED</span>
+              <b>{proposal.proposal}</b>
+              <small
+                >{proposal.issue_key} · {proposal.classification.replaceAll(
+                  "_",
+                  " ",
+                )} · {date(proposal.created_at)}</small
+              >
+            </button>{:else}<div class="empty compact">
+              <div class="empty-symbol">◇</div>
+              <h3>No proposed improvements</h3>
+              <p>Method findings recorded from real issues will appear here.</p>
+            </div>{/each}
+        </section>
+        <aside class="detail-panel theoria-detail" aria-label="Theoria guidance detail">
+          {#if selectedGuidance}
+            <div class="detail-top">
+              <span>{selectedGuidance.id}</span><span class="tiny"
+                >catalog v{selectedGuidance.catalog_version}</span
+              >
+            </div>
+            <div class="detail-heading">
+              <span class="status-badge ready">◫ {selectedGuidance.category}</span>
+              <h2>{selectedGuidance.title}</h2>
+              <p class="prose">{selectedGuidance.description}</p>
+            </div>
+            <div class="detail-body">
+              <div class="cache-banner {selectedGuidance.availability}">
+                <b
+                  >{selectedGuidance.availability === "available"
+                    ? "Read-only cache from the authoritative source"
+                    : "Authoritative source unavailable"}</b
+                >
+                <p>
+                  {selectedGuidance.availability === "available"
+                    ? `Checked ${date(selectedGuidance.checked_at)}. Refresh is explicit; “cached” does not claim the file is unchanged after that check.`
+                    : `${selectedGuidance.unavailable_reason || "Source unavailable"}. ${selectedGuidance.content ? "The last cached content is retained and labelled." : "No cached content is available."}`}
+                </p>
+              </div>
+              <dl class="evidence source-contract">
+                <dt>Stable ID</dt><dd>{selectedGuidance.id}</dd>
+                <dt>Source</dt><dd
+                  ><code>{selectedGuidance.source_root}/{selectedGuidance.relative_path}</code></dd
+                >
+                <dt>Fingerprint</dt><dd
+                  ><code>{selectedGuidance.fingerprint || "unavailable"}</code></dd
+                >
+                <dt>Source updated</dt><dd
+                  >{selectedGuidance.source_updated || "Unknown"}</dd
+                >
+                <dt>Cached</dt><dd
+                  >{selectedGuidance.cached_at
+                    ? date(selectedGuidance.cached_at)
+                    : "Never"}</dd
+                >
+              </dl>
+              <div class="section-label">CACHED GUIDANCE</div>
+              {#if selectedGuidance.content}<pre class="guidance-content"
+                  >{selectedGuidance.content}</pre
+                >{:else}<p class="muted">
+                  Sync this catalog from an accessible source to read it here.
+                </p>{/if}
+              <div class="section-label spaced">OPERATIONAL TRACE</div>
+              {#each data.issues.filter((issue) => issue.theoria_refs.some((reference) => reference.document_id === selectedGuidance?.id)) as linkedIssue}<button
+                  class="trace-row"
+                  onclick={async () => {
+                    view = "all";
+                    await choose(linkedIssue.key);
+                    tab = "theoria";
+                  }}
+                >
+                  <b>{linkedIssue.key} · {linkedIssue.title}</b>
+                  <small>Open the recorded fingerprint and findings →</small>
+                </button>{:else}<p class="muted">
+                  No Direct issue currently references this guidance.
+                </p>{/each}
+            </div>
+          {:else}<div class="detail-placeholder">
+              <div class="outline-mark">◫</div>
+              <h2>No imported guidance yet.</h2>
+              <p>Run the explicit Theoria sync contract to populate the cache.</p>
+            </div>{/if}
+        </aside>
+      {:else}
       <section class="list-panel">
         <div class="page-heading">
           <div class="eyebrow">A LITTLE LESS COORDINATION.</div>
@@ -711,14 +956,17 @@
             </label>
           </div>
           <div class="tabs" role="tablist" aria-label="Issue sections">
-            {#each [["brief", "Brief"], ["verify", "Verification"], ["activity", "Activity"]] as [id, label]}<button
+            {#each [["brief", "Brief"], ["theoria", "Theoria"], ["verify", "Verification"], ["activity", "Activity"]] as [id, label]}<button
                 role="tab"
                 aria-selected={tab === id}
                 class:active={tab === id}
                 onclick={() => (tab = id)}
                 >{label}{#if id === "verify" && current.status === "verify"}<span
                     class="tab-dot"
-                  ></span>{/if}</button
+                  ></span>{:else if id === "theoria" && (current.theoria_refs.length || context?.method_findings.length)}<span
+                    class="tab-count"
+                    >{current.theoria_refs.length + (context?.method_findings.length || 0)}</span
+                  >{/if}</button
               >{/each}
           </div>
           <div class="detail-body">
@@ -827,6 +1075,121 @@
                     Product knowledge<code>{context.product.vault_windows}</code
                     >
                   </div>{/if}{/if}
+            {:else if tab === "theoria"}
+              <div class="theoria-card">
+                <div class="section-label">
+                  RELEVANT GUIDANCE <span>{issueGuidance.length}</span>
+                </div>
+                <p class="hint">
+                  Each link pins the source fingerprint actually used for this
+                  issue. A blank playbook version remains explicitly Unknown.
+                </p>
+                {#each issueGuidance as item}
+                  <article class="guidance-reference">
+                    <div class="reference-heading">
+                      <span class="source-state {guidanceState(item.document, item.reference.recorded_fingerprint)}"
+                        >{guidanceState(item.document, item.reference.recorded_fingerprint)}</span
+                      >
+                      <button
+                        class="text-button"
+                        onclick={() => {
+                          selectedGuidanceId = item.reference.document_id;
+                          selected = "";
+                          context = null;
+                          view = "theoria";
+                        }}>Open guidance →</button
+                      >
+                    </div>
+                    <b>{item.document?.title || item.reference.document_id}</b>
+                    <p>{item.document?.description || "Catalog entry is not currently available."}</p>
+                    <dl class="evidence reference-meta">
+                      <dt>Playbook version</dt><dd>{item.reference.playbook_version || "Unknown"}</dd>
+                      <dt>Recorded fingerprint</dt><dd><code>{item.reference.recorded_fingerprint || "unavailable"}</code></dd>
+                      <dt>Current fingerprint</dt><dd><code>{item.document?.fingerprint || "unavailable"}</code></dd>
+                    </dl>
+                    {#if guidanceState(item.document, item.reference.recorded_fingerprint) === "stale"}<p class="source-warning">
+                        The current cache differs from the fingerprint recorded
+                        for this issue. The historical reference is preserved.
+                      </p>{:else if guidanceState(item.document, item.reference.recorded_fingerprint) === "unavailable"}<p class="source-warning">
+                        The authoritative source could not be checked. Any last
+                        cached content remains labelled and is not treated as current.
+                      </p>{/if}
+                  </article>
+                {:else}<p class="muted">
+                    No guidance is linked to this issue yet.
+                  </p>{/each}
+
+                <form class="inline-theoria-form" onsubmit={linkGuidance}>
+                  <label class="field"
+                    >Guidance<select bind:value={guidanceDocumentId} required>
+                      <option value="" disabled>Select a catalog document…</option>
+                      {#each data.theoria_documents.filter((document) => document.product_id === current.product_id && !current.theoria_refs.some((reference) => reference.document_id === document.id)) as document}<option value={document.id}
+                          >{document.title}{document.availability === "unavailable" ? " · unavailable" : ""}</option
+                        >{/each}
+                    </select></label
+                  >
+                  <label class="field"
+                    >Playbook version (optional)<input
+                      bind:value={guidanceVersion}
+                      placeholder="Leave blank to preserve Unknown"
+                    /></label
+                  >
+                  <button class="secondary" disabled={busy || !guidanceDocumentId}
+                    >Link recorded guidance</button
+                  >
+                </form>
+              </div>
+
+              <div class="theoria-card">
+                <div class="section-label">
+                  METHOD FINDINGS <span>{context?.method_findings.length || 0}</span>
+                </div>
+                <p class="hint">
+                  Findings distinguish observed facts from hypotheses and
+                  proposals. Recording one does not change a playbook or enroll an experiment.
+                </p>
+                {#each context?.method_findings || [] as item}
+                  <article class="finding-card">
+                    <div class="finding-heading">
+                      <span class="proposal-state">PROPOSAL · NOT ACCEPTED</span>
+                      <span>{item.classification.replaceAll("_", " ")}</span>
+                    </div>
+                    <div class="finding-part"><small>OBSERVED FACT</small><p>{item.observation}</p></div>
+                    {#if item.hypothesis}<div class="finding-part"><small>HYPOTHESIS / UNRESOLVED</small><p>{item.hypothesis}</p></div>{/if}
+                    <div class="finding-part"><small>PROPOSED IMPROVEMENT</small><p>{item.proposal}</p></div>
+                    <div class="finding-part"><small>EVIDENCE</small>
+                      {#each item.evidence as pointer}<p><b>{pointer.kind}</b> · <code>{pointer.reference}</code>{pointer.summary ? ` — ${pointer.summary}` : ""}</p>{/each}
+                    </div>
+                    <small class="finding-byline">{item.created_by} · {date(item.created_at)}</small>
+                  </article>
+                {/each}
+
+                <form class="finding-form" onsubmit={createFinding}>
+                  <label class="field">Classification<select bind:value={finding.classification}>
+                      <option value="product_defect">Product defect</option>
+                      <option value="method_friction">Method friction</option>
+                      <option value="both">Both</option>
+                    </select></label>
+                  <label class="field">Observed fact<textarea rows="3" required bind:value={finding.observation} placeholder="What actually happened? Keep interpretation out of this field."></textarea></label>
+                  <label class="field">Hypothesis or unresolved question<textarea rows="2" bind:value={finding.hypothesis} placeholder="What might explain it, or what remains unknown?"></textarea></label>
+                  <label class="field">Proposed improvement<textarea rows="3" required bind:value={finding.proposal} placeholder="A reviewable proposal—not an accepted playbook change."></textarea></label>
+                  <div class="form-grid">
+                    <label class="field">Evidence type<select bind:value={finding.evidenceKind}>
+                        <option value="issue">Issue</option>
+                        <option value="build">Build</option>
+                        <option value="check">Check</option>
+                        <option value="owner_review">Owner review</option>
+                      </select></label>
+                    <label class="field">Evidence reference<input required bind:value={finding.evidenceReference} placeholder="Command, build, issue, or review reference" /></label>
+                  </div>
+                  <label class="field">Evidence summary<input bind:value={finding.evidenceSummary} placeholder="What the evidence showed" /></label>
+                  <div class="proposal-contract">
+                    This creates a proposal only. Acceptance, experiment enrollment,
+                    promotion, and Jev routing remain outside this operation.
+                  </div>
+                  <button class="secondary" disabled={busy}>Record method finding</button>
+                </form>
+              </div>
             {:else if tab === "verify"}
               {#if activeRun}
                 <div class="verification-banner {activeRun.outcome}">
@@ -1025,6 +1388,7 @@
             </div>
           </div>{/if}
       </aside>
+      {/if}
     </div>
   </main>
 </div>

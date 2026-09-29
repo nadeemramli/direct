@@ -2,7 +2,7 @@
 
 Internal work tracking for human–agent development.
 
-The first working foundation is implemented: a local SQLite service, Windows/WSL agent CLI, Svelte interface, and Tauri desktop shell. Work moves through **Backlog → Ready → Doing → Verify → Done**. Agents submit evidence; the owner records verification outcomes. Failed or canceled tests return work for fixes without erasing previous runs.
+The first working foundation is implemented: a local SQLite service, Windows/WSL agent CLI, Svelte interface, and Tauri desktop shell. Work moves through **Backlog → Ready → Doing → Verify → Done**. Agents submit evidence; the owner records verification outcomes. Failed or canceled tests return work for fixes without erasing previous runs. Theoria adds read-only Development Operating System guidance and proposal-only method learning beside that operational Praxis.
 
 ## Run on Windows
 
@@ -28,13 +28,13 @@ From WSL, use `bash scripts/direct-wsl.sh list`. Both environments call the Wind
 
 ## Scope
 
-Included: product spaces with repository/vault paths, projects and issue grouping, issue capture and filtering, acceptance criteria, ownership and priority, expiring claims, comments, change history, build-specific verification, retesting, reopening, automatic updates, and JSON export/restore.
+Included: product spaces with repository/vault paths, projects and issue grouping, issue capture and filtering, acceptance criteria, ownership and priority, expiring claims, comments, change history, build-specific verification, retesting, reopening, automatic updates, JSON export/restore, and Theoria guidance references with source fingerprints and structured method findings.
 
 Still to build: milestones/goals, general issue relationships, MCP, Linear migration, a signed installer, and multi-device collaboration. The desktop executable compiles; the browser interface has completed the full Windows/WSL smoke test. Native desktop rendering still needs an interactive acceptance check. This is a single-owner foundation, not yet the complete Linear replacement.
 
 Direct now tracks its own development in the normal local workspace. See [the real pilot](docs/pilot.md); ten scoped tasks were captured and project grouping is the first delivery. Final acceptance is recorded by the owner in Direct.
 
-Project grouping upgrades the database to schema 2 and writes archive format 2. Format-1 backups remain readable; older Direct binaries cannot open the upgraded database. Export before upgrading and use a new directory when restoring an older backup.
+Theoria upgrades the database to schema 3 and writes archive format 3. Format-1 and format-2 backups remain readable; older Direct binaries cannot open the upgraded database. Export before upgrading and use a new directory when restoring an older backup. See [Theoria's authority and import contract](docs/theoria.md).
 
 ## Backup and restore
 
@@ -59,7 +59,7 @@ cd ..
 cargo build -p direct -p direct-desktop --features direct-desktop/custom-protocol
 ```
 
-Read [architecture and limits](docs/architecture.md) and [verification evidence](docs/verification.md).
+Read [architecture and limits](docs/architecture.md), [Theoria's authority and import contract](docs/theoria.md), and [verification evidence](docs/verification.md).
 
 ## Product research
 

@@ -1,11 +1,32 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use direct_core::{Archive, Command, Request, Role, Store};
+use direct_core::{Archive, Command, Request, Role, Store, TheoriaDocumentInput};
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{self, Read, Write},
-    path::PathBuf,
+    path::{Component, Path, PathBuf},
+    time::UNIX_EPOCH,
 };
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TheoriaCatalog {
+    version: u32,
+    documents: Vec<TheoriaCatalogEntry>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct TheoriaCatalogEntry {
+    id: String,
+    title: String,
+    #[serde(default)]
+    description: String,
+    category: String,
+    path: PathBuf,
+}
 
 #[derive(Parser)]
 #[command(version, about = "Direct — local work tracking for humans and agents")]
@@ -30,6 +51,17 @@ enum Cli {
     Context {
         key: String,
     },
+    /// Import the selected authoritative Markdown sources as a read-only Theoria cache.
+    TheoriaSync {
+        #[arg(long)]
+        root: PathBuf,
+        #[arg(long, default_value = "theoria/catalog.json")]
+        catalog: PathBuf,
+        #[arg(long, default_value = "DIR")]
+        product: String,
+        #[arg(long)]
+        request_id: String,
+    },
     Create {
         #[arg(long, default_value = "DIR")]
         product: String,
@@ -52,6 +84,89 @@ enum Cli {
     Restore {
         from: PathBuf,
     },
+}
+
+fn frontmatter_value(content: &str, key: &str) -> Option<String> {
+    let mut lines = content.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    for line in lines {
+        if line.trim() == "---" {
+            break;
+        }
+        if let Some(value) = line.strip_prefix(&format!("{key}:")) {
+            return Some(value.trim().trim_matches(['\'', '"']).to_string());
+        }
+    }
+    None
+}
+
+fn load_theoria(root: &Path, catalog_path: &Path) -> Result<(u32, Vec<TheoriaDocumentInput>)> {
+    if !root.is_absolute() {
+        bail!("Theoria source root must be an absolute path");
+    }
+    let catalog: TheoriaCatalog = serde_json::from_slice(
+        &fs::read(catalog_path).context("Read the explicit Theoria catalog")?,
+    )?;
+    if catalog.version == 0 || catalog.documents.is_empty() {
+        bail!("Theoria catalog needs a positive version and at least one document");
+    }
+    let mut documents = Vec::with_capacity(catalog.documents.len());
+    for entry in catalog.documents {
+        if entry.path.is_absolute()
+            || entry.path.components().any(|component| {
+                matches!(
+                    component,
+                    Component::ParentDir | Component::RootDir | Component::Prefix(_)
+                )
+            })
+        {
+            bail!("Theoria catalog paths must stay beneath the source root");
+        }
+        let source = root.join(&entry.path);
+        match fs::read_to_string(&source) {
+            Ok(content) => {
+                if content.len() > 400_000 {
+                    bail!("Theoria source {} exceeds the 400 KB cache limit", entry.id);
+                }
+                let source_modified_at = fs::metadata(&source)
+                    .and_then(|metadata| metadata.modified())
+                    .ok()
+                    .and_then(|modified| modified.duration_since(UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_secs() as i64);
+                documents.push(TheoriaDocumentInput {
+                    id: entry.id,
+                    title: entry.title,
+                    description: entry.description,
+                    category: entry.category,
+                    relative_path: entry.path.to_string_lossy().replace('\\', "/"),
+                    source_updated: frontmatter_value(&content, "updated"),
+                    source_modified_at,
+                    fingerprint: Some(format!("{:x}", Sha256::digest(content.as_bytes()))),
+                    content: Some(content),
+                    unavailable_reason: None,
+                });
+            }
+            Err(error) => documents.push(TheoriaDocumentInput {
+                id: entry.id,
+                title: entry.title,
+                description: entry.description,
+                category: entry.category,
+                relative_path: entry.path.to_string_lossy().replace('\\', "/"),
+                source_updated: None,
+                source_modified_at: None,
+                fingerprint: None,
+                content: None,
+                unavailable_reason: Some(if error.kind() == io::ErrorKind::NotFound {
+                    "source not found".into()
+                } else {
+                    "source unavailable".into()
+                }),
+            }),
+        }
+    }
+    Ok((catalog.version, documents))
 }
 fn main() {
     if let Err(e) = run() {
@@ -104,6 +219,24 @@ fn run() -> Result<()> {
                     request_id: String::new(),
                     command: Command::Context { key },
                 },
+                Cli::TheoriaSync {
+                    root,
+                    catalog,
+                    product,
+                    request_id,
+                } => {
+                    let (catalog_version, documents) = load_theoria(&root, &catalog)?;
+                    Request {
+                        actor: args.actor,
+                        request_id,
+                        command: Command::SyncTheoria {
+                            product,
+                            source_root: root.to_string_lossy().into_owned(),
+                            catalog_version,
+                            documents,
+                        },
+                    }
+                }
                 Cli::Create {
                     product,
                     title,
@@ -152,5 +285,61 @@ fn run() -> Result<()> {
             }
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tempfile::TempDir;
+
+    fn catalog(path: &str) -> String {
+        format!(
+            r#"{{"version":2,"documents":[{{"id":"dos-guide","title":"Guide","description":"Navigation","category":"workflow","path":{path:?}}}]}}"#
+        )
+    }
+
+    #[test]
+    fn importer_fingerprints_catalogued_markdown_and_reads_updated_frontmatter() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("source");
+        fs::create_dir(&root).unwrap();
+        let content = "---\nupdated: 2026-09-29\n---\n# Guide\n";
+        fs::write(root.join("Guide.md"), content).unwrap();
+        let catalog_path = dir.path().join("catalog.json");
+        fs::write(&catalog_path, catalog("Guide.md")).unwrap();
+
+        let (version, documents) = load_theoria(&root, &catalog_path).unwrap();
+        assert_eq!(version, 2);
+        assert_eq!(documents[0].source_updated.as_deref(), Some("2026-09-29"));
+        assert_eq!(documents[0].content.as_deref(), Some(content));
+        assert_eq!(
+            documents[0].fingerprint.as_deref(),
+            Some(format!("{:x}", Sha256::digest(content.as_bytes())).as_str())
+        );
+        assert!(documents[0].unavailable_reason.is_none());
+    }
+
+    #[test]
+    fn importer_preserves_unavailable_state_and_rejects_escaping_paths() {
+        let dir = TempDir::new().unwrap();
+        let root = dir.path().join("source");
+        fs::create_dir(&root).unwrap();
+        let catalog_path = dir.path().join("catalog.json");
+        fs::write(&catalog_path, catalog("Missing.md")).unwrap();
+
+        let (_, documents) = load_theoria(&root, &catalog_path).unwrap();
+        assert_eq!(
+            documents[0].unavailable_reason.as_deref(),
+            Some("source not found")
+        );
+        assert!(documents[0].content.is_none());
+        assert!(documents[0].fingerprint.is_none());
+
+        fs::write(&catalog_path, catalog("../outside.md")).unwrap();
+        assert!(load_theoria(&root, &catalog_path)
+            .unwrap_err()
+            .to_string()
+            .contains("stay beneath"));
     }
 }

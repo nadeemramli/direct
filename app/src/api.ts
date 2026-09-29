@@ -16,6 +16,7 @@ export interface Issue {
   key: string;
   product_id: string;
   project_id: string | null;
+  theoria_refs: TheoriaReference[];
   title: string;
   body: string;
   acceptance: string;
@@ -30,6 +31,52 @@ export interface Issue {
   parent: string | null;
   verification_key: string | null;
   current_run: string | null;
+}
+export interface TheoriaReference {
+  document_id: string;
+  recorded_fingerprint: string | null;
+  playbook_version: string | null;
+  linked_by: string;
+  linked_at: number;
+}
+export interface TheoriaDocument {
+  id: string;
+  product_id: string;
+  title: string;
+  description: string;
+  category: string;
+  source_root: string;
+  relative_path: string;
+  source_updated: string | null;
+  source_modified_at: number | null;
+  fingerprint: string | null;
+  content: string | null;
+  availability: "available" | "unavailable";
+  unavailable_reason: string | null;
+  catalog_version: number;
+  checked_at: number;
+  cached_at: number | null;
+}
+export type FindingClassification =
+  | "product_defect"
+  | "method_friction"
+  | "both";
+export type EvidenceKind = "issue" | "build" | "check" | "owner_review";
+export interface EvidencePointer {
+  kind: EvidenceKind;
+  reference: string;
+  summary: string;
+}
+export interface MethodFinding {
+  id: string;
+  issue_key: string;
+  classification: FindingClassification;
+  observation: string;
+  hypothesis: string;
+  proposal: string;
+  evidence: EvidencePointer[];
+  created_by: string;
+  created_at: number;
 }
 export interface Verification {
   id: string;
@@ -56,12 +103,15 @@ export interface Context {
   comments: { id: string; actor: string; body: string; at: number }[];
   more_comments: boolean;
   verifications: Verification[];
+  method_findings: MethodFinding[];
   history: { seq: number; kind: string; actor: string; at: number }[];
 }
 export interface Snapshot {
   workspace_id: string;
   products: Product[];
   projects: Project[];
+  theoria_documents: TheoriaDocument[];
+  method_findings: MethodFinding[];
   issues: Issue[];
   cursor: number;
 }
