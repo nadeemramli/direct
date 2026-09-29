@@ -15,6 +15,7 @@ export interface Issue {
   id: string;
   key: string;
   product_id: string;
+  project_id: string | null;
   title: string;
   body: string;
   acceptance: string;
@@ -51,6 +52,7 @@ export interface Verification {
 export interface Context {
   issue: Issue;
   product: Product;
+  project: Project | null;
   comments: { id: string; actor: string; body: string; at: number }[];
   more_comments: boolean;
   verifications: Verification[];
@@ -59,8 +61,18 @@ export interface Context {
 export interface Snapshot {
   workspace_id: string;
   products: Product[];
+  projects: Project[];
   issues: Issue[];
   cursor: number;
+}
+export interface Project {
+  id: string;
+  product_id: string;
+  name: string;
+  description: string;
+  version: number;
+  created_at: number;
+  updated_at: number;
 }
 let token = sessionStorage.getItem("direct.session") || "";
 const pending = new Map<string, string>();

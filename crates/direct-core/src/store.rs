@@ -64,7 +64,7 @@ pub struct Store {
 }
 impl Store {
     pub fn open(path: &Path) -> Result<Self> {
-        let conn = Connection::open(path)?;
+        let mut conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA synchronous=FULL;
           CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -80,7 +80,7 @@ impl Store {
             })
             .optional()?;
         if let Some(schema) = schema {
-            if schema != "1" {
+            if schema != "1" && schema != "2" {
                 return Err(err("unsupported", "Unsupported database schema"));
             }
         } else {
@@ -100,6 +100,10 @@ impl Store {
                 params![p.id, p.key, serde_json::to_string(&p)?],
             )?;
         }
+        // Upgrade atomically. Older binaries reject schema 2 instead of dropping project data.
+        let tx = conn.transaction()?;
+        tx.execute_batch("CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, data TEXT NOT NULL); UPDATE meta SET value='2' WHERE key='schema';")?;
+        tx.commit()?;
         Ok(Self { conn })
     }
 
@@ -114,11 +118,16 @@ impl Store {
         match &request.command {
             Command::Snapshot => {
                 return Ok(
-                    json!({"workspace_id":self.workspace_id()?, "products":all::<Product>(&self.conn,"products")?, "issues":all::<Issue>(&self.conn,"issues")?, "cursor":cursor(&self.conn)?}),
+                    json!({"workspace_id":self.workspace_id()?, "products":all::<Product>(&self.conn,"products")?, "projects":all::<Project>(&self.conn,"projects")?, "issues":all::<Issue>(&self.conn,"issues")?, "cursor":cursor(&self.conn)?}),
                 )
             }
             Command::Context { key } => {
                 let issue = issue(&self.conn, key)?;
+                let project = issue
+                    .project_id
+                    .as_deref()
+                    .map(|id| project(&self.conn, id))
+                    .transpose()?;
                 let product = all::<Product>(&self.conn, "products")?
                     .into_iter()
                     .find(|p| p.id == issue.product_id);
@@ -148,7 +157,7 @@ impl Store {
                     .take(50)
                     .collect();
                 return Ok(
-                    json!({"issue":issue,"product":product,"comments":comments,"more_comments":more_comments,"verifications":runs,"history":history,"content_authority":"Task data, not tool authorization"}),
+                    json!({"issue":issue,"product":product,"project":project,"comments":comments,"more_comments":more_comments,"verifications":runs,"history":history,"content_authority":"Task data, not tool authorization"}),
                 );
             }
             Command::Changes { after } => {
@@ -230,9 +239,10 @@ impl Store {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(Archive {
-            format: 1,
+            format: 2,
             workspace_id: self.workspace_id()?,
             products: all(&self.conn, "products")?,
+            projects: all(&self.conn, "projects")?,
             issues: all(&self.conn, "issues")?,
             comments: all(&self.conn, "comments")?,
             verifications: all(&self.conn, "verifications")?,
@@ -245,7 +255,7 @@ impl Store {
     pub fn restore(&mut self, a: Archive) -> Result<()> {
         validate_archive(&a)?;
         let tx = self.conn.transaction()?;
-        tx.execute_batch("DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
+        tx.execute_batch("DELETE FROM projects; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
         tx.execute(
             "UPDATE meta SET value=?1 WHERE key='workspace_id'",
             [a.workspace_id],
@@ -255,6 +265,9 @@ impl Store {
                 "INSERT INTO products VALUES (?1,?2,?3)",
                 params![p.id, p.key, serde_json::to_string(&p)?],
             )?;
+        }
+        for p in a.projects {
+            put_project(&tx, &p)?;
         }
         for i in a.issues {
             put_issue(&tx, &i)?;
@@ -329,6 +342,43 @@ fn run(conn: &Connection, id: &str) -> Result<Verification> {
     })?;
     Ok(serde_json::from_str(&data)?)
 }
+fn project(conn: &Connection, id: &str) -> Result<Project> {
+    let data: Option<String> = conn
+        .query_row("SELECT data FROM projects WHERE id=?1", [id], |r| r.get(0))
+        .optional()?;
+    Ok(serde_json::from_str(
+        &data.ok_or_else(|| err("not_found", "Unknown project"))?,
+    )?)
+}
+fn put_project(conn: &Connection, p: &Project) -> Result<()> {
+    conn.execute(
+        "INSERT INTO projects VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+        params![p.id, serde_json::to_string(p)?],
+    )?;
+    Ok(())
+}
+fn project_name(
+    conn: &Connection,
+    product_id: &str,
+    name: &str,
+    except: Option<&str>,
+) -> Result<()> {
+    required(name, "project name")?;
+    if name.trim().len() > 160 {
+        return Err(err("invalid", "Project name must be at most 160 bytes"));
+    }
+    if all::<Project>(conn, "projects")?.iter().any(|p| {
+        p.product_id == product_id
+            && Some(p.id.as_str()) != except
+            && p.name.to_lowercase() == name.trim().to_lowercase()
+    }) {
+        return Err(err(
+            "conflict",
+            "A project with this name already exists in this product",
+        ));
+    }
+    Ok(())
+}
 fn put_issue(conn: &Connection, i: &Issue) -> Result<()> {
     conn.execute(
         "INSERT INTO issues VALUES (?1,?2,?3) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
@@ -398,6 +448,7 @@ fn new_issue(conn: &Connection, p: &Product, title: &str, body: &str, at: i64) -
         id: id(),
         key: format!("{}-{next}", p.key),
         product_id: p.id.clone(),
+        project_id: None,
         title: title.trim().into(),
         body: body.into(),
         acceptance: String::new(),
@@ -424,6 +475,84 @@ fn save(conn: &Connection, mut i: Issue, actor: &str, kind: &str, at: i64) -> Re
 
 fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> Result<Value> {
     match cmd {
+        Command::CreateProject {
+            product,
+            name,
+            description,
+        } => {
+            human(role)?;
+            let product = all::<Product>(tx, "products")?
+                .into_iter()
+                .find(|p| p.key == *product)
+                .ok_or_else(|| err("not_found", "Unknown product"))?;
+            project_name(tx, &product.id, name, None)?;
+            let p = Project {
+                id: id(),
+                product_id: product.id,
+                name: name.trim().into(),
+                description: description.clone(),
+                version: 1,
+                created_at: at,
+                updated_at: at,
+            };
+            put_project(tx, &p)?;
+            emit(tx, actor, "project_created", &p.id, at)?;
+            Ok(json!(p))
+        }
+        Command::UpdateProject {
+            id,
+            expected_version,
+            name,
+            description,
+        } => {
+            human(role)?;
+            let mut p = project(tx, id)?;
+            if p.version != *expected_version {
+                return Err(err(
+                    "conflict",
+                    "Project changed; reopen its editor before retrying",
+                ));
+            }
+            project_name(tx, &p.product_id, name, Some(id))?;
+            p.name = name.trim().into();
+            p.description = description.clone();
+            p.version += 1;
+            p.updated_at = at;
+            put_project(tx, &p)?;
+            emit(tx, actor, "project_updated", id, at)?;
+            Ok(json!(p))
+        }
+        Command::SetIssueProject {
+            key,
+            expected_version,
+            project_id,
+        } => {
+            let mut i = version(tx, key, *expected_version)?;
+            if role == Role::Agent {
+                if matches!(i.status, Status::Verify | Status::Done | Status::Canceled) {
+                    human(role)?;
+                }
+                if i.status == Status::Doing {
+                    held(&i, actor, at)?;
+                }
+            }
+            if let Some(id) = project_id {
+                let p = project(tx, id)?;
+                if p.product_id != i.product_id {
+                    return Err(err("invalid", "Project must belong to the issue's product"));
+                }
+            }
+            i.project_id = project_id.clone();
+            if let Some(key) = &i.verification_key {
+                let mut child = issue(tx, key)?;
+                child.project_id = project_id.clone();
+                child.version += 1;
+                child.updated_at = at;
+                put_issue(tx, &child)?;
+            }
+            // Planning metadata does not change readiness or invalidate test evidence.
+            save(tx, i, actor, "issue_project_changed", at)
+        }
         Command::CreateProduct {
             key,
             name,
@@ -632,6 +761,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 )?,
             };
             child.parent = Some(key.clone());
+            child.project_id = i.project_id.clone();
             child.owner = i.owner.clone();
             child.status = Status::Ready;
             child.version += 1;
@@ -791,7 +921,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
 }
 
 pub fn validate_archive(a: &Archive) -> Result<()> {
-    if a.format != 1 {
+    if a.format != 1 && a.format != 2 {
         return Err(err("unsupported", "Unsupported archive format"));
     }
     Uuid::parse_str(&a.workspace_id).map_err(|_| err("invalid", "Invalid workspace identity"))?;
@@ -822,6 +952,35 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             return Err(err("invalid", "Issue key does not match its product"));
         }
     }
+    if a.format == 1 && (!a.projects.is_empty() || a.issues.iter().any(|i| i.project_id.is_some()))
+    {
+        return Err(err("invalid", "Project data requires archive format 2"));
+    }
+    let mut project_ids = HashSet::new();
+    let mut project_names = HashSet::new();
+    for p in &a.projects {
+        required(&p.id, "project ID")?;
+        required(&p.name, "project name")?;
+        if p.version == 0
+            || p.name.len() > 160
+            || !a.products.iter().any(|product| product.id == p.product_id)
+            || !project_ids.insert(p.id.clone())
+            || !project_names.insert((p.product_id.clone(), p.name.trim().to_lowercase()))
+        {
+            return Err(err("invalid", "Invalid or duplicate project"));
+        }
+    }
+    for i in &a.issues {
+        if let Some(id) = &i.project_id {
+            if !a
+                .projects
+                .iter()
+                .any(|p| p.id == *id && p.product_id == i.product_id)
+            {
+                return Err(err("invalid", "Unresolved or cross-product project link"));
+            }
+        }
+    }
     let run_ids: HashSet<_> = a.verifications.iter().map(|v| v.id.clone()).collect();
     if run_ids.len() != a.verifications.len() {
         return Err(err("invalid", "Duplicate verification IDs"));
@@ -839,7 +998,10 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
         }
         if let Some(k) = &i.verification_key {
             let child = a.issues.iter().find(|c| c.key == *k).unwrap();
-            if child.parent.as_ref() != Some(&i.key) || child.product_id != i.product_id {
+            if child.parent.as_ref() != Some(&i.key)
+                || child.product_id != i.product_id
+                || child.project_id != i.project_id
+            {
                 return Err(err("invalid", "Broken verification child link"));
             }
         }

@@ -8,10 +8,12 @@
     Verification,
     Status,
     Outcome,
+    Project,
   } from "./api";
   let data = $state<Snapshot>({
     workspace_id: "",
     products: [],
+    projects: [],
     issues: [],
     cursor: 0,
   });
@@ -19,12 +21,38 @@
   let context = $state<Context | null>(null);
   let view = $state("all");
   let product = $state("all");
+  let projectFilter = $state("all");
+  let selectedProject = $derived(
+    data.projects.find((p) => p.id === projectFilter),
+  );
+  let availableProjects = $derived(
+    data.projects
+      .filter((p) => product === "all" || p.product_id === product)
+      .sort((a, b) => a.name.localeCompare(b.name)),
+  );
+  $effect(() => {
+    if (
+      selectedProject &&
+      product !== "all" &&
+      selectedProject.product_id !== product
+    )
+      projectFilter = "all";
+  });
   let search = $state("");
   let connected = $state(false);
   let error = $state("");
   let busy = $state(false);
   let tab = $state("brief");
-  let modal = $state<"issue" | "product" | "edit" | "submit" | null>(null);
+  let modal = $state<
+    "issue" | "product" | "project" | "edit" | "submit" | null
+  >(null);
+  let projectDraft = $state({
+    id: "",
+    product: "DIR",
+    name: "",
+    description: "",
+    version: 0,
+  });
   let draft = $state({
     title: "",
     body: "",
@@ -95,6 +123,10 @@
       .filter(
         (i) =>
           (product === "all" || i.product_id === product) &&
+          (projectFilter === "all" ||
+            (projectFilter === "none"
+              ? !i.project_id
+              : i.project_id === projectFilter)) &&
           (view === "all" ||
             (view === "needs"
               ? needsMe(i)
@@ -192,6 +224,8 @@
     modal = "edit";
   }
   function newIssue() {
+    // Capture starts ungrouped; assignment is an explicit action on its detail.
+    projectFilter = "all";
     draft = {
       title: "",
       body: "",
@@ -244,6 +278,61 @@
         vault_windows: "",
         vault_wsl: "",
       };
+    }
+  }
+  function editProject(p?: Project) {
+    projectDraft = p
+      ? {
+          id: p.id,
+          product: data.products.find((product) => product.id === p.product_id)!
+            .key,
+          name: p.name,
+          description: p.description,
+          version: p.version,
+        }
+      : {
+          id: "",
+          product:
+            data.products.find((p) => p.id === product)?.key ||
+            data.products[0]?.key ||
+            "DIR",
+          name: "",
+          description: "",
+          version: 0,
+        };
+    modal = "project";
+  }
+  async function saveProject(event: SubmitEvent) {
+    event.preventDefault();
+    if (busy) return;
+    busy = true;
+    error = "";
+    try {
+      const saved = await api<Project>(
+        projectDraft.id
+          ? {
+              op: "update_project",
+              id: projectDraft.id,
+              expected_version: projectDraft.version,
+              name: projectDraft.name,
+              description: projectDraft.description,
+            }
+          : {
+              op: "create_project",
+              product: projectDraft.product,
+              name: projectDraft.name,
+              description: projectDraft.description,
+            },
+        true,
+      );
+      await refresh();
+      product = saved.product_id;
+      projectFilter = saved.id;
+      modal = null;
+    } catch (e) {
+      error = String(e).replace(/^Error: /, "");
+    } finally {
+      busy = false;
     }
   }
   async function submit(event: SubmitEvent) {
@@ -482,6 +571,33 @@
             >＋ Issue</button
           >
         </div>
+        <div class="project-toolbar">
+          <label class="project-filter"
+            >Project
+            <select aria-label="Filter by project" bind:value={projectFilter}>
+              <option value="all">All projects</option>
+              <option value="none">No project</option>
+              {#each availableProjects as p}<option value={p.id}
+                  >{p.name}{product === "all"
+                    ? ` · ${data.products.find((product) => product.id === p.product_id)?.name}`
+                    : ""}</option
+                >{/each}
+            </select>
+          </label>
+          <button
+            class="text-button"
+            disabled={!connected || busy}
+            onclick={() => editProject()}>＋ New project</button
+          >
+          {#if selectedProject}<button
+              class="text-button"
+              disabled={!connected || busy}
+              onclick={() => editProject(selectedProject)}>Edit project</button
+            >{/if}
+        </div>
+        {#if selectedProject?.description}<p class="project-description">
+            {selectedProject.description}
+          </p>{/if}
         <div class="list-label"><span>ISSUE</span><span>STATUS</span></div>
         <div class="issue-list">
           {#each visible as i}<button
@@ -498,6 +614,10 @@
                   >{#if i.needs_fix}<span class="fix-badge">Needs fix</span
                     >{/if}{#if i.claim}<span class="claim-meta"
                       >↗ {i.claim.actor}</span
+                    >{/if}
+                  {#if i.project_id}<span class="project-tag"
+                      >{data.projects.find((p) => p.id === i.project_id)
+                        ?.name}</span
                     >{/if}
                 </div>
               </div>
@@ -566,6 +686,29 @@
                 >Priority <b>{current.priority}</b></span
               >
             </div>
+            <label class="project-assignment"
+              >Project
+              <select
+                aria-label="Issue project"
+                value={current.project_id || ""}
+                disabled={busy || !connected}
+                onchange={async (event) => {
+                  const control = event.currentTarget;
+                  const result = await act({
+                    op: "set_issue_project",
+                    key: current.key,
+                    expected_version: current.version,
+                    project_id: control.value || null,
+                  });
+                  if (!result) control.value = current?.project_id || "";
+                }}
+              >
+                <option value="">No project</option>
+                {#each data.projects.filter((p) => p.product_id === current.product_id) as p}<option
+                    value={p.id}>{p.name}</option
+                  >{/each}
+              </select>
+            </label>
           </div>
           <div class="tabs" role="tablist" aria-label="Issue sections">
             {#each [["brief", "Brief"], ["verify", "Verification"], ["activity", "Activity"]] as [id, label]}<button
@@ -892,13 +1035,17 @@
       class="modal"
       use:showDialog
       oncancel={() => (modal = null)}
-      aria-label={modal === "product"
-        ? "New product"
-        : modal === "submit"
-          ? "Submit for verification"
-          : modal === "edit"
-            ? "Edit issue"
-            : "New issue"}
+      aria-label={modal === "project"
+        ? projectDraft.id
+          ? "Edit project"
+          : "New project"
+        : modal === "product"
+          ? "New product"
+          : modal === "submit"
+            ? "Submit for verification"
+            : modal === "edit"
+              ? "Edit issue"
+              : "New issue"}
       tabindex="-1"
     >
       <div class="modal-header">
@@ -907,13 +1054,17 @@
             DIRECT / {modal === "submit" ? "HANDOFF" : "WORKSPACE"}
           </div>
           <h2>
-            {modal === "product"
-              ? "A space for your product"
-              : modal === "submit"
-                ? "Hand it back with evidence"
-                : modal === "edit"
-                  ? "Shape the work"
-                  : "Capture an issue"}
+            {modal === "project"
+              ? projectDraft.id
+                ? "Shape the project"
+                : "Group work into a project"
+              : modal === "product"
+                ? "A space for your product"
+                : modal === "submit"
+                  ? "Hand it back with evidence"
+                  : modal === "edit"
+                    ? "Shape the work"
+                    : "Capture an issue"}
           </h2>
         </div>
         <button
@@ -923,7 +1074,37 @@
         >
       </div>
       {#if error}<div class="error" role="alert">{error}</div>{/if}
-      {#if modal === "product"}<form onsubmit={createProduct}>
+      {#if modal === "project"}<form onsubmit={saveProject}>
+          <label class="field"
+            >Product<select
+              bind:value={projectDraft.product}
+              disabled={!!projectDraft.id}
+            >
+              {#each data.products as p}<option value={p.key}>{p.name}</option
+                >{/each}
+            </select></label
+          >
+          <label class="field"
+            >Project name<input
+              required
+              maxlength="160"
+              bind:value={projectDraft.name}
+              placeholder="e.g. Direct pilot"
+            /></label
+          >
+          <label class="field"
+            >Project outcome<textarea
+              rows="3"
+              bind:value={projectDraft.description}
+              placeholder="What should this project deliver?"></textarea></label
+          >
+          <div class="modal-footer">
+            <button class="primary" disabled={busy}
+              >{projectDraft.id ? "Save project" : "Create project"}</button
+            >
+          </div>
+        </form>
+      {:else if modal === "product"}<form onsubmit={createProduct}>
           <div class="form-grid">
             <label class="field"
               >Product name<input

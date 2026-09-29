@@ -30,6 +30,8 @@ This prevents accidental approval through the agent API and unsolicited website 
 
 ## Current limits
 
-No cloud sync, multi-user permissions, agent runner, MCP server, Linear importer, projects/milestones/goals, attachments, signed installer, automatic startup at login, or automatic scheduled backup yet. Product spaces have no artificial team cap. Full snapshots are not paginated; large workspaces need a later performance pass. Context includes the latest 100 comments and 50 events, with a truncation flag for comments; full archives preserve all records.
+No cloud sync, multi-user permissions, agent runner, MCP server, Linear importer, milestones/goals, general issue relationships, attachments, signed installer, automatic startup at login, or automatic scheduled backup yet. Product spaces have no artificial team cap. Full snapshots are not paginated; large workspaces need a later performance pass. Context includes the latest 100 comments and 50 events, with a truncation flag for comments; full archives preserve all records.
+
+Projects belong to a product and have stable IDs, a name/outcome, and a version for concurrent edits. Grouping is planning metadata: it does not change readiness or approval evidence. Verification children inherit their parent's project. Schema 2 introduces projects atomically and causes older binaries to refuse opening the database. Archives are now format 2; the reader upgrades format-1 records with no project assignment and preserves old retry responses unchanged.
 
 The desktop shell starts the service independently, so closing its window does not stop agent access. Source builds expect the CLI beside the desktop executable. A portable distribution must also place browser assets in a sibling `web` directory. Do not distribute just the desktop executable as an installer.

@@ -46,8 +46,10 @@ Example submission after claiming:
 }
 ```
 
-Agent operations: `snapshot`, `context`, `changes`, `export`, `create_issue`, `update_issue`, `claim`, `release`, `comment`, `submit`. The typed source of truth is `crates/direct-core/src/model.rs`. Updates and comments also require the current issue version. An active claim is required to submit; expired claims must be explicitly reacquired. The default lease is one hour, with a maximum of 24 hours.
+Agent operations: `snapshot`, `context`, `changes`, `export`, `create_issue`, `update_issue`, `set_issue_project`, `claim`, `renew`, `release`, `comment`, `submit`. The typed source of truth is `crates/direct-core/src/model.rs`. Updates and comments also require the current issue version. An active claim is required to submit; expired claims must be explicitly reacquired. The default lease is one hour, with a maximum of 24 hours.
 
-Owner-only operations are `create_product`, `ready`, `review`, and `reopen`. The agent CLI rejects them. Review requires an explicit `run_id` matching the current submission; results from an earlier build cannot complete a later build.
+Owner-only operations are `create_product`, `create_project`, `update_project`, `ready`, `review`, and `reopen`. The agent CLI rejects them. Review requires an explicit `run_id` matching the current submission; results from an earlier build cannot complete a later build.
+
+`snapshot` includes `projects`; issue `context` includes its project name, outcome and version. To assign an issue use `set_issue_project` with `key`, `expected_version`, and `project_id` (UUID or null to remove). The project must belong to the same product. Agents need their active claim for Doing work and cannot regroup submitted/completed/canceled work. Planning changes preserve readiness and test evidence; verification children follow their parent automatically. Creating an issue starts it ungrouped.
 
 After failure, read `context`: preserve the review feedback, claim again, fix, and submit a new run. Do not mark work Done, equate canceled tests with success, or claim the owner has accepted work because automated tests passed.

@@ -35,10 +35,23 @@ pub struct Claim {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Project {
+    pub id: String,
+    pub product_id: String,
+    pub name: String,
+    pub description: String,
+    pub version: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Issue {
     pub id: String,
     pub key: String,
     pub product_id: String,
+    #[serde(default)]
+    pub project_id: Option<String>,
     pub title: String,
     pub body: String,
     pub acceptance: String,
@@ -135,6 +148,23 @@ pub enum Command {
         after: u64,
     },
     Export,
+    CreateProject {
+        product: String,
+        name: String,
+        #[serde(default)]
+        description: String,
+    },
+    UpdateProject {
+        id: String,
+        expected_version: u64,
+        name: String,
+        description: String,
+    },
+    SetIssueProject {
+        key: String,
+        expected_version: u64,
+        project_id: Option<String>,
+    },
     CreateProduct {
         key: String,
         name: String,
@@ -233,6 +263,8 @@ pub struct Archive {
     pub format: u32,
     pub workspace_id: String,
     pub products: Vec<Product>,
+    #[serde(default)]
+    pub projects: Vec<Project>,
     pub issues: Vec<Issue>,
     pub comments: Vec<Comment>,
     pub verifications: Vec<Verification>,
