@@ -2,7 +2,7 @@
 #[tauri::command]
 async fn direct_command(request: direct_core::Request) -> Result<serde_json::Value, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        let dir = direct::data_dir();
+        let dir = direct::data_dir().map_err(|e| e.to_string())?;
         direct::ensure_service(&dir).map_err(|e| e.to_string())?;
         direct::Client::new(&dir)
             .and_then(|c| c.call(&request, direct_core::Role::Human))

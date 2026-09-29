@@ -16,18 +16,40 @@ pub struct Endpoint {
     pub agent_token: String,
     pub owner_token: String,
 }
-pub fn data_dir() -> PathBuf {
-    if let Some(v) = std::env::var_os("DIRECT_DATA_DIR") {
-        return PathBuf::from(v);
+pub fn data_dir() -> Result<PathBuf> {
+    resolve_data_dir(cfg!(windows), |key| std::env::var_os(key))
+}
+
+fn resolve_data_dir(
+    windows: bool,
+    env: impl Fn(&str) -> Option<std::ffi::OsString>,
+) -> Result<PathBuf> {
+    let value = |key| env(key).filter(|v| !v.is_empty());
+    if let Some(v) = value("DIRECT_DATA_DIR") {
+        return Ok(PathBuf::from(v));
     }
-    if let Some(v) = std::env::var_os("LOCALAPPDATA") {
-        return PathBuf::from(v).join("Direct");
+    if windows {
+        // MSIX callers can see a redirected LOCALAPPDATA. USERPROFILE is shared
+        // by the desktop launched from Explorer and agents launched by Codex.
+        let dir = PathBuf::from(value("USERPROFILE").context(
+            "USERPROFILE is missing; set DIRECT_DATA_DIR to an explicit workspace path",
+        )?)
+        .join(".direct/data");
+        if !dir.join("direct.db").exists()
+            && value("LOCALAPPDATA")
+                .is_some_and(|v| PathBuf::from(v).join("Direct/direct.db").exists())
+        {
+            bail!("An older Direct workspace exists in LocalAppData. Export and restore it into {} before launching (see docs/desktop-workspace.md). No empty workspace was created.", dir.display());
+        }
+        return Ok(dir);
     }
-    if let Some(v) = std::env::var_os("XDG_DATA_HOME") {
-        return PathBuf::from(v).join("direct");
+    if let Some(v) = value("XDG_DATA_HOME") {
+        return Ok(PathBuf::from(v).join("direct"));
     }
-    PathBuf::from(std::env::var_os("HOME").unwrap_or_else(|| ".".into()))
-        .join(".local/share/direct")
+    Ok(
+        PathBuf::from(value("HOME").context("HOME is missing; set DIRECT_DATA_DIR")?)
+            .join(".local/share/direct"),
+    )
 }
 pub fn endpoint(dir: &Path) -> Result<Endpoint> {
     let e: Endpoint = serde_json::from_slice(
@@ -195,4 +217,88 @@ pub fn protect_dir(dir: &Path) -> Result<()> {
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn windows_launchers_share_a_workspace_despite_redirected_appdata() {
+        let profile = tempfile::tempdir().unwrap();
+        let resolve = |local: &str| {
+            resolve_data_dir(true, |key| match key {
+                "USERPROFILE" => Some(profile.path().as_os_str().to_owned()),
+                "LOCALAPPDATA" => Some(profile.path().join(local).into_os_string()),
+                _ => None,
+            })
+            .unwrap()
+        };
+        assert_eq!(
+            resolve("AppData/Local"),
+            resolve("Packages/Codex/LocalCache/Local")
+        );
+        assert_eq!(
+            resolve("AppData/Local"),
+            profile.path().join(".direct/data")
+        );
+    }
+
+    #[test]
+    fn legacy_workspace_blocks_silent_empty_replacement_but_allows_migration() {
+        let profile = tempfile::tempdir().unwrap();
+        let local = profile.path().join("AppData/Local");
+        let legacy = local.join("Direct");
+        fs::create_dir_all(&legacy).unwrap();
+        fs::write(legacy.join("direct.db"), b"legacy sentinel").unwrap();
+        let env = |key: &str| match key {
+            "USERPROFILE" => Some(profile.path().as_os_str().to_owned()),
+            "LOCALAPPDATA" => Some(local.as_os_str().to_owned()),
+            _ => None,
+        };
+        assert!(resolve_data_dir(true, env)
+            .unwrap_err()
+            .to_string()
+            .contains("No empty workspace"));
+        let canonical = profile.path().join(".direct/data");
+        assert!(!canonical.exists());
+        assert_eq!(
+            resolve_data_dir(true, |key| {
+                if key == "DIRECT_DATA_DIR" {
+                    Some(legacy.as_os_str().to_owned())
+                } else {
+                    env(key)
+                }
+            })
+            .unwrap(),
+            legacy
+        );
+        fs::create_dir_all(&canonical).unwrap();
+        fs::write(canonical.join("direct.db"), b"restored sentinel").unwrap();
+        assert_eq!(resolve_data_dir(true, env).unwrap(), canonical);
+        assert_eq!(
+            fs::read(legacy.join("direct.db")).unwrap(),
+            b"legacy sentinel"
+        );
+    }
+
+    #[test]
+    fn explicit_workspaces_win_and_missing_profile_never_uses_working_directory() {
+        assert_eq!(
+            resolve_data_dir(true, |key| {
+                (key == "DIRECT_DATA_DIR").then(|| "dedicated-workspace".into())
+            })
+            .unwrap(),
+            PathBuf::from("dedicated-workspace")
+        );
+        assert!(resolve_data_dir(true, |_| None).is_err());
+        assert!(resolve_data_dir(true, |_| Some("".into())).is_err());
+        assert_eq!(
+            resolve_data_dir(false, |key| {
+                (key == "XDG_DATA_HOME").then(|| "/data".into())
+            })
+            .unwrap(),
+            PathBuf::from("/data/direct")
+        );
+    }
 }

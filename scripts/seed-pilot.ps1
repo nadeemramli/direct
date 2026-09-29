@@ -1,9 +1,11 @@
-param([string]$DataDir = "$env:LOCALAPPDATA\Direct")
+param([string]$DataDir)
 $ErrorActionPreference = 'Stop'
 $cli = Join-Path (Split-Path -Parent $PSScriptRoot) 'target\debug\direct.exe'
 function Send-Direct($command) {
     $json = $command | ConvertTo-Json -Depth 12 -Compress
-    $output = $json | & $cli --data-dir $DataDir call
+    $cliArgs = @('call')
+    if ($DataDir) { $cliArgs = @('--data-dir', $DataDir) + $cliArgs }
+    $output = $json | & $cli @cliArgs
     if ($LASTEXITCODE -ne 0) { throw "Direct command failed: $($command.op)" }
     return ($output | ConvertFrom-Json)
 }

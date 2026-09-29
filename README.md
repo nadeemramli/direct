@@ -12,7 +12,9 @@ Prerequisites: Rust with the MSVC build tools, Node.js 22.12+ (24 recommended), 
 .\scripts\start.ps1
 ```
 
-This builds and opens the desktop app. Later, use `-SkipBuild` to launch the existing build. The service starts automatically and continues running after the window closes. Data lives in `%LOCALAPPDATA%\Direct`, outside this repository. Use `-DataDir C:\path\to\dedicated-directory` for an isolated workspace.
+This builds and opens the desktop app. Later, use `-SkipBuild` to launch the existing build. The service starts automatically and continues running after the window closes. Data lives in `%USERPROFILE%\.direct\data`, outside this repository. Use `-DataDir C:\path\to\dedicated-directory` for an isolated workspace.
+
+Older LocalAppData workspaces need an explicit export/restore before first launch with this build. See [desktop workspace and migration](docs/desktop-workspace.md). This prevents Windows packaged-app redirection from splitting the browser and desktop into different workspaces.
 
 For the browser interface, run `scripts\start.ps1 -Browser`. It prints a short-lived, single-use launch link. Open it promptly and do not share it. The browser preview needs a fresh `direct open` link after the service restarts; the desktop shell reconnects automatically.
 

@@ -1,6 +1,6 @@
 # Direct builds Direct
 
-Started 29 September 2026. The normal local workspace (`%LOCALAPPDATA%\Direct`) owns Direct development tasks. The separate `Direct-foundation-preview` workspace contains only synthetic smoke-test records and does not count toward adoption.
+Started 29 September 2026. The normal local workspace (`%USERPROFILE%\.direct\data`) owns Direct development tasks. The separate `Direct-foundation-preview` workspace contains only synthetic smoke-test records and does not count toward adoption.
 
 ## First delivery
 

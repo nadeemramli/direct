@@ -61,7 +61,10 @@ fn main() {
 }
 fn run() -> Result<()> {
     let args = Args::parse();
-    let dir = args.data_dir.unwrap_or_else(direct::data_dir);
+    let dir = match args.data_dir.filter(|path| !path.as_os_str().is_empty()) {
+        Some(dir) => dir,
+        None => direct::data_dir()?,
+    };
     match args.command {
         Cli::Serve { port, assets } => {
             tokio::runtime::Runtime::new()?.block_on(direct::server::serve(&dir, port, &assets))

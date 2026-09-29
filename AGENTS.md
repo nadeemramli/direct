@@ -2,7 +2,7 @@
 
 Direct's own development is the first real pilot. Use the local Direct workspace as the issue record for this repository; other products remain in Linear until explicitly adopted.
 
-Read `docs/agent-contract.md` and `docs/pilot.md`. Use the running Windows service through `target/debug/direct.exe`, or `bash scripts/direct-wsl.sh` from WSL. The owner's normal data directory is `%LOCALAPPDATA%\Direct`; do not substitute the synthetic `Direct-foundation-preview` workspace. If a sandbox cannot access the owner's service, use the normal permission mechanism; never change its ACL or create a second workspace and pretend it is the pilot.
+Read `docs/agent-contract.md` and `docs/pilot.md`. Use the running Windows service through `target/debug/direct.exe`, or `bash scripts/direct-wsl.sh` from WSL. The owner's normal data directory is `%USERPROFILE%\.direct\data`; do not substitute the synthetic `Direct-foundation-preview` workspace. If a sandbox cannot access the owner's service, use the normal permission mechanism; never change its ACL or create a second workspace and pretend it is the pilot.
 
 Before work, inspect `list` and the selected issue's `context`. Use a distinct agent actor, stable request IDs for retries, the current issue version, and an active claim. Only start scoped work authorized by the user. Readiness is an owner decision: explicit chat authorization may be recorded through the owner UI with a provenance comment, but never read owner credentials to bypass the agent contract. Agent-submitted work stays in Verify until the owner records the actual outcome.
 
