@@ -382,16 +382,16 @@ fn read_range(conn: &Connection, file: &SourceFile, start: u64, end: u64) -> Res
         "SELECT seq, data FROM source_chunks WHERE file_id=?1 AND seq BETWEEN ?2 AND ?3 ORDER BY seq",
     )?;
     let mut bytes = Vec::with_capacity((end - start) as usize);
-    let mut expected = first;
     let rows = statement.query_map(params![id, first as i64, last as i64], |row| {
         Ok((row.get::<_, i64>(0)?, row.get::<_, Vec<u8>>(1)?))
     })?;
-    for row in rows {
+    // Each returned chunk must be the next expected sequence number; a gap or a
+    // short result is caught here or by the final length check.
+    for (expected, row) in (first..=last).zip(rows) {
         let (seq, data) = row?;
-        if seq as u64 != expected {
+        if u64::try_from(seq).ok() != Some(expected) {
             return Err(err("storage", "Retained file chunks are incomplete"));
         }
-        expected += 1;
         let chunk_start = seq as u64 * chunk;
         let from = start.saturating_sub(chunk_start) as usize;
         let to = ((end - chunk_start) as usize).min(data.len());
