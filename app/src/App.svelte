@@ -294,7 +294,7 @@
   );
   function needsMe(i: Issue) {
     return (
-      i.status === "verify" ||
+      (i.status === "verify" && data.review_ready_runs?.includes(i.current_run || "")) ||
       i.needs_fix ||
       (i.status === "doing" && (!i.claim || i.claim.expires_at <= clock))
     );
@@ -675,7 +675,7 @@
       draft.body = `Problem\n${subject}.\n\nExpected outcome\nThe affected workflow handles this clearly and reliably for the user.`;
     }
     if (!draft.acceptance.trim()) {
-      draft.acceptance = `- ${subject} is addressed in the user-facing workflow.\n- Relevant edge cases and failure feedback are covered.\n- Automated checks pass and the human owner can verify the result.`;
+      draft.acceptance = `- ${subject} is demonstrated through the complete user-facing workflow.\n- The agent records actions, expected and observed results for each criterion, including relevant failure paths and persistence.\n- Relevant automated checks pass.\n- The exact tested build is integrated, installed, and smoke-tested at the owner's entrypoint before requesting verification.`;
     }
   }
   function makeReady(i: Issue) {
@@ -1298,7 +1298,7 @@
         {@render labelChips(i.labels)}
       </div>
     </div>
-    <span class="status-badge {i.status}">{labels[i.status]}</span></button
+    <span class="status-badge {i.status}">{i.status === "verify" && !data.review_ready_runs?.includes(i.current_run || "") ? "Agent E2E needed" : labels[i.status]}</span></button
   >
 {/snippet}
 
@@ -2343,6 +2343,7 @@
                     <button
                       class="primary"
                       disabled={busy ||
+                        !activeRun.e2e ||
                         results.some((r) => r.outcome !== "passed")}
                       onclick={() => review("passed")}>Pass & complete ✓</button
                     ><button

@@ -286,6 +286,7 @@ export interface Context {
   history: { seq: number; kind: string; actor: string; at: number }[];
 }
 export interface Snapshot {
+  review_ready_runs?: string[];
   workspace_id: string;
   products: Product[];
   projects: Project[];

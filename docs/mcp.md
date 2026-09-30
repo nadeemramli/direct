@@ -16,7 +16,7 @@
 | `direct_context` | `context` | Full issue context: fields, current version, claim, project, comments, verification runs, Git evidence, and history. Read this before every write. |
 | `direct_claim` | `claim` | Requires `key`, `expected_version`, `request_id`; optional `lease_seconds` (30–86400, default 3600). |
 | `direct_renew` | `renew` | Same arguments as `direct_claim`; only the actor holding the active claim can renew it. |
-| `direct_submit` | `submit` | Requires `key`, `expected_version`, `request_id`, `build_ref`, `delivery_ref`, `summary`, `checks`, and one to fifty `steps` (`instruction` + `expected`); optional `limitations` and `preconditions`. Moves the issue to Verify. |
+| `direct_submit` | `submit` | Requires `key`, `expected_version`, `request_id`, `build_ref`, `delivery_ref`, `summary`, `checks`, `e2e`, and one to fifty `steps` (`instruction` + `expected`); optional `limitations` and `preconditions`. Moves the issue to Verify. |
 
 Everything else is absent from tool discovery and returns `tool not found` if invoked by name: `ready`, `review`, `reopen`, `release`, `comment`, product and project administration, `open`/launch links, `export`, `restore`, Theoria sync, Git evidence records, and any raw or generic command. Unknown argument fields are rejected, so an `op` or `role` field cannot be smuggled in. Use the CLI for the agent operations that MCP does not expose, such as `record-commit` and `record-push`.
 

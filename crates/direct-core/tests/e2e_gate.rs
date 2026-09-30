@@ -90,4 +90,9 @@ fn submission_requires_passed_e2e_on_the_exact_delivered_build() {
     historical.format = 10;
     historical.verifications[0].e2e = None;
     validate_archive(&historical).unwrap();
+    let mut old_store = Store::open(&temp.path().join("historical.db")).unwrap();
+    old_store.restore(historical).unwrap();
+    let snapshot = send(&mut old_store, json!({"op":"snapshot"}), Role::Agent).unwrap();
+    assert_eq!(snapshot["review_ready_runs"], json!([]));
+    assert_eq!(send(&mut old_store, json!({"op":"review","key":"DIR-1","expected_version":4,"run_id":submitted["current_run"],"outcome":"passed","results":[{"outcome":"passed"}]}), Role::Human).unwrap_err().code, "invalid");
 }

@@ -12,7 +12,7 @@ Owner direction, 1 October 2026: every issue must represent a working user outco
 
 The `e2e` submission object records `build_ref`, `delivered_build_ref`, `environment`, `entrypoint`, `scenarios`, `outcome`, and `delivery_check`. Both references must equal the submission's `build_ref`, the outcome must be `passed`, and all evidence fields must be nonempty. These are auditable agent assertions, not independent attestation that arbitrary prose is true. The agent remains responsible for truthful, criterion-by-criterion evidence. All mutation entrypoints use the same server gate.
 
-Existing verification history remains intact. Older runs display missing E2E evidence explicitly; upgrading does not manufacture a passing check or owner acceptance. Completed work retains its actual owner result. Incomplete or failed acceptance scenarios require more agent work and a new run.
+Existing verification history remains intact. Older pending runs are excluded from the review-ready queue and cannot be passed until an agent resubmits with E2E evidence; upgrading does not manufacture a passing check or owner acceptance. Completed work retains its actual owner result. Incomplete or failed acceptance scenarios require more agent work and a new run.
 
 ## Cloud handoff
 
