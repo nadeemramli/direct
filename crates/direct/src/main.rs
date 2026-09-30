@@ -1,6 +1,8 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use direct_core::{Archive, Command, GitTraceKind, Request, Role, Store, TheoriaDocumentInput};
+use direct_core::{
+    Archive, Command, GitTraceKind, Request, Role, Step, Store, TheoriaDocumentInput,
+};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -50,6 +52,54 @@ enum Cli {
     List,
     Context {
         key: String,
+    },
+    /// Claim owner-ready work with a stable request ID.
+    Claim {
+        key: String,
+        #[arg(long)]
+        expected_version: u64,
+        #[arg(long, default_value_t = 3600)]
+        lease_seconds: i64,
+        #[arg(long)]
+        request_id: String,
+    },
+    /// Extend the active claim held by this actor.
+    Renew {
+        key: String,
+        #[arg(long)]
+        expected_version: u64,
+        #[arg(long, default_value_t = 3600)]
+        lease_seconds: i64,
+        #[arg(long)]
+        request_id: String,
+    },
+    /// Submit tested work for owner verification. Each --step takes an instruction and expected result.
+    Submit {
+        key: String,
+        #[arg(long)]
+        expected_version: u64,
+        #[arg(long)]
+        build_ref: String,
+        #[arg(long)]
+        delivery_ref: String,
+        #[arg(long)]
+        summary: String,
+        #[arg(long)]
+        checks: String,
+        #[arg(long, default_value = "")]
+        limitations: String,
+        #[arg(long, default_value = "")]
+        preconditions: String,
+        #[arg(
+            long,
+            value_names = ["INSTRUCTION", "EXPECTED"],
+            num_args = 2,
+            action = clap::ArgAction::Append,
+            required = true
+        )]
+        step: Vec<String>,
+        #[arg(long)]
+        request_id: String,
     },
     /// Import the selected authoritative Markdown sources as a read-only Theoria cache.
     TheoriaSync {
@@ -118,6 +168,77 @@ enum Cli {
     Restore {
         from: PathBuf,
     },
+}
+
+fn workflow_request(actor: &str, command: &Cli) -> Result<Option<Request>> {
+    let (request_id, command) = match command {
+        Cli::Claim {
+            key,
+            expected_version,
+            lease_seconds,
+            request_id,
+        } => (
+            request_id.clone(),
+            Command::Claim {
+                key: key.clone(),
+                expected_version: *expected_version,
+                lease_seconds: *lease_seconds,
+            },
+        ),
+        Cli::Renew {
+            key,
+            expected_version,
+            lease_seconds,
+            request_id,
+        } => (
+            request_id.clone(),
+            Command::Renew {
+                key: key.clone(),
+                expected_version: *expected_version,
+                lease_seconds: *lease_seconds,
+            },
+        ),
+        Cli::Submit {
+            key,
+            expected_version,
+            build_ref,
+            delivery_ref,
+            summary,
+            checks,
+            limitations,
+            preconditions,
+            step,
+            request_id,
+        } => (
+            request_id.clone(),
+            Command::Submit {
+                key: key.clone(),
+                expected_version: *expected_version,
+                build_ref: build_ref.clone(),
+                delivery_ref: delivery_ref.clone(),
+                summary: summary.clone(),
+                checks: checks.clone(),
+                limitations: limitations.clone(),
+                preconditions: preconditions.clone(),
+                steps: step
+                    .chunks_exact(2)
+                    .map(|pair| Step {
+                        instruction: pair[0].clone(),
+                        expected: pair[1].clone(),
+                    })
+                    .collect(),
+            },
+        ),
+        _ => return Ok(None),
+    };
+    if actor == "local-agent" {
+        bail!("claim, renew, and submit require an explicit --actor so concurrent agents do not share an identity");
+    }
+    Ok(Some(Request {
+        actor: actor.into(),
+        request_id,
+        command,
+    }))
 }
 
 fn frontmatter_value(content: &str, key: &str) -> Option<String> {
@@ -242,7 +363,11 @@ fn run() -> Result<()> {
                 return Ok(());
             }
             let mut output = None;
+            let workflow = workflow_request(&args.actor, &other)?;
             let request = match other {
+                Cli::Claim { .. } | Cli::Renew { .. } | Cli::Submit { .. } => {
+                    workflow.expect("workflow command has a request")
+                }
                 Cli::List => Request {
                     actor: args.actor,
                     request_id: String::new(),
@@ -419,5 +544,119 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("stay beneath"));
+    }
+
+    #[test]
+    fn native_claim_and_renew_keep_the_caller_request_id() {
+        for (operation, expected) in [("claim", "claim-7"), ("renew", "renew-7")] {
+            let args = Args::try_parse_from([
+                "direct",
+                "--actor",
+                "handoff-agent",
+                operation,
+                "DIR-5",
+                "--expected-version",
+                "7",
+                "--lease-seconds",
+                "7200",
+                "--request-id",
+                expected,
+            ])
+            .unwrap();
+            let request = workflow_request(&args.actor, &args.command)
+                .unwrap()
+                .unwrap();
+            let value = serde_json::to_value(request).unwrap();
+            assert_eq!(value["actor"], "handoff-agent");
+            assert_eq!(value["request_id"], expected);
+            assert_eq!(value["op"], operation);
+            assert_eq!(value["key"], "DIR-5");
+            assert_eq!(value["expected_version"], 7);
+            assert_eq!(value["lease_seconds"], 7200);
+        }
+    }
+
+    #[test]
+    fn native_submit_maps_checks_and_paired_manual_steps() {
+        let args = Args::try_parse_from([
+            "direct",
+            "--actor",
+            "handoff-agent",
+            "submit",
+            "DIR-5",
+            "--expected-version",
+            "8",
+            "--build-ref",
+            "commit:0123456789abcdef0123456789abcdef01234567",
+            "--delivery-ref",
+            "codex/dir5-agent-handoffs",
+            "--summary",
+            "Added native workflow commands",
+            "--checks",
+            "cargo test passed",
+            "--limitations",
+            "Owner verification remains pending",
+            "--preconditions",
+            "Use the running owner workspace",
+            "--step",
+            "Read issue context",
+            "The current version and claim are visible",
+            "--step",
+            "Submit the tested build",
+            "The issue moves to Verify",
+            "--request-id",
+            "submit-8",
+        ])
+        .unwrap();
+        let request = workflow_request(&args.actor, &args.command)
+            .unwrap()
+            .unwrap();
+        let value = serde_json::to_value(request).unwrap();
+        assert_eq!(value["request_id"], "submit-8");
+        assert_eq!(value["op"], "submit");
+        assert_eq!(value["checks"], "cargo test passed");
+        assert_eq!(value["steps"].as_array().unwrap().len(), 2);
+        assert_eq!(value["steps"][0]["instruction"], "Read issue context");
+        assert_eq!(value["steps"][1]["expected"], "The issue moves to Verify");
+    }
+
+    #[test]
+    fn native_submit_requires_at_least_one_manual_step() {
+        assert!(Args::try_parse_from([
+            "direct",
+            "submit",
+            "DIR-5",
+            "--expected-version",
+            "8",
+            "--build-ref",
+            "commit:abc",
+            "--delivery-ref",
+            "branch",
+            "--summary",
+            "summary",
+            "--checks",
+            "checks",
+            "--request-id",
+            "submit-8",
+        ])
+        .is_err());
+    }
+
+    #[test]
+    fn native_workflow_rejects_the_shared_default_actor() {
+        let args = Args::try_parse_from([
+            "direct",
+            "claim",
+            "DIR-5",
+            "--expected-version",
+            "7",
+            "--request-id",
+            "claim-7",
+        ])
+        .unwrap();
+        assert!(workflow_request(&args.actor, &args.command)
+            .unwrap_err()
+            .to_string()
+            .contains("explicit --actor"));
     }
 }

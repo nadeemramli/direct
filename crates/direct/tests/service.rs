@@ -41,6 +41,115 @@ fn req(mut value: Value) -> Request {
     serde_json::from_value(value).unwrap()
 }
 
+fn native(dir: &Path, args: &[&str]) -> Value {
+    let output = Process::new(env!("CARGO_BIN_EXE_direct"))
+        .arg("--data-dir")
+        .arg(dir)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "native command failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    serde_json::from_slice(&output.stdout).unwrap()
+}
+
+#[test]
+fn native_agent_handoff_claims_renews_retries_and_submits() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("workspace");
+    let _service = start(&dir);
+    let client = Client::new(&dir).unwrap();
+    client
+        .call(
+            &req(json!({"op":"create_issue","product":"DIR","title":"Native handoff","body":"Use the CLI"})),
+            Role::Agent,
+        )
+        .unwrap();
+    client
+        .call(
+            &req(json!({"op":"update_issue","key":"DIR-1","expected_version":1,"title":"Native handoff","body":"Use the CLI","acceptance":"One documented path","owner":"tester","priority":"high"})),
+            Role::Agent,
+        )
+        .unwrap();
+    client
+        .call(
+            &req(json!({"op":"ready","key":"DIR-1","expected_version":2})),
+            Role::Human,
+        )
+        .unwrap();
+
+    let claim_args = [
+        "--actor",
+        "handoff-agent",
+        "claim",
+        "DIR-1",
+        "--expected-version",
+        "3",
+        "--lease-seconds",
+        "7200",
+        "--request-id",
+        "native-claim-1",
+    ];
+    let claimed = native(&dir, &claim_args);
+    assert_eq!(native(&dir, &claim_args), claimed);
+    assert_eq!(claimed["status"], "doing");
+    assert_eq!(claimed["claim"]["actor"], "handoff-agent");
+
+    let renew_args = [
+        "--actor",
+        "handoff-agent",
+        "renew",
+        "DIR-1",
+        "--expected-version",
+        "4",
+        "--lease-seconds",
+        "7200",
+        "--request-id",
+        "native-renew-1",
+    ];
+    let renewed = native(&dir, &renew_args);
+    assert_eq!(native(&dir, &renew_args), renewed);
+    assert_eq!(renewed["version"], 5);
+
+    let submit_args = [
+        "--actor",
+        "handoff-agent",
+        "submit",
+        "DIR-1",
+        "--expected-version",
+        "5",
+        "--build-ref",
+        "commit:0123456789abcdef0123456789abcdef01234567",
+        "--delivery-ref",
+        "codex/native-handoff",
+        "--summary",
+        "Added the native handoff path",
+        "--checks",
+        "Native integration test passed",
+        "--step",
+        "Run the documented claim command",
+        "The issue moves to Doing",
+        "--request-id",
+        "native-submit-1",
+    ];
+    let submitted = native(&dir, &submit_args);
+    assert_eq!(native(&dir, &submit_args), submitted);
+    assert_eq!(submitted["status"], "verify");
+    assert!(submitted["claim"].is_null());
+    let context = native(&dir, &["--actor", "handoff-agent", "context", "DIR-1"]);
+    assert_eq!(
+        context["verifications"][0]["checks"],
+        "Native integration test passed"
+    );
+    assert_eq!(
+        context["verifications"][0]["steps"][0]["expected"],
+        "The issue moves to Doing"
+    );
+}
+
 #[test]
 fn two_real_clients_claim_once_and_http_enforces_local_capabilities() {
     let temp = tempfile::tempdir().unwrap();

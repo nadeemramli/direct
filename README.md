@@ -19,12 +19,14 @@ Older LocalAppData workspaces need an explicit export/restore before first launc
 For the browser interface, run `scripts\start.ps1 -Browser`. It prints a short-lived, single-use launch link. Open it promptly and do not share it. The browser preview needs a fresh `direct open` link after the service restarts; the desktop shell reconnects automatically.
 
 ```powershell
-.\target\debug\direct.exe list
-.\target\debug\direct.exe context DIR-1
-.\target\debug\direct.exe --actor coding-agent create "Investigate a bug" --body "Observed behavior and reproduction"
+.\scripts\direct.ps1 list
+.\scripts\direct.ps1 context DIR-1
+.\scripts\direct.ps1 --actor coding-agent create "Investigate a bug" --body "Observed behavior and reproduction"
 ```
 
-From WSL, use `bash scripts/direct-wsl.sh list`. Both environments call the Windows service; WSL does not open the database. See [the agent contract](docs/agent-contract.md) for claims and submissions.
+From WSL, use `bash scripts/direct-wsl.sh list`. Both wrappers call the Windows service and fall back to the primary Git worktree's built CLI when a fresh managed worktree has no local build; WSL does not open the database. See [the agent contract](docs/agent-contract.md) for claims and submissions.
+
+The routine agent handoff does not require editing JSON: inspect the assigned issue, then use the native `claim`, `renew`, and `submit` commands with the current issue version, one explicit actor, and caller-chosen stable request IDs. `submit --step` accepts an instruction followed by its expected result and may be repeated. Exact retry commands keep the same request ID; changed commands need a new one.
 
 ## Scope
 
