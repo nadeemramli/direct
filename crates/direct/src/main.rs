@@ -304,7 +304,9 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
                 PlanningScope::Inbox
             };
         }
-        expected.format = 5;
+    }
+    if expected.format < 6 {
+        expected.format = 6;
     }
     fs::create_dir(restore_dir)
         .context("Create the recovery workspace beneath an existing parent")?;
@@ -336,6 +338,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             "comments": true,
             "verification_runs": true,
             "git_evidence": true,
+            "issue_links": true,
             "theoria_records": true,
             "events_and_request_replays": true
         },
@@ -350,6 +353,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             "comments": archive.comments.len(),
             "verification_runs": archive.verifications.len(),
             "git_evidence": archive.git_traces.len(),
+            "issue_links": archive.issue_links.len(),
             "theoria_documents": archive.theoria_documents.len(),
             "theoria_findings": archive.method_findings.len(),
             "events": archive.events.len(),
@@ -358,7 +362,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
         "attachments": {
             "supported": false,
             "count": 0,
-            "note": "Archive format 5 has no attachment record type"
+            "note": "Archive format 6 has no attachment record type"
         }
     }))
 }
@@ -951,7 +955,7 @@ mod tests {
 
         let report = recovery_check(&source, &temp.path().join("restored-v5")).unwrap();
         assert_eq!(report["source_format"], 3);
-        assert_eq!(report["restored_format"], 5);
+        assert_eq!(report["restored_format"], 6);
         assert_eq!(report["compatibility_upgrade_applied"], true);
         assert_eq!(report["semantic_archive_match"], true);
     }

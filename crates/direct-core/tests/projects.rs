@@ -307,7 +307,9 @@ fn legacy_database_and_archive_upgrade_without_losing_identity_or_replays() {
     legacy["requests"][0]["response"] = json!(serde_json::to_string(&old_response).unwrap());
     drop(s);
     let conn = rusqlite::Connection::open(&path).unwrap();
-    conn.execute_batch("DROP TABLE projects; UPDATE meta SET value='1' WHERE key='schema';")
+    conn.execute_batch(
+        "DROP TABLE projects; DROP TABLE issue_links; UPDATE meta SET value='1' WHERE key='schema';",
+    )
         .unwrap();
     conn.execute(
         "UPDATE issues SET data=?1",
@@ -336,7 +338,7 @@ fn legacy_database_and_archive_upgrade_without_losing_identity_or_replays() {
         conn.query_row("SELECT value FROM meta WHERE key='schema'", [], |r| r
             .get::<_, String>(0))
             .unwrap(),
-        "5"
+        "6"
     );
     let mut restored = Store::open(&dir.path().join("restore-v1")).unwrap();
     restored

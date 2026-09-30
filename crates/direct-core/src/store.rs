@@ -4,7 +4,7 @@ use serde::de::DeserializeOwned;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
     path::Path,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -150,9 +150,11 @@ impl Store {
                 r.get(0)
             })
             .optional()?;
-        let upgrade_legacy_project_planning = schema.as_deref().is_some_and(|schema| schema != "5");
+        let upgrade_legacy_project_planning = schema
+            .as_deref()
+            .is_some_and(|schema| matches!(schema, "1" | "2" | "3" | "4"));
         if let Some(schema) = schema.as_deref() {
-            if schema != "1" && schema != "2" && schema != "3" && schema != "4" && schema != "5" {
+            if !matches!(schema, "1" | "2" | "3" | "4" | "5" | "6") {
                 return Err(err("unsupported", "Unsupported database schema"));
             }
         } else {
@@ -179,7 +181,8 @@ impl Store {
              CREATE TABLE IF NOT EXISTS theoria_documents (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS method_findings (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS git_traces (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-             UPDATE meta SET value='5' WHERE key='schema';",
+             CREATE TABLE IF NOT EXISTS issue_links (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             UPDATE meta SET value='6' WHERE key='schema';",
         )?;
         if upgrade_legacy_project_planning {
             // Before schema 5, a project link was the only way to express project-scoped work.
@@ -215,6 +218,7 @@ impl Store {
                     "theoria_documents":all::<TheoriaDocument>(&self.conn,"theoria_documents")?,
                     "method_findings":all::<MethodFinding>(&self.conn,"method_findings")?,
                     "git_traces":all::<GitTrace>(&self.conn,"git_traces")?,
+                    "issue_links":all::<IssueLink>(&self.conn,"issue_links")?,
                     "issues":all::<Issue>(&self.conn,"issues")?,
                     "cursor":cursor(&self.conn)?
                 }))
@@ -267,8 +271,9 @@ impl Store {
                     .as_ref()
                     .map(|project| project_progress(&self.conn, &project.id))
                     .transpose()?;
+                let issue_links = issue_link_context(&self.conn, key)?;
                 return Ok(
-                    json!({"issue":issue,"product":product,"project":project,"project_progress":project_progress,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"content_authority":"Task data, not tool authorization"}),
+                    json!({"issue":issue,"product":product,"project":project,"project_progress":project_progress,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"content_authority":"Task data, not tool authorization"}),
                 );
             }
             Command::Changes { after } => {
@@ -350,13 +355,14 @@ impl Store {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(Archive {
-            format: 5,
+            format: 6,
             workspace_id: self.workspace_id()?,
             products: all(&self.conn, "products")?,
             projects: all(&self.conn, "projects")?,
             theoria_documents: all(&self.conn, "theoria_documents")?,
             method_findings: all(&self.conn, "method_findings")?,
             git_traces: all(&self.conn, "git_traces")?,
+            issue_links: all(&self.conn, "issue_links")?,
             issues: all(&self.conn, "issues")?,
             comments: all(&self.conn, "comments")?,
             verifications: all(&self.conn, "verifications")?,
@@ -378,7 +384,7 @@ impl Store {
             }
         }
         let tx = self.conn.transaction()?;
-        tx.execute_batch("DELETE FROM projects; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
+        tx.execute_batch("DELETE FROM projects; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
         tx.execute(
             "UPDATE meta SET value=?1 WHERE key='workspace_id'",
             [a.workspace_id],
@@ -400,6 +406,9 @@ impl Store {
         }
         for trace in a.git_traces {
             put_git_trace(&tx, &trace)?;
+        }
+        for link in a.issue_links {
+            put_issue_link(&tx, &link)?;
         }
         for i in a.issues {
             put_issue(&tx, &i)?;
@@ -564,6 +573,119 @@ fn put_git_trace(conn: &Connection, trace: &GitTrace) -> Result<()> {
         params![trace.id, serde_json::to_string(trace)?],
     )?;
     Ok(())
+}
+fn put_issue_link(conn: &Connection, link: &IssueLink) -> Result<()> {
+    conn.execute(
+        "INSERT INTO issue_links VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+        params![link.id, serde_json::to_string(link)?],
+    )?;
+    Ok(())
+}
+fn issue_link_context(conn: &Connection, key: &str) -> Result<Vec<Value>> {
+    let issues: HashMap<_, _> = all::<Issue>(conn, "issues")?
+        .into_iter()
+        .map(|issue| (issue.key.clone(), issue))
+        .collect();
+    let mut result = Vec::new();
+    for link in all::<IssueLink>(conn, "issue_links")? {
+        let (direction, other_key) = if link.source_key == key {
+            ("outgoing", &link.target_key)
+        } else if link.target_key == key {
+            ("incoming", &link.source_key)
+        } else {
+            continue;
+        };
+        let other = issues
+            .get(other_key)
+            .ok_or_else(|| err("invalid", "Unresolved issue link"))?;
+        result.push(json!({
+            "id": link.id,
+            "source_key": link.source_key,
+            "target_key": link.target_key,
+            "kind": link.kind,
+            "external_source": link.external_source,
+            "external_id": link.external_id,
+            "created_by": link.created_by,
+            "created_at": link.created_at,
+            "direction": direction,
+            "issue": other,
+        }));
+    }
+    result.sort_by(|a, b| {
+        a["kind"]
+            .as_str()
+            .cmp(&b["kind"].as_str())
+            .then_with(|| a["issue"]["key"].as_str().cmp(&b["issue"]["key"].as_str()))
+    });
+    Ok(result)
+}
+fn same_logical_link(
+    link: &IssueLink,
+    source_key: &str,
+    target_key: &str,
+    kind: &IssueLinkKind,
+) -> bool {
+    if link.kind != *kind {
+        return false;
+    }
+    if *kind == IssueLinkKind::Related {
+        (link.source_key == source_key && link.target_key == target_key)
+            || (link.source_key == target_key && link.target_key == source_key)
+    } else {
+        link.source_key == source_key && link.target_key == target_key
+    }
+}
+fn validate_external_provenance(
+    kind: &IssueLinkKind,
+    external_source: Option<&str>,
+    external_id: Option<&str>,
+) -> Result<()> {
+    if external_source.is_some() != external_id.is_some() {
+        return Err(err(
+            "invalid",
+            "External source and external ID must be provided together",
+        ));
+    }
+    if let (Some(source), Some(external_id)) = (external_source, external_id) {
+        required(source, "external source")?;
+        required(external_id, "external ID")?;
+        limited(source, "external source", 120)?;
+        limited(external_id, "external ID", 512)?;
+    }
+    if *kind == IssueLinkKind::LegacyVerification && external_source.is_none() {
+        return Err(err(
+            "invalid",
+            "Legacy verification links require external provenance",
+        ));
+    }
+    Ok(())
+}
+fn would_create_cycle(
+    links: &[IssueLink],
+    source_key: &str,
+    target_key: &str,
+    kind: &IssueLinkKind,
+) -> bool {
+    if !matches!(kind, IssueLinkKind::Parent | IssueLinkKind::BlockedBy) {
+        return false;
+    }
+    let mut stack = vec![target_key];
+    let mut visited = HashSet::new();
+    while let Some(current) = stack.pop() {
+        if current == source_key {
+            return true;
+        }
+        if !visited.insert(current) {
+            continue;
+        }
+        stack.extend(
+            links
+                .iter()
+                .filter(|link| link.kind == *kind && link.source_key == current)
+                .map(|link| link.target_key.as_str()),
+        );
+    }
+    false
 }
 fn project_name(
     conn: &Connection,
@@ -794,6 +916,101 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             }
             // Planning metadata does not change readiness or invalidate test evidence.
             save(tx, i, actor, "issue_project_changed", at)
+        }
+        Command::CreateIssueLink {
+            key,
+            expected_version,
+            target_key,
+            kind,
+            external_source,
+            external_id,
+        } => {
+            let i = version(tx, key, *expected_version)?;
+            if role == Role::Agent {
+                if matches!(i.status, Status::Verify | Status::Done | Status::Canceled) {
+                    human(role)?;
+                }
+                if i.status == Status::Doing {
+                    held(&i, actor, at)?;
+                }
+            }
+            if key == target_key {
+                return Err(err("invalid", "An issue cannot link to itself"));
+            }
+            let target = issue(tx, target_key)?;
+            if target.parent.is_some() {
+                return Err(err(
+                    "invalid",
+                    "Generated verification children cannot be linked as general work",
+                ));
+            }
+            if target.product_id != i.product_id {
+                return Err(err(
+                    "invalid",
+                    "Linked issues must belong to the same product",
+                ));
+            }
+            validate_external_provenance(kind, external_source.as_deref(), external_id.as_deref())?;
+            let links = all::<IssueLink>(tx, "issue_links")?;
+            if links
+                .iter()
+                .any(|link| same_logical_link(link, key, target_key, kind))
+            {
+                return Err(err("conflict", "This issue link already exists"));
+            }
+            if *kind == IssueLinkKind::Parent
+                && links
+                    .iter()
+                    .any(|link| link.kind == IssueLinkKind::Parent && link.source_key == *key)
+            {
+                return Err(err("conflict", "An issue can have only one parent"));
+            }
+            if would_create_cycle(&links, key, target_key, kind) {
+                return Err(err("invalid", "Issue link would create a dependency cycle"));
+            }
+            let link = IssueLink {
+                id: id(),
+                source_key: key.clone(),
+                target_key: target_key.clone(),
+                kind: kind.clone(),
+                external_source: external_source.clone(),
+                external_id: external_id.clone(),
+                created_by: actor.into(),
+                created_at: at,
+            };
+            put_issue_link(tx, &link)?;
+            save(tx, i, actor, "issue_link_created", at)?;
+            Ok(json!(link))
+        }
+        Command::DeleteIssueLink {
+            key,
+            expected_version,
+            link_id,
+        } => {
+            let i = version(tx, key, *expected_version)?;
+            if role == Role::Agent {
+                if matches!(i.status, Status::Verify | Status::Done | Status::Canceled) {
+                    human(role)?;
+                }
+                if i.status == Status::Doing {
+                    held(&i, actor, at)?;
+                }
+            }
+            let link = all::<IssueLink>(tx, "issue_links")?
+                .into_iter()
+                .find(|link| link.id == *link_id)
+                .ok_or_else(|| err("not_found", "Unknown issue link"))?;
+            if link.source_key != *key && link.target_key != *key {
+                return Err(err("invalid", "Issue link does not belong to this issue"));
+            }
+            if role == Role::Agent && link.source_key != *key {
+                return Err(err(
+                    "forbidden",
+                    "Agents must update an issue link from its source issue",
+                ));
+            }
+            tx.execute("DELETE FROM issue_links WHERE id=?1", [link_id])?;
+            save(tx, i, actor, "issue_link_deleted", at)
         }
         Command::SyncTheoria {
             product,
@@ -1494,7 +1711,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
 }
 
 pub fn validate_archive(a: &Archive) -> Result<()> {
-    if a.format != 1 && a.format != 2 && a.format != 3 && a.format != 4 && a.format != 5 {
+    if !matches!(a.format, 1..=6) {
         return Err(err("unsupported", "Unsupported archive format"));
     }
     Uuid::parse_str(&a.workspace_id).map_err(|_| err("invalid", "Invalid workspace identity"))?;
@@ -1616,6 +1833,9 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             "Project planning data requires archive format 5",
         ));
     }
+    if a.format < 6 && !a.issue_links.is_empty() {
+        return Err(err("invalid", "Issue links require archive format 6"));
+    }
     let mut project_ids = HashSet::new();
     let mut project_names = HashSet::new();
     for p in &a.projects {
@@ -1648,6 +1868,52 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
                 "invalid",
                 "Project-scoped active work is missing its project",
             ));
+        }
+    }
+    let issue_products: HashMap<_, _> = a
+        .issues
+        .iter()
+        .map(|issue| (issue.key.as_str(), issue.product_id.as_str()))
+        .collect();
+    let generated_children: HashSet<_> = a
+        .issues
+        .iter()
+        .filter(|issue| issue.parent.is_some())
+        .map(|issue| issue.key.as_str())
+        .collect();
+    let mut link_ids = HashSet::new();
+    let mut parent_sources = HashSet::new();
+    for (index, link) in a.issue_links.iter().enumerate() {
+        validate_external_provenance(
+            &link.kind,
+            link.external_source.as_deref(),
+            link.external_id.as_deref(),
+        )?;
+        let source_product = issue_products.get(link.source_key.as_str());
+        let target_product = issue_products.get(link.target_key.as_str());
+        if Uuid::parse_str(&link.id).is_err()
+            || !link_ids.insert(link.id.clone())
+            || link.source_key == link.target_key
+            || source_product.is_none()
+            || target_product.is_none()
+            || source_product != target_product
+            || generated_children.contains(link.source_key.as_str())
+            || generated_children.contains(link.target_key.as_str())
+            || link.created_by.trim().is_empty()
+            || link.created_at <= 0
+            || a.issue_links[..index].iter().any(|prior| {
+                same_logical_link(prior, &link.source_key, &link.target_key, &link.kind)
+            })
+            || (link.kind == IssueLinkKind::Parent
+                && !parent_sources.insert(link.source_key.as_str()))
+            || would_create_cycle(
+                &a.issue_links,
+                &link.source_key,
+                &link.target_key,
+                &link.kind,
+            )
+        {
+            return Err(err("invalid", "Invalid, duplicate, or cyclic issue link"));
         }
     }
     let run_ids: HashSet<_> = a.verifications.iter().map(|v| v.id.clone()).collect();

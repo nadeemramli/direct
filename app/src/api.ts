@@ -40,6 +40,25 @@ export interface Issue {
   verification_key: string | null;
   current_run: string | null;
 }
+export type IssueLinkKind =
+  | "parent"
+  | "blocked_by"
+  | "related"
+  | "legacy_verification";
+export interface IssueLink {
+  id: string;
+  source_key: string;
+  target_key: string;
+  kind: IssueLinkKind;
+  external_source: string | null;
+  external_id: string | null;
+  created_by: string;
+  created_at: number;
+}
+export interface IssueLinkContext extends IssueLink {
+  direction: "incoming" | "outgoing";
+  issue: Issue;
+}
 export interface TheoriaReference {
   document_id: string;
   recorded_fingerprint: string | null;
@@ -121,6 +140,7 @@ export interface Context {
   product: Product;
   project: Project | null;
   project_progress?: ProjectProgress | null;
+  issue_links: IssueLinkContext[];
   comments: { id: string; actor: string; body: string; at: number }[];
   more_comments: boolean;
   verifications: Verification[];
@@ -136,6 +156,7 @@ export interface Snapshot {
   theoria_documents: TheoriaDocument[];
   method_findings: MethodFinding[];
   git_traces?: GitTrace[];
+  issue_links: IssueLink[];
   issues: Issue[];
   cursor: number;
 }

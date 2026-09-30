@@ -230,6 +230,29 @@ pub struct Issue {
     pub current_run: Option<String>,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum IssueLinkKind {
+    Parent,
+    BlockedBy,
+    Related,
+    LegacyVerification,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct IssueLink {
+    pub id: String,
+    pub source_key: String,
+    pub target_key: String,
+    pub kind: IssueLinkKind,
+    #[serde(default)]
+    pub external_source: Option<String>,
+    #[serde(default)]
+    pub external_id: Option<String>,
+    pub created_by: String,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Comment {
     pub id: String,
@@ -336,6 +359,21 @@ pub enum Command {
         key: String,
         expected_version: u64,
         project_id: Option<String>,
+    },
+    CreateIssueLink {
+        key: String,
+        expected_version: u64,
+        target_key: String,
+        kind: IssueLinkKind,
+        #[serde(default)]
+        external_source: Option<String>,
+        #[serde(default)]
+        external_id: Option<String>,
+    },
+    DeleteIssueLink {
+        key: String,
+        expected_version: u64,
+        link_id: String,
     },
     SyncTheoria {
         product: String,
@@ -484,6 +522,8 @@ pub struct Archive {
     pub method_findings: Vec<MethodFinding>,
     #[serde(default)]
     pub git_traces: Vec<GitTrace>,
+    #[serde(default)]
+    pub issue_links: Vec<IssueLink>,
     pub issues: Vec<Issue>,
     pub comments: Vec<Comment>,
     pub verifications: Vec<Verification>,

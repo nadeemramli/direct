@@ -12,6 +12,7 @@
     TheoriaDocument,
     FindingClassification,
     EvidenceKind,
+    IssueLinkKind,
   } from "./api";
   let data = $state<Snapshot>({
     workspace_id: "",
@@ -21,6 +22,7 @@
     theoria_documents: [],
     method_findings: [],
     git_traces: [],
+    issue_links: [],
     issues: [],
     cursor: 0,
   });
@@ -108,6 +110,8 @@
   let selectedGuidanceId = $state("");
   let guidanceDocumentId = $state("");
   let guidanceVersion = $state("");
+  let relationTarget = $state("");
+  let relationKind = $state<IssueLinkKind>("related");
   let finding = $state({
     classification: "method_friction" as FindingClassification,
     observation: "",
@@ -317,6 +321,36 @@
       };
     }
   }
+  async function createRelation(event: SubmitEvent) {
+    event.preventDefault();
+    if (!current || !relationTarget) return;
+    if (
+      await act({
+        op: "create_issue_link",
+        key: current.key,
+        expected_version: current.version,
+        target_key: relationTarget,
+        kind: relationKind,
+      })
+    ) {
+      relationTarget = "";
+      relationKind = "related";
+    }
+  }
+  function relationLabel(
+    kind: IssueLinkKind,
+    direction: "incoming" | "outgoing",
+  ) {
+    if (kind === "parent")
+      return direction === "outgoing" ? "Parent" : "Child";
+    if (kind === "blocked_by")
+      return direction === "outgoing" ? "Blocked by" : "Blocks";
+    if (kind === "legacy_verification")
+      return direction === "outgoing"
+        ? "Legacy verification"
+        : "Legacy verification source";
+    return "Related";
+  }
   async function loadContext(key = selected) {
     if (!key) return;
     const result = await api<Context>({ op: "context", key });
@@ -350,6 +384,8 @@
     selected = key;
     context = null;
     tab = "brief";
+    relationTarget = "";
+    relationKind = "related";
     error = "";
     try {
       await loadContext(key);
@@ -1100,14 +1136,16 @@
             </label>
           </div>
           <div class="tabs" role="tablist" aria-label="Issue sections">
-            {#each [["brief", "Brief"], ["theoria", "Theoria"], ["verify", "Verification"], ["activity", "Activity"]] as [id, label]}<button
+            {#each [["brief", "Brief"], ["relations", "Relations"], ["theoria", "Theoria"], ["verify", "Verification"], ["activity", "Activity"]] as [id, label]}<button
                 role="tab"
                 aria-selected={tab === id}
                 class:active={tab === id}
                 onclick={() => (tab = id)}
                 >{label}{#if id === "verify" && current.status === "verify"}<span
                     class="tab-dot"
-                  ></span>{:else if id === "theoria" && (current.theoria_refs.length || context?.method_findings.length)}<span
+                  ></span>{:else if id === "relations" && context?.issue_links.length}<span
+                    class="tab-count">{context.issue_links.length}</span
+                  >{:else if id === "theoria" && (current.theoria_refs.length || context?.method_findings.length)}<span
                     class="tab-count"
                     >{current.theoria_refs.length + (context?.method_findings.length || 0)}</span
                   >{/if}</button
@@ -1223,6 +1261,60 @@
                     Product knowledge<code>{context.product.vault_windows}</code
                     >
                   </div>{/if}{/if}
+            {:else if tab === "relations"}
+              <div class="relations-panel">
+                <div class="section-label">
+                  ISSUE LINKS <span>{context?.issue_links.length || 0}</span>
+                </div>
+                <p class="hint">
+                  Parent and blocker links are directed and cannot form cycles.
+                  Related links are symmetric. Imported legacy verification stays
+                  separate from Direct verification runs.
+                </p>
+                {#each context?.issue_links || [] as link}
+                  <article class="relation-card">
+                    <span class="relation-kind"
+                      >{relationLabel(link.kind, link.direction)}</span
+                    >
+                    <button class="relation-target" onclick={() => choose(link.issue.key)}>
+                      <b>{link.issue.key}</b> {link.issue.title}
+                    </button>
+                    {#if link.external_source}<small
+                        >Imported from {link.external_source} · {link.external_id}</small
+                      >{/if}
+                    <button
+                      class="text-button relation-remove"
+                      disabled={busy}
+                      onclick={() =>
+                        act({
+                          op: "delete_issue_link",
+                          key: current.key,
+                          expected_version: current.version,
+                          link_id: link.id,
+                        })}>Remove</button
+                    >
+                  </article>
+                {:else}<p class="muted">No parent, blocker, or related links.</p>{/each}
+
+                <form class="relation-form" onsubmit={createRelation}>
+                  <label class="field">Relationship<select aria-label="Relationship kind" bind:value={relationKind}>
+                      <option value="parent">Parent</option>
+                      <option value="blocked_by">Blocked by</option>
+                      <option value="related">Related</option>
+                    </select></label
+                  >
+                  <label class="field">Issue<select aria-label="Related issue" bind:value={relationTarget} required>
+                      <option value="" disabled>Select an issue…</option>
+                      {#each parents.filter((issue) => issue.product_id === current.product_id && issue.key !== current.key) as issue}<option value={issue.key}
+                          >{issue.key} · {issue.title}</option
+                        >{/each}
+                    </select></label
+                  >
+                  <button class="secondary" disabled={busy || !relationTarget}
+                    >Add link</button
+                  >
+                </form>
+              </div>
             {:else if tab === "theoria"}
               <div class="theoria-card">
                 <div class="section-label">

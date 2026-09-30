@@ -114,6 +114,52 @@
 .inbox-tag {
   color: #8a7d67;
 }
+.relations-panel {
+  display: grid;
+  gap: 12px;
+}
+.relation-card {
+  display: grid;
+  grid-template-columns: 120px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 14px;
+  border: 1px solid #303639;
+  border-radius: 8px;
+  background: #181b1d;
+}
+.relation-card small {
+  grid-column: 2;
+  color: #7f898f;
+}
+.relation-kind {
+  color: #a9cdbd;
+  font-size: 10px;
+  letter-spacing: 0.7px;
+  text-transform: uppercase;
+}
+.relation-target {
+  min-width: 0;
+  overflow: hidden;
+  text-align: left;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.relation-target b {
+  margin-right: 7px;
+  color: #9fb0b7;
+}
+.relation-remove {
+  grid-column: 3;
+  grid-row: 1 / span 2;
+}
+.relation-form {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 12px;
+  margin-top: 10px;
+}
 * {
   box-sizing: border-box;
 }
