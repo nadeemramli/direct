@@ -976,6 +976,39 @@ p {
   color: #667981;
   margin-top: 6px;
 }
+.git-trace {
+  display: flex;
+  gap: 12px;
+  margin: 12px 0;
+  padding: 12px;
+  border: 1px solid #22362f;
+  border-radius: 8px;
+  background: #101b18;
+}
+.git-trace-icon {
+  color: #82c9a7;
+  font-size: 14px;
+  line-height: 1.2;
+}
+.git-trace b {
+  color: #dce9e3;
+  font-size: 11px;
+  font-weight: 500;
+}
+.git-trace p {
+  margin: 7px 0;
+  color: #8fa49a;
+  font-size: 10px;
+  line-height: 1.55;
+}
+.git-trace code {
+  color: #a9d5c0;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+}
+.git-trace small {
+  color: #667981;
+  font-size: 9px;
+}
 .reopen {
   margin-top: 30px;
   border-top: 1px solid #343d3f;

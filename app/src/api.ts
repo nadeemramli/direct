@@ -78,6 +78,18 @@ export interface MethodFinding {
   created_by: string;
   created_at: number;
 }
+export interface GitTrace {
+  id: string;
+  issue_key: string;
+  kind: "commit" | "push";
+  repository: string;
+  commit_sha: string;
+  branch: string;
+  remote: string | null;
+  remote_ref: string | null;
+  recorded_by: string;
+  recorded_at: number;
+}
 export interface Verification {
   id: string;
   issue_key: string;
@@ -104,6 +116,7 @@ export interface Context {
   more_comments: boolean;
   verifications: Verification[];
   method_findings: MethodFinding[];
+  git_traces?: GitTrace[];
   history: { seq: number; kind: string; actor: string; at: number }[];
 }
 export interface Snapshot {
@@ -112,6 +125,7 @@ export interface Snapshot {
   projects: Project[];
   theoria_documents: TheoriaDocument[];
   method_findings: MethodFinding[];
+  git_traces?: GitTrace[];
   issues: Issue[];
   cursor: number;
 }

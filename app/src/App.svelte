@@ -19,6 +19,7 @@
     projects: [],
     theoria_documents: [],
     method_findings: [],
+    git_traces: [],
     issues: [],
     cursor: 0,
   });
@@ -191,6 +192,9 @@
       hour: "2-digit",
       minute: "2-digit",
     });
+  }
+  function shortSha(sha: string) {
+    return sha.slice(0, 12);
   }
   function guidanceState(
     document: TheoriaDocument | undefined,
@@ -1304,7 +1308,28 @@
                     </div>{/each}
                 </details>{/if}
             {:else}
-              <div class="section-label">DISCUSSION</div>
+              {#if context?.git_traces?.length}<div class="section-label">
+                  GIT EVIDENCE <span>{context.git_traces.length}</span>
+                </div>
+                {#each [...(context.git_traces || [])].reverse() as trace}<article
+                    class="git-trace"
+                  >
+                    <div class="git-trace-icon">{trace.kind === "push" ? "↥" : "◆"}</div>
+                    <div>
+                      <b>{trace.kind === "push" ? "Pushed" : "Committed"} <code
+                          title={trace.commit_sha}>{shortSha(trace.commit_sha)}</code
+                        ></b>
+                      <p>
+                        <code>{trace.repository}</code> · <code>{trace.branch}</code>
+                        {#if trace.kind === "push"}<br />to <code
+                            >{trace.remote} · {trace.remote_ref}</code
+                          >{/if}
+                      </p>
+                      <small>{trace.recorded_by} · {date(trace.recorded_at)}</small>
+                    </div>
+                  </article>{/each}
+                <div class="section-label spaced">DISCUSSION</div>
+              {:else}<div class="section-label">DISCUSSION</div>{/if}
               {#each context?.comments || [] as c}<article class="comment">
                   <b>{c.actor}</b><small>{date(c.at)}</small>
                   <p class="prose">{c.body}</p>

@@ -1,6 +1,6 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use direct_core::{Archive, Command, Request, Role, Store, TheoriaDocumentInput};
+use direct_core::{Archive, Command, GitTraceKind, Request, Role, Store, TheoriaDocumentInput};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -59,6 +59,40 @@ enum Cli {
         catalog: PathBuf,
         #[arg(long, default_value = "DIR")]
         product: String,
+        #[arg(long)]
+        request_id: String,
+    },
+    /// Link an already-created Git commit to an actively claimed Direct issue.
+    RecordCommit {
+        #[arg(long)]
+        issue: String,
+        #[arg(long)]
+        expected_version: u64,
+        #[arg(long)]
+        repository: String,
+        #[arg(long)]
+        commit_sha: String,
+        #[arg(long)]
+        branch: String,
+        #[arg(long)]
+        request_id: String,
+    },
+    /// Record a push only after the underlying Git push has completed successfully.
+    RecordPush {
+        #[arg(long)]
+        issue: String,
+        #[arg(long)]
+        expected_version: u64,
+        #[arg(long)]
+        repository: String,
+        #[arg(long)]
+        commit_sha: String,
+        #[arg(long)]
+        branch: String,
+        #[arg(long)]
+        remote: String,
+        #[arg(long)]
+        remote_ref: String,
         #[arg(long)]
         request_id: String,
     },
@@ -237,6 +271,50 @@ fn run() -> Result<()> {
                         },
                     }
                 }
+                Cli::RecordCommit {
+                    issue,
+                    expected_version,
+                    repository,
+                    commit_sha,
+                    branch,
+                    request_id,
+                } => Request {
+                    actor: args.actor,
+                    request_id,
+                    command: Command::RecordGitTrace {
+                        key: issue,
+                        expected_version,
+                        kind: GitTraceKind::Commit,
+                        repository,
+                        commit_sha,
+                        branch,
+                        remote: None,
+                        remote_ref: None,
+                    },
+                },
+                Cli::RecordPush {
+                    issue,
+                    expected_version,
+                    repository,
+                    commit_sha,
+                    branch,
+                    remote,
+                    remote_ref,
+                    request_id,
+                } => Request {
+                    actor: args.actor,
+                    request_id,
+                    command: Command::RecordGitTrace {
+                        key: issue,
+                        expected_version,
+                        kind: GitTraceKind::Push,
+                        repository,
+                        commit_sha,
+                        branch,
+                        remote: Some(remote),
+                        remote_ref: Some(remote_ref),
+                    },
+                },
                 Cli::Create {
                     product,
                     title,

@@ -46,7 +46,30 @@ Example submission after claiming:
 }
 ```
 
-Agent operations: `snapshot`, `context`, `changes`, `export`, `create_issue`, `update_issue`, `set_issue_project`, `sync_theoria`, `link_theoria`, `create_method_finding`, `claim`, `renew`, `release`, `comment`, `submit`. The typed source of truth is `crates/direct-core/src/model.rs`. Updates and comments also require the current issue version. An active claim is required to submit, link Theoria guidance, or record a method finding on Doing work; expired claims must be explicitly reacquired. The default lease is one hour, with a maximum of 24 hours.
+Record Git evidence while the same actor holds the active claim. Use a full object ID, not an abbreviated SHA. `record-push` records provenance only; invoke it after the underlying `git push` has returned success:
+
+```powershell
+.\target\debug\direct.exe --actor coding-agent record-commit `
+  --issue DIR-1 --expected-version 4 `
+  --repository nadeemramli/direct `
+  --commit-sha 0123456789abcdef0123456789abcdef01234567 `
+  --branch codex/direct-pilot `
+  --request-id dir-1-commit-01234567
+
+git push origin codex/direct-pilot
+
+.\target\debug\direct.exe --actor coding-agent record-push `
+  --issue DIR-1 --expected-version 5 `
+  --repository nadeemramli/direct `
+  --commit-sha 0123456789abcdef0123456789abcdef01234567 `
+  --branch codex/direct-pilot --remote origin `
+  --remote-ref refs/heads/codex/direct-pilot `
+  --request-id dir-1-push-origin-01234567
+```
+
+Commit and push records are distinct. Neither record proves that a pull request was opened, merged, deployed, or accepted. A failed push must not be recorded. Reusing the same request ID with the exact payload is safe; a second logical record under a different request ID is rejected.
+
+Agent operations: `snapshot`, `context`, `changes`, `export`, `create_issue`, `update_issue`, `set_issue_project`, `sync_theoria`, `link_theoria`, `create_method_finding`, `record_git_trace`, `claim`, `renew`, `release`, `comment`, `submit`. The typed source of truth is `crates/direct-core/src/model.rs`. Updates and comments also require the current issue version. An active claim is required to submit, link Theoria guidance, record a method finding, or record Git evidence on Doing work; expired claims must be explicitly reacquired. The default lease is one hour, with a maximum of 24 hours.
 
 Owner-only operations are `create_product`, `create_project`, `update_project`, `ready`, `review`, and `reopen`. The agent CLI rejects them. Review requires an explicit `run_id` matching the current submission; results from an earlier build cannot complete a later build.
 

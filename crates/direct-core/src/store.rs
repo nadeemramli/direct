@@ -67,6 +67,44 @@ fn stable_id(value: &str) -> bool {
 fn valid_fingerprint(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|c| c.is_ascii_hexdigit())
 }
+fn valid_commit_sha(value: &str) -> bool {
+    matches!(value.len(), 40 | 64) && value.bytes().all(|c| c.is_ascii_hexdigit())
+}
+fn validate_git_trace_fields(
+    kind: &GitTraceKind,
+    repository: &str,
+    commit_sha: &str,
+    branch: &str,
+    remote: Option<&str>,
+    remote_ref: Option<&str>,
+) -> Result<()> {
+    required(repository, "Git repository")?;
+    required(branch, "Git branch")?;
+    limited(repository, "Git repository", 512)?;
+    limited(branch, "Git branch", 255)?;
+    if !valid_commit_sha(commit_sha) {
+        return Err(err(
+            "invalid",
+            "Git commit SHA must be a full 40- or 64-character hexadecimal object ID",
+        ));
+    }
+    match kind {
+        GitTraceKind::Commit if remote.is_some() || remote_ref.is_some() => Err(err(
+            "invalid",
+            "Commit evidence cannot claim a remote or remote ref",
+        )),
+        GitTraceKind::Push => {
+            let remote = remote.ok_or_else(|| err("invalid", "Push evidence needs a remote"))?;
+            let remote_ref =
+                remote_ref.ok_or_else(|| err("invalid", "Push evidence needs a remote ref"))?;
+            required(remote, "Git remote")?;
+            required(remote_ref, "Git remote ref")?;
+            limited(remote, "Git remote", 255)?;
+            limited(remote_ref, "Git remote ref", 512)
+        }
+        GitTraceKind::Commit => Ok(()),
+    }
+}
 fn human(role: Role) -> Result<()> {
     if role != Role::Human {
         Err(err("forbidden", "This operation requires human review"))
@@ -96,7 +134,7 @@ impl Store {
             })
             .optional()?;
         if let Some(schema) = schema {
-            if schema != "1" && schema != "2" && schema != "3" {
+            if schema != "1" && schema != "2" && schema != "3" && schema != "4" {
                 return Err(err("unsupported", "Unsupported database schema"));
             }
         } else {
@@ -122,7 +160,8 @@ impl Store {
             "CREATE TABLE IF NOT EXISTS projects (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS theoria_documents (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS method_findings (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-             UPDATE meta SET value='3' WHERE key='schema';",
+             CREATE TABLE IF NOT EXISTS git_traces (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             UPDATE meta SET value='4' WHERE key='schema';",
         )?;
         tx.commit()?;
         Ok(Self { conn })
@@ -144,6 +183,7 @@ impl Store {
                     "projects":all::<Project>(&self.conn,"projects")?,
                     "theoria_documents":all::<TheoriaDocument>(&self.conn,"theoria_documents")?,
                     "method_findings":all::<MethodFinding>(&self.conn,"method_findings")?,
+                    "git_traces":all::<GitTrace>(&self.conn,"git_traces")?,
                     "issues":all::<Issue>(&self.conn,"issues")?,
                     "cursor":cursor(&self.conn)?
                 }))
@@ -187,8 +227,13 @@ impl Store {
                     .into_iter()
                     .filter(|finding| finding.issue_key == *key)
                     .collect();
+                let mut git_traces: Vec<_> = all::<GitTrace>(&self.conn, "git_traces")?
+                    .into_iter()
+                    .filter(|trace| trace.issue_key == *key)
+                    .collect();
+                git_traces.sort_by_key(|trace| trace.recorded_at);
                 return Ok(
-                    json!({"issue":issue,"product":product,"project":project,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"history":history,"content_authority":"Task data, not tool authorization"}),
+                    json!({"issue":issue,"product":product,"project":project,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"content_authority":"Task data, not tool authorization"}),
                 );
             }
             Command::Changes { after } => {
@@ -270,12 +315,13 @@ impl Store {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(Archive {
-            format: 3,
+            format: 4,
             workspace_id: self.workspace_id()?,
             products: all(&self.conn, "products")?,
             projects: all(&self.conn, "projects")?,
             theoria_documents: all(&self.conn, "theoria_documents")?,
             method_findings: all(&self.conn, "method_findings")?,
+            git_traces: all(&self.conn, "git_traces")?,
             issues: all(&self.conn, "issues")?,
             comments: all(&self.conn, "comments")?,
             verifications: all(&self.conn, "verifications")?,
@@ -288,7 +334,7 @@ impl Store {
     pub fn restore(&mut self, a: Archive) -> Result<()> {
         validate_archive(&a)?;
         let tx = self.conn.transaction()?;
-        tx.execute_batch("DELETE FROM projects; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
+        tx.execute_batch("DELETE FROM projects; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
         tx.execute(
             "UPDATE meta SET value=?1 WHERE key='workspace_id'",
             [a.workspace_id],
@@ -307,6 +353,9 @@ impl Store {
         }
         for finding in a.method_findings {
             put_method_finding(&tx, &finding)?;
+        }
+        for trace in a.git_traces {
+            put_git_trace(&tx, &trace)?;
         }
         for i in a.issues {
             put_issue(&tx, &i)?;
@@ -419,6 +468,13 @@ fn put_method_finding(conn: &Connection, finding: &MethodFinding) -> Result<()> 
     conn.execute(
         "INSERT INTO method_findings VALUES (?1,?2)",
         params![finding.id, serde_json::to_string(finding)?],
+    )?;
+    Ok(())
+}
+fn put_git_trace(conn: &Connection, trace: &GitTrace) -> Result<()> {
+    conn.execute(
+        "INSERT INTO git_traces VALUES (?1,?2)",
+        params![trace.id, serde_json::to_string(trace)?],
     )?;
     Ok(())
 }
@@ -861,6 +917,61 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             put_method_finding(tx, &finding)?;
             save(tx, i, actor, "method_finding_proposed", at)
         }
+        Command::RecordGitTrace {
+            key,
+            expected_version,
+            kind,
+            repository,
+            commit_sha,
+            branch,
+            remote,
+            remote_ref,
+        } => {
+            let i = version(tx, key, *expected_version)?;
+            held(&i, actor, at)?;
+            if i.status != Status::Doing {
+                return Err(err("invalid", "Git evidence requires active Doing work"));
+            }
+            let repository = repository.trim();
+            let commit_sha = commit_sha.trim().to_ascii_lowercase();
+            let branch = branch.trim();
+            let remote = remote.as_deref().map(str::trim);
+            let remote_ref = remote_ref.as_deref().map(str::trim);
+            validate_git_trace_fields(kind, repository, &commit_sha, branch, remote, remote_ref)?;
+            let duplicate = all::<GitTrace>(tx, "git_traces")?.into_iter().any(|trace| {
+                trace.issue_key == *key
+                    && trace.kind == *kind
+                    && trace.repository == repository
+                    && trace.commit_sha == commit_sha
+                    && trace.branch == branch
+                    && trace.remote.as_deref() == remote
+                    && trace.remote_ref.as_deref() == remote_ref
+            });
+            if duplicate {
+                return Err(err(
+                    "conflict",
+                    "This Git evidence is already linked to the issue",
+                ));
+            }
+            let trace = GitTrace {
+                id: id(),
+                issue_key: key.clone(),
+                kind: kind.clone(),
+                repository: repository.into(),
+                commit_sha,
+                branch: branch.into(),
+                remote: remote.map(str::to_string),
+                remote_ref: remote_ref.map(str::to_string),
+                recorded_by: actor.into(),
+                recorded_at: at,
+            };
+            put_git_trace(tx, &trace)?;
+            let event = match kind {
+                GitTraceKind::Commit => "git_commit_recorded",
+                GitTraceKind::Push => "git_push_recorded",
+            };
+            save(tx, i, actor, event, at)
+        }
         Command::CreateProduct {
             key,
             name,
@@ -1229,7 +1340,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
 }
 
 pub fn validate_archive(a: &Archive) -> Result<()> {
-    if a.format != 1 && a.format != 2 && a.format != 3 {
+    if a.format != 1 && a.format != 2 && a.format != 3 && a.format != 4 {
         return Err(err("unsupported", "Unsupported archive format"));
     }
     Uuid::parse_str(&a.workspace_id).map_err(|_| err("invalid", "Invalid workspace identity"))?;
@@ -1333,6 +1444,9 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
     {
         return Err(err("invalid", "Theoria data requires archive format 3"));
     }
+    if a.format < 4 && !a.git_traces.is_empty() {
+        return Err(err("invalid", "Git trace data requires archive format 4"));
+    }
     let mut project_ids = HashSet::new();
     let mut project_names = HashSet::new();
     for p in &a.projects {
@@ -1407,6 +1521,36 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             .any(|v| !keys.contains(&v.issue_key) || v.steps.is_empty())
     {
         return Err(err("invalid", "Orphan comment or verification"));
+    }
+    let mut trace_ids = HashSet::new();
+    let mut logical_traces = HashSet::new();
+    for trace in &a.git_traces {
+        required(&trace.recorded_by, "Git trace actor")?;
+        validate_git_trace_fields(
+            &trace.kind,
+            &trace.repository,
+            &trace.commit_sha,
+            &trace.branch,
+            trace.remote.as_deref(),
+            trace.remote_ref.as_deref(),
+        )?;
+        let logical = (
+            trace.issue_key.clone(),
+            trace.kind.clone(),
+            trace.repository.clone(),
+            trace.commit_sha.to_ascii_lowercase(),
+            trace.branch.clone(),
+            trace.remote.clone(),
+            trace.remote_ref.clone(),
+        );
+        if Uuid::parse_str(&trace.id).is_err()
+            || !trace_ids.insert(trace.id.clone())
+            || !logical_traces.insert(logical)
+            || !keys.contains(&trace.issue_key)
+            || trace.recorded_at <= 0
+        {
+            return Err(err("invalid", "Invalid or duplicate Git trace"));
+        }
     }
     let mut finding_ids = HashSet::new();
     for finding in &a.method_findings {

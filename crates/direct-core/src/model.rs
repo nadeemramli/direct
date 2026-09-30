@@ -139,6 +139,29 @@ pub struct MethodFinding {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum GitTraceKind {
+    Commit,
+    Push,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GitTrace {
+    pub id: String,
+    pub issue_key: String,
+    pub kind: GitTraceKind,
+    pub repository: String,
+    pub commit_sha: String,
+    pub branch: String,
+    #[serde(default)]
+    pub remote: Option<String>,
+    #[serde(default)]
+    pub remote_ref: Option<String>,
+    pub recorded_by: String,
+    pub recorded_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Issue {
     pub id: String,
@@ -284,6 +307,18 @@ pub enum Command {
         proposal: String,
         evidence: Vec<EvidencePointer>,
     },
+    RecordGitTrace {
+        key: String,
+        expected_version: u64,
+        kind: GitTraceKind,
+        repository: String,
+        commit_sha: String,
+        branch: String,
+        #[serde(default)]
+        remote: Option<String>,
+        #[serde(default)]
+        remote_ref: Option<String>,
+    },
     CreateProduct {
         key: String,
         name: String,
@@ -388,6 +423,8 @@ pub struct Archive {
     pub theoria_documents: Vec<TheoriaDocument>,
     #[serde(default)]
     pub method_findings: Vec<MethodFinding>,
+    #[serde(default)]
+    pub git_traces: Vec<GitTrace>,
     pub issues: Vec<Issue>,
     pub comments: Vec<Comment>,
     pub verifications: Vec<Verification>,

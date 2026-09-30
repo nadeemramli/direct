@@ -14,6 +14,12 @@ Every mutable issue has a version. A stale command returns a conflict instead of
 
 The UI polls an event cursor every 750 ms and refreshes affected views. This is automatic local polling, not WebSocket streaming. Editing drafts keep their original version, so concurrent updates are detected at save time.
 
+## Git evidence
+
+Direct stores commit and successful-push evidence as structured records linked to an issue. The agent must hold the active claim and supply the current issue version, repository identity, full commit object ID, and branch. Push evidence additionally requires the remote and remote ref. Logical duplicates are rejected independently of request replay, and records survive archive/restore.
+
+The CLI does not execute Git. `record-commit` follows a successful commit; `record-push` follows a successful push. This boundary prevents a pre-push attempt from being presented as delivery. Pull requests, merges, deployments, and owner acceptance remain separate evidence and are not inferred from a commit or push.
+
 ## Theoria boundary
 
 Theoria is a navigation and traceability layer over an explicitly catalogued Development Operating System source root. The maintained Markdown stays external. Direct stores a bounded read-only cache, source metadata and SHA-256 fingerprint, issue-specific fingerprint/version references, and proposal-only method findings with evidence pointers. Sync never crawls a vault, executes document content, or edits source files.
