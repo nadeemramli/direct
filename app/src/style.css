@@ -731,7 +731,8 @@ p {
 .state-icon.verify {
   color: #bba1d2;
 }
-.state-icon.done {
+.state-icon.done,
+.state-icon.legacy_completed {
   color: #a0cfb2;
 }
 .row-content {
@@ -780,6 +781,10 @@ p {
 .status-badge.done {
   background: #27382e;
   color: #b2d8be;
+}
+.status-badge.legacy_completed {
+  background: #2f3339;
+  color: #b8c1ca;
 }
 .fix-badge {
   color: #dfa799 !important;

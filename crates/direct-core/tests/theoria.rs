@@ -179,7 +179,7 @@ fn issue_guidance_and_method_proposals_are_traceable_without_becoming_decisions(
     );
 
     let archive = store.export().unwrap();
-    assert_eq!(archive.format, 7);
+    assert_eq!(archive.format, 8);
     validate_archive(&archive).unwrap();
     drop(store);
     let reopened = Store::open(&path).unwrap();
@@ -247,6 +247,7 @@ fn malformed_or_cross_product_theoria_records_are_rejected() {
         parent: None,
         verification_key: None,
         current_run: None,
+        external: None,
     });
     assert_eq!(validate_archive(&broken).unwrap_err().code, "invalid");
 }

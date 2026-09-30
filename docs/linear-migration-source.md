@@ -68,3 +68,7 @@ After the package and CSV reconcile, revoke the temporary API key. Keep the
 package private. Do not commit it or attach it to a public issue or pull
 request. A final cutover still requires a later delta capture after the dry-run
 import has passed.
+
+Use the retained package with the bounded, offline
+[Linear import dry-run](linear-import.md). The importer verifies the package
+checksums again and never writes to the live Direct workspace.

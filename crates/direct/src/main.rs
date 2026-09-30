@@ -13,6 +13,8 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+mod linear_import;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct TheoriaCatalog {
@@ -184,6 +186,15 @@ enum Cli {
         from: PathBuf,
         restore_dir: PathBuf,
     },
+    /// Convert one captured Linear project into an isolated, reconciled Direct workspace.
+    LinearImportDryRun {
+        #[arg(long)]
+        source: PathBuf,
+        #[arg(long)]
+        project_id: String,
+        #[arg(long)]
+        output: PathBuf,
+    },
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -305,8 +316,8 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             };
         }
     }
-    if expected.format < 7 {
-        expected.format = 7;
+    if expected.format < 8 {
+        expected.format = 8;
     }
     fs::create_dir(restore_dir)
         .context("Create the recovery workspace beneath an existing parent")?;
@@ -362,10 +373,10 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             "events": archive.events.len(),
             "request_replays": archive.requests.len()
         },
-        "attachments": {
-            "supported": false,
-            "count": 0,
-            "note": "Archive format 7 has no attachment record type"
+            "attachments": {
+                "supported": false,
+                "count": 0,
+                "note": "Archive format 8 has no attachment record type"
         }
     }))
 }
@@ -560,6 +571,21 @@ fn run() -> Result<()> {
             println!(
                 "{}",
                 serde_json::to_string_pretty(&recovery_check(&from, &restore_dir)?)?
+            );
+            Ok(())
+        }
+        Cli::LinearImportDryRun {
+            source,
+            project_id,
+            output,
+        } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&linear_import::dry_run(
+                    &source,
+                    &project_id,
+                    &output,
+                )?)?
             );
             Ok(())
         }
@@ -958,7 +984,7 @@ mod tests {
 
         let report = recovery_check(&source, &temp.path().join("restored-v5")).unwrap();
         assert_eq!(report["source_format"], 3);
-        assert_eq!(report["restored_format"], 7);
+        assert_eq!(report["restored_format"], 8);
         assert_eq!(report["compatibility_upgrade_applied"], true);
         assert_eq!(report["semantic_archive_match"], true);
     }

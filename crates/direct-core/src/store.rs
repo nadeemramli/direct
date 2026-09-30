@@ -188,7 +188,7 @@ impl Store {
             .as_deref()
             .is_some_and(|schema| matches!(schema, "1" | "2" | "3" | "4"));
         if let Some(schema) = schema.as_deref() {
-            if !matches!(schema, "1" | "2" | "3" | "4" | "5" | "6" | "7") {
+            if !matches!(schema, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8") {
                 return Err(err("unsupported", "Unsupported database schema"));
             }
         } else {
@@ -218,7 +218,7 @@ impl Store {
              CREATE TABLE IF NOT EXISTS issue_links (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS goals (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS milestones (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-             UPDATE meta SET value='7' WHERE key='schema';",
+             UPDATE meta SET value='8' WHERE key='schema';",
         )?;
         if upgrade_legacy_project_planning {
             // Before schema 5, a project link was the only way to express project-scoped work.
@@ -417,7 +417,7 @@ impl Store {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(Archive {
-            format: 7,
+            format: 8,
             workspace_id: self.workspace_id()?,
             products: all(&self.conn, "products")?,
             projects: all(&self.conn, "projects")?,
@@ -575,11 +575,12 @@ fn project_progress(conn: &Connection, project_id: &str) -> Result<ProjectProgre
         active: counts.2,
         pending_verification: counts.3,
         completed: counts.4,
-        canceled: counts.5,
-        completion_percent: counts.6,
+        legacy_completed: counts.5,
+        canceled: counts.6,
+        completion_percent: counts.7,
     })
 }
-fn progress_counts(issues: &[&Issue]) -> (u64, u64, u64, u64, u64, u64, u8) {
+fn progress_counts(issues: &[&Issue]) -> (u64, u64, u64, u64, u64, u64, u64, u8) {
     let total = issues.len() as u64;
     let backlog = issues
         .iter()
@@ -597,11 +598,15 @@ fn progress_counts(issues: &[&Issue]) -> (u64, u64, u64, u64, u64, u64, u8) {
         .iter()
         .filter(|issue| issue.status == Status::Done)
         .count() as u64;
+    let legacy_completed = issues
+        .iter()
+        .filter(|issue| issue.status == Status::LegacyCompleted)
+        .count() as u64;
     let canceled = issues
         .iter()
         .filter(|issue| issue.status == Status::Canceled)
         .count() as u64;
-    let eligible = total.saturating_sub(canceled);
+    let eligible = total.saturating_sub(canceled + legacy_completed);
     let completion_percent = completed
         .checked_mul(100)
         .and_then(|value| value.checked_div(eligible))
@@ -612,6 +617,7 @@ fn progress_counts(issues: &[&Issue]) -> (u64, u64, u64, u64, u64, u64, u8) {
         active,
         pending_verification,
         completed,
+        legacy_completed,
         canceled,
         completion_percent,
     )
@@ -636,8 +642,9 @@ fn goal_progress(conn: &Connection, goal: &Goal) -> Result<GoalProgress> {
         active: counts.2,
         pending_verification: counts.3,
         completed: counts.4,
-        canceled: counts.5,
-        completion_percent: counts.6,
+        legacy_completed: counts.5,
+        canceled: counts.6,
+        completion_percent: counts.7,
     })
 }
 fn milestone_progress(conn: &Connection, milestone: &Milestone) -> Result<MilestoneProgress> {
@@ -656,8 +663,9 @@ fn milestone_progress(conn: &Connection, milestone: &Milestone) -> Result<Milest
         active: counts.2,
         pending_verification: counts.3,
         completed: counts.4,
-        canceled: counts.5,
-        completion_percent: counts.6,
+        legacy_completed: counts.5,
+        canceled: counts.6,
+        completion_percent: counts.7,
     })
 }
 fn put_project(conn: &Connection, p: &Project) -> Result<()> {
@@ -1001,6 +1009,7 @@ fn new_issue(
         parent: None,
         verification_key: None,
         current_run: None,
+        external: None,
     })
 }
 fn save(conn: &Connection, mut i: Issue, actor: &str, kind: &str, at: i64) -> Result<Value> {
@@ -1035,6 +1044,9 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 status: ProjectStatus::Planned,
                 priority: priority.clone(),
                 sort_order: *sort_order,
+                external_source: None,
+                external_id: None,
+                external_url: None,
                 version: 1,
                 created_at: at,
                 updated_at: at,
@@ -1105,6 +1117,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 project_ids: project_ids.clone(),
                 external_source: external_source.clone(),
                 external_id: external_id.clone(),
+                external_url: None,
                 version: 1,
                 created_at: at,
                 updated_at: at,
@@ -1162,6 +1175,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 sort_order: *sort_order,
                 external_source: external_source.clone(),
                 external_id: external_id.clone(),
+                external_url: None,
                 version: 1,
                 created_at: at,
                 updated_at: at,
@@ -1203,7 +1217,10 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
         } => {
             let mut i = version(tx, key, *expected_version)?;
             if role == Role::Agent {
-                if matches!(i.status, Status::Verify | Status::Done | Status::Canceled) {
+                if matches!(
+                    i.status,
+                    Status::Verify | Status::Done | Status::LegacyCompleted | Status::Canceled
+                ) {
                     human(role)?;
                 }
                 if i.status == Status::Doing {
@@ -1216,7 +1233,10 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                     return Err(err("invalid", "Project must belong to the issue's product"));
                 }
             } else if i.planning_scope == PlanningScope::Project
-                && !matches!(i.status, Status::Backlog | Status::Canceled)
+                && !matches!(
+                    i.status,
+                    Status::Backlog | Status::LegacyCompleted | Status::Canceled
+                )
             {
                 return Err(err(
                     "invalid",
@@ -1247,7 +1267,10 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
         } => {
             let mut i = version(tx, key, *expected_version)?;
             if role == Role::Agent {
-                if matches!(i.status, Status::Verify | Status::Done | Status::Canceled) {
+                if matches!(
+                    i.status,
+                    Status::Verify | Status::Done | Status::LegacyCompleted | Status::Canceled
+                ) {
                     human(role)?;
                 }
                 if i.status == Status::Doing {
@@ -1283,7 +1306,10 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
         } => {
             let i = version(tx, key, *expected_version)?;
             if role == Role::Agent {
-                if matches!(i.status, Status::Verify | Status::Done | Status::Canceled) {
+                if matches!(
+                    i.status,
+                    Status::Verify | Status::Done | Status::LegacyCompleted | Status::Canceled
+                ) {
                     human(role)?;
                 }
                 if i.status == Status::Doing {
@@ -1345,7 +1371,10 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
         } => {
             let i = version(tx, key, *expected_version)?;
             if role == Role::Agent {
-                if matches!(i.status, Status::Verify | Status::Done | Status::Canceled) {
+                if matches!(
+                    i.status,
+                    Status::Verify | Status::Done | Status::LegacyCompleted | Status::Canceled
+                ) {
                     human(role)?;
                 }
                 if i.status == Status::Doing {
@@ -1746,7 +1775,10 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             if !valid_priority(priority) {
                 return Err(err("invalid", "Unknown priority"));
             }
-            if matches!(i.status, Status::Verify | Status::Done | Status::Canceled) {
+            if matches!(
+                i.status,
+                Status::Verify | Status::Done | Status::LegacyCompleted | Status::Canceled
+            ) {
                 return Err(err(
                     "invalid",
                     "Reopen before changing submitted or completed work",
@@ -1768,7 +1800,10 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             }
             if i.planning_scope == PlanningScope::Project
                 && i.project_id.is_none()
-                && !matches!(i.status, Status::Backlog | Status::Canceled)
+                && !matches!(
+                    i.status,
+                    Status::Backlog | Status::LegacyCompleted | Status::Canceled
+                )
             {
                 return Err(err("invalid", "Active project work must have a project"));
             }
@@ -1852,6 +1887,9 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 actor: actor.into(),
                 body: body.clone(),
                 at,
+                external_source: None,
+                external_id: None,
+                external_url: None,
             };
             tx.execute(
                 "INSERT INTO comments VALUES (?1,?2)",
@@ -2056,6 +2094,9 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 actor: actor.into(),
                 body: format!("Reopened: {reason}"),
                 at,
+                external_source: None,
+                external_id: None,
+                external_url: None,
             };
             tx.execute(
                 "INSERT INTO comments VALUES (?1,?2)",
@@ -2068,7 +2109,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
 }
 
 pub fn validate_archive(a: &Archive) -> Result<()> {
-    if !matches!(a.format, 1..=7) {
+    if !matches!(a.format, 1..=8) {
         return Err(err("unsupported", "Unsupported archive format"));
     }
     Uuid::parse_str(&a.workspace_id).map_err(|_| err("invalid", "Invalid workspace identity"))?;
@@ -2127,6 +2168,7 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
     }
     keys.clear();
     ids.clear();
+    let mut issue_sources = HashSet::new();
     for i in &a.issues {
         if !product_ids.contains(&i.product_id)
             || !keys.insert(i.key.clone())
@@ -2134,6 +2176,29 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             || i.version == 0
         {
             return Err(err("invalid", "Invalid or duplicate issue identity"));
+        }
+        if let Some(external) = &i.external {
+            required(&external.source, "external issue source")?;
+            required(&external.id, "external issue ID")?;
+            required(&external.url, "external issue URL")?;
+            required(&external.state.id, "external issue state ID")?;
+            required(&external.state.name, "external issue state name")?;
+            required(&external.state.kind, "external issue state type")?;
+            required(&external.created_at, "external issue created timestamp")?;
+            required(&external.updated_at, "external issue updated timestamp")?;
+            if !issue_sources.insert((external.source.clone(), external.id.clone())) {
+                return Err(err("invalid", "Duplicate external issue provenance"));
+            }
+        }
+        if i.status == Status::LegacyCompleted
+            && i.external.as_ref().is_none_or(|external| {
+                external.state.kind != "completed" || external.completed_at.is_none()
+            })
+        {
+            return Err(err(
+                "invalid",
+                "Legacy-completed issues require external completion provenance",
+            ));
         }
         let p = a.products.iter().find(|p| p.id == i.product_id).unwrap();
         if !i
@@ -2203,16 +2268,47 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             "Goal and milestone data requires archive format 7",
         ));
     }
+    if a.format < 8
+        && (a.projects.iter().any(|project| {
+            project.external_source.is_some()
+                || project.external_id.is_some()
+                || project.external_url.is_some()
+        }) || a.goals.iter().any(|goal| goal.external_url.is_some())
+            || a.milestones
+                .iter()
+                .any(|milestone| milestone.external_url.is_some())
+            || a.issues
+                .iter()
+                .any(|issue| issue.external.is_some() || issue.status == Status::LegacyCompleted)
+            || a.comments.iter().any(|comment| {
+                comment.external_source.is_some()
+                    || comment.external_id.is_some()
+                    || comment.external_url.is_some()
+            }))
+    {
+        return Err(err(
+            "invalid",
+            "External migration provenance requires archive format 8",
+        ));
+    }
     let mut project_ids = HashSet::new();
     let mut project_names = HashSet::new();
+    let mut project_sources = HashSet::new();
     for p in &a.projects {
         required(&p.id, "project ID")?;
         validate_project_fields(&p.name, &p.priority, p.sort_order)?;
+        validate_optional_provenance(p.external_source.as_deref(), p.external_id.as_deref())?;
         if p.version == 0
             || p.name.len() > 160
             || !a.products.iter().any(|product| product.id == p.product_id)
             || !project_ids.insert(p.id.clone())
             || !project_names.insert((p.product_id.clone(), p.name.trim().to_lowercase()))
+            || p.external_source.as_ref().is_some_and(|source| {
+                !project_sources.insert((source.clone(), p.external_id.clone().unwrap()))
+            })
+            || p.external_url
+                .as_deref()
+                .is_some_and(|url| url.trim().is_empty())
         {
             return Err(err("invalid", "Invalid or duplicate project"));
         }
@@ -2231,6 +2327,10 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             || goal.external_source.as_ref().is_some_and(|source| {
                 !goal_sources.insert((source.clone(), goal.external_id.clone().unwrap()))
             })
+            || goal
+                .external_url
+                .as_deref()
+                .is_some_and(|url| url.trim().is_empty())
             || goal.project_ids.iter().any(|id| {
                 !linked_projects.insert(id)
                     || !a
@@ -2261,6 +2361,10 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             || milestone.external_source.as_ref().is_some_and(|source| {
                 !milestone_sources.insert((source.clone(), milestone.external_id.clone().unwrap()))
             })
+            || milestone
+                .external_url
+                .as_deref()
+                .is_some_and(|url| url.trim().is_empty())
         {
             return Err(err("invalid", "Invalid or duplicate milestone"));
         }
@@ -2284,7 +2388,10 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
         }
         if i.planning_scope == PlanningScope::Project
             && i.project_id.is_none()
-            && !matches!(i.status, Status::Backlog | Status::Canceled)
+            && !matches!(
+                i.status,
+                Status::Backlog | Status::LegacyCompleted | Status::Canceled
+            )
         {
             return Err(err(
                 "invalid",
@@ -2382,10 +2489,29 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             }
         }
     }
-    if a.comments.iter().any(|c| !keys.contains(&c.issue_key))
-        || a.verifications
-            .iter()
-            .any(|v| !keys.contains(&v.issue_key) || v.steps.is_empty())
+    let mut comment_ids = HashSet::new();
+    let mut comment_sources = HashSet::new();
+    for comment in &a.comments {
+        validate_optional_provenance(
+            comment.external_source.as_deref(),
+            comment.external_id.as_deref(),
+        )?;
+        if !comment_ids.insert(comment.id.clone())
+            || !keys.contains(&comment.issue_key)
+            || comment.external_source.as_ref().is_some_and(|source| {
+                !comment_sources.insert((source.clone(), comment.external_id.clone().unwrap()))
+            })
+            || comment
+                .external_url
+                .as_deref()
+                .is_some_and(|url| url.trim().is_empty())
+        {
+            return Err(err("invalid", "Invalid or duplicate comment"));
+        }
+    }
+    if a.verifications
+        .iter()
+        .any(|v| !keys.contains(&v.issue_key) || v.steps.is_empty())
     {
         return Err(err("invalid", "Orphan comment or verification"));
     }

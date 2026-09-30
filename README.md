@@ -30,13 +30,13 @@ The routine agent handoff does not require editing JSON: inspect the assigned is
 
 ## Scope
 
-Included: product spaces with repository/vault paths, projects and issue grouping, issue capture and filtering, acceptance criteria, ownership and priority, expiring claims, comments, change history, build-specific verification, retesting, reopening, automatic updates, JSON export/restore, and Theoria guidance references with source fingerprints and structured method findings.
+Included: product spaces with repository/vault paths, projects, goals, milestones, issue relationships and grouping, issue capture and filtering, acceptance criteria, ownership and priority, expiring claims, comments, change history, build-specific verification, retesting, reopening, automatic updates, JSON export/restore, a bounded Linear dry-run importer, and Theoria guidance references with source fingerprints and structured method findings.
 
-Still to build: milestones/goals, general issue relationships, MCP, Linear migration, a signed installer, and multi-device collaboration. The desktop executable compiles; the browser interface has completed the full Windows/WSL smoke test. Native desktop rendering still needs an interactive acceptance check. This is a single-owner foundation, not yet the complete Linear replacement.
+Still to build: MCP, full-workspace/final-delta Linear cutover, a signed installer, and multi-device collaboration. The desktop executable compiles; the browser interface has completed the full Windows/WSL smoke test. Native desktop rendering still needs an interactive acceptance check. This is a single-owner foundation, not yet the complete Linear replacement.
 
 Direct now tracks its own development in the normal local workspace. See [the real pilot](docs/pilot.md); ten scoped tasks were captured and project grouping is the first delivery. Final acceptance is recorded by the owner in Direct.
 
-Theoria upgrades the database to schema 3 and writes archive format 3. Format-1 and format-2 backups remain readable; older Direct binaries cannot open the upgraded database. Export before upgrading and use a new directory when restoring an older backup. See [Theoria's authority and import contract](docs/theoria.md).
+The current database schema and archive format are version 8. Older supported archives remain readable and are normalized during an isolated restore; older Direct binaries refuse newer workspaces rather than dropping fields. Export before upgrading and use a new directory when restoring an older backup. See [architecture and limits](docs/architecture.md).
 
 ## Backup and restore
 
@@ -47,7 +47,7 @@ Theoria upgrades the database to schema 3 and writes archive format 3. Format-1 
 .\target\debug\direct.exe --data-dir C:\backups\direct-restored restore C:\backups\direct-2026-09-28.json
 ```
 
-The routine script writes a validated archive and SHA-256 checksum, then retains the newest 14 managed snapshots by default. The recovery check restores into a new isolated directory and verifies the complete archive round trip with record counts. The export file must not exist, and restore requires a new directory beneath an existing parent. Export preserves workspace identity, goals, projects, milestones, issues, issue links, comments, test evidence, Git traces, Theoria records, event cursors, and retry records. Archive format 7 does not support attachments. Backups contain your work content; store them privately. Never copy an active SQLite database by itself. See [the backup and recovery runbook](docs/backup-recovery.md).
+The routine script writes a validated archive and SHA-256 checksum, then retains the newest 14 managed snapshots by default. The recovery check restores into a new isolated directory and verifies the complete archive round trip with record counts. The export file must not exist, and restore requires a new directory beneath an existing parent. Export preserves workspace identity, goals, projects, milestones, issues, issue links, comments, test evidence, Git traces, Theoria records, event cursors, and retry records. Archive format 8 does not support attachments. Backups contain your work content; store them privately. Never copy an active SQLite database by itself. See [the backup and recovery runbook](docs/backup-recovery.md).
 
 ## Development checks
 
@@ -75,6 +75,7 @@ The canonical audit and product notes remain in the Direct Obsidian folder:
 - [Scope and build plan](<C:/Users/Nadeem/Desktop/Obsidian/build-blog/build-vault/5. Idea Vault/1. Internal Application/Direct - Linear-free alternative/03 - Direct Scope and Build Plan.md>)
 - [Live Linear audit — 28 September](<C:/Users/Nadeem/Desktop/Obsidian/build-blog/build-vault/5. Idea Vault/1. Internal Application/Direct - Linear-free alternative/04 - Live Linear Audit.md>)
 - [Linear migration source capture](docs/linear-migration-source.md)
+- [Linear import dry-run](docs/linear-import.md)
 
 These are local links for this workspace.
 

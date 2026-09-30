@@ -1,6 +1,12 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
 export type Status =
-  "backlog" | "ready" | "doing" | "verify" | "done" | "canceled";
+  | "backlog"
+  | "ready"
+  | "doing"
+  | "verify"
+  | "done"
+  | "legacy_completed"
+  | "canceled";
 export type Outcome = "pending" | "passed" | "failed" | "canceled";
 export type PlanningScope = "project" | "inbox";
 export type ProjectStatus =
@@ -40,6 +46,20 @@ export interface Issue {
   parent: string | null;
   verification_key: string | null;
   current_run: string | null;
+  external?: ExternalIssueRecord | null;
+}
+export interface ExternalIssueRecord {
+  source: string;
+  id: string;
+  url: string;
+  state: { id: string; name: string; type: string };
+  created_at: string;
+  updated_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  canceled_at: string | null;
+  archived_at: string | null;
+  history: unknown[];
 }
 export type IssueLinkKind =
   | "parent"
@@ -177,6 +197,9 @@ export interface Project {
   status?: ProjectStatus;
   priority?: string;
   sort_order?: number;
+  external_source?: string | null;
+  external_id?: string | null;
+  external_url?: string | null;
   version: number;
   created_at: number;
   updated_at: number;
@@ -188,6 +211,7 @@ export interface ProjectProgress {
   active: number;
   pending_verification: number;
   completed: number;
+  legacy_completed: number;
   canceled: number;
   completion_percent: number;
 }
@@ -207,6 +231,7 @@ export interface Goal {
   project_ids: string[];
   external_source: string | null;
   external_id: string | null;
+  external_url?: string | null;
   version: number;
   created_at: number;
   updated_at: number;
@@ -219,6 +244,7 @@ export interface Milestone {
   sort_order: number;
   external_source: string | null;
   external_id: string | null;
+  external_url?: string | null;
   version: number;
   created_at: number;
   updated_at: number;

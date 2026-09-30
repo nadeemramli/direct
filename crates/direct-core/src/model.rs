@@ -14,6 +14,7 @@ pub enum Status {
     Doing,
     Verify,
     Done,
+    LegacyCompleted,
     Canceled,
 }
 
@@ -61,6 +62,12 @@ pub struct Project {
     pub priority: String,
     #[serde(default)]
     pub sort_order: i64,
+    #[serde(default)]
+    pub external_source: Option<String>,
+    #[serde(default)]
+    pub external_id: Option<String>,
+    #[serde(default)]
+    pub external_url: Option<String>,
     pub version: u64,
     pub created_at: i64,
     pub updated_at: i64,
@@ -74,6 +81,7 @@ pub struct ProjectProgress {
     pub active: u64,
     pub pending_verification: u64,
     pub completed: u64,
+    pub legacy_completed: u64,
     pub canceled: u64,
     pub completion_percent: u8,
 }
@@ -105,6 +113,8 @@ pub struct Goal {
     pub external_source: Option<String>,
     #[serde(default)]
     pub external_id: Option<String>,
+    #[serde(default)]
+    pub external_url: Option<String>,
     pub version: u64,
     pub created_at: i64,
     pub updated_at: i64,
@@ -121,6 +131,8 @@ pub struct Milestone {
     pub external_source: Option<String>,
     #[serde(default)]
     pub external_id: Option<String>,
+    #[serde(default)]
+    pub external_url: Option<String>,
     pub version: u64,
     pub created_at: i64,
     pub updated_at: i64,
@@ -134,6 +146,7 @@ pub struct GoalProgress {
     pub active: u64,
     pub pending_verification: u64,
     pub completed: u64,
+    pub legacy_completed: u64,
     pub canceled: u64,
     pub completion_percent: u8,
 }
@@ -146,6 +159,7 @@ pub struct MilestoneProgress {
     pub active: u64,
     pub pending_verification: u64,
     pub completed: u64,
+    pub legacy_completed: u64,
     pub canceled: u64,
     pub completion_percent: u8,
 }
@@ -302,6 +316,36 @@ pub struct Issue {
     pub parent: Option<String>,
     pub verification_key: Option<String>,
     pub current_run: Option<String>,
+    #[serde(default)]
+    pub external: Option<ExternalIssueRecord>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalIssueState {
+    pub id: String,
+    pub name: String,
+    #[serde(rename = "type")]
+    pub kind: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ExternalIssueRecord {
+    pub source: String,
+    pub id: String,
+    pub url: String,
+    pub state: ExternalIssueState,
+    pub created_at: String,
+    pub updated_at: String,
+    #[serde(default)]
+    pub started_at: Option<String>,
+    #[serde(default)]
+    pub completed_at: Option<String>,
+    #[serde(default)]
+    pub canceled_at: Option<String>,
+    #[serde(default)]
+    pub archived_at: Option<String>,
+    #[serde(default)]
+    pub history: Vec<serde_json::Value>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
@@ -334,6 +378,12 @@ pub struct Comment {
     pub actor: String,
     pub body: String,
     pub at: i64,
+    #[serde(default)]
+    pub external_source: Option<String>,
+    #[serde(default)]
+    pub external_id: Option<String>,
+    #[serde(default)]
+    pub external_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -166,6 +166,7 @@
     doing: "Doing",
     verify: "Verify",
     done: "Done",
+    legacy_completed: "Legacy done",
     canceled: "Canceled",
   };
   const glyphs: Record<Status, string> = {
@@ -174,6 +175,7 @@
     doing: "◐",
     verify: "◈",
     done: "✓",
+    legacy_completed: "◇",
     canceled: "⊘",
   };
   let parents = $derived(data.issues.filter((i) => !i.parent));
@@ -214,7 +216,9 @@
               ? needsMe(i)
               : view === "active"
                 ? ["ready", "doing"].includes(i.status)
-                : i.status === view)) &&
+                : view === "done"
+                  ? ["done", "legacy_completed"].includes(i.status)
+                  : i.status === view)) &&
           `${i.key} ${i.title} ${i.body}`
             .toLowerCase()
             .includes(search.toLowerCase()),
@@ -282,7 +286,10 @@
     const issues = parents.filter((issue) => issue.project_id === id);
     const canceled = issues.filter((issue) => issue.status === "canceled").length;
     const completed = issues.filter((issue) => issue.status === "done").length;
-    const eligible = issues.length - canceled;
+    const legacy_completed = issues.filter(
+      (issue) => issue.status === "legacy_completed",
+    ).length;
+    const eligible = issues.length - canceled - legacy_completed;
     return {
       project_id: id,
       total: issues.length,
@@ -292,6 +299,7 @@
       pending_verification: issues.filter((issue) => issue.status === "verify")
         .length,
       completed,
+      legacy_completed,
       canceled,
       completion_percent: eligible ? Math.floor((completed * 100) / eligible) : 0,
     };
@@ -1167,6 +1175,7 @@
         </div>
         {#if selectedProject}
           {@const progress = projectProgress(selectedProject.id)}
+          {@const legacyCompleted = progress.legacy_completed || 0}
           <div class="project-summary">
             <div>
               <strong>{selectedProject.description || "No project outcome recorded."}</strong>
@@ -1178,7 +1187,7 @@
             <div class="project-progress-copy">
               <b>{progress.completion_percent}%</b>
               <span
-                >{progress.completed}/{progress.total - progress.canceled} verified done · {progress.pending_verification} verify · {progress.canceled} canceled</span
+                >{progress.completed}/{progress.total - progress.canceled - legacyCompleted} verified done · {legacyCompleted} legacy done · {progress.pending_verification} verify · {progress.canceled} canceled</span
               >
             </div>
             <div class="progress-track" aria-label="Project completion">
@@ -1310,7 +1319,7 @@
               <select
                 aria-label="Issue project"
                 value={current.project_id || ""}
-                disabled={busy || !connected}
+                  disabled={busy || !connected || ["verify", "done", "legacy_completed", "canceled"].includes(current.status)}
                 onchange={async (event) => {
                   const control = event.currentTarget;
                   const result = await act({
@@ -1334,7 +1343,7 @@
                 <select
                   aria-label="Issue milestone"
                   value={current.milestone_id || ""}
-                  disabled={busy || !connected}
+                  disabled={busy || !connected || ["verify", "done", "legacy_completed", "canceled"].includes(current.status)}
                   onchange={async (event) => {
                     const control = event.currentTarget;
                     const result = await act({
@@ -1379,8 +1388,18 @@
           </div>
           <div class="detail-body">
             {#if tab === "brief"}
+              {#if current.external}<div class="info-card">
+                  <span class="card-symbol">◇</span>
+                  <div>
+                    <b>Imported from {current.external.source}: {current.external.state.name}</b>
+                    <p>
+                      Historical completion is provenance only; it is not a passed Direct verification.
+                      <a href={current.external.url} target="_blank" rel="noreferrer">Open source record</a>
+                    </p>
+                  </div>
+                </div>{/if}
               <div class="section-label">
-                PROBLEM & OUTCOME {#if !["verify", "done", "canceled"].includes(current.status)}<button
+                PROBLEM & OUTCOME {#if !["verify", "done", "legacy_completed", "canceled"].includes(current.status)}<button
                     class="text-button"
                     onclick={() => edit(current)}>Edit brief</button
                   >{/if}
