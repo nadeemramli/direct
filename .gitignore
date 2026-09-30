@@ -1,0 +1,13 @@
+/target/
+/app/node_modules/
+/app/dist/
+/app/src-tauri/gen/
+*.db
+*.db-shm
+*.db-wal
+*.sqlite*
+endpoint.json
+*.log
+.DS_Store
+linear-source-*/
+linear-migration-*/

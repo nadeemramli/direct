@@ -1,0 +1,54 @@
+{
+  "version": 2,
+  "documents": [
+    {
+      "id": "dos-core-principles",
+      "title": "Core principles and responsibilities",
+      "description": "Authority, responsibilities, operating rules, and the end-to-end development loop.",
+      "category": "principles",
+      "path": "1. Development Operating System.md"
+    },
+    {
+      "id": "dos-direct-workflow",
+      "title": "Direct agent workflow",
+      "description": "The supported Direct task, claim, submission, and owner-review workflow.",
+      "category": "workflow",
+      "path": "8. Direct Agent Workflow.md"
+    },
+    {
+      "id": "dos-version-guide",
+      "title": "Playbook version guide",
+      "description": "Current baseline, available experimental versions, and the rule against reconstructing unrecorded assignments.",
+      "category": "playbook",
+      "path": "Versions/0 - Version Guide.md"
+    },
+    {
+      "id": "dos-prototype-as-planning",
+      "title": "Prototype as planning",
+      "description": "Use on-demand context and bounded implementation probes for uncertain, reversible product discovery while preserving design-first safety boundaries.",
+      "category": "playbook",
+      "path": "Versions/v5 - Prototype as Planning.md"
+    },
+    {
+      "id": "dos-e2e-verification",
+      "title": "Agent E2E verification",
+      "description": "User-outcome verification, persistence, failure paths, and exact-build evidence.",
+      "category": "verification",
+      "path": "9. Agent E2E Verification Protocol.md"
+    },
+    {
+      "id": "dos-context-handoffs",
+      "title": "Context, memory, and handoffs",
+      "description": "Small task working sets, durable knowledge boundaries, and environment handoff guidance.",
+      "category": "context",
+      "path": "10. Context Memory and Environments.md"
+    },
+    {
+      "id": "dos-experiment-governor",
+      "title": "Experiment Governor",
+      "description": "Evidence authority, prospective assignment, owner-gated canaries, and shadow-only Jev limits.",
+      "category": "governance",
+      "path": "15. Experiment Governor.md"
+    }
+  ]
+}
