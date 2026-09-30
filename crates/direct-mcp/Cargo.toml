@@ -1,0 +1,22 @@
+[package]
+name = "direct-mcp"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+description = "Local stdio MCP server over the Direct agent contract"
+
+[dependencies]
+direct.workspace = true
+direct-core.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+anyhow = "1"
+clap = { version = "4", features = ["derive", "env"] }
+rmcp = { version = "3.5.0", default-features = false, features = ["server", "macros", "transport-io"] }
+schemars = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+
+[dev-dependencies]
+rmcp = { version = "3.5.0", default-features = false, features = ["client", "transport-child-process"] }
+tempfile = "3"
+uuid.workspace = true

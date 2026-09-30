@@ -6,6 +6,7 @@ Direct is a single-owner local workspace for coordinating humans and coding agen
 
 - `direct-core`: typed commands, workflow validation, SQLite persistence, archive validation.
 - `direct`: single-writer local HTTP service, agent CLI, and explicit Theoria catalog importer.
+- `direct-mcp`: optional local stdio MCP server that forwards an allowlist of typed agent commands (`snapshot`, `context`, `claim`, `renew`, `submit`) through the `direct` client to the running service. It is agent-role only, opens no listener or database, and cannot perform owner operations. See [local MCP access](mcp.md).
 - `app`: Svelte UI, embedded by the Tauri desktop shell or served locally for browser use.
 
 The Windows service owns SQLite. WSL launches the Windows CLI, which talks to the same service. A process lock prevents two services from sharing the directory. SQLite uses WAL and full synchronous writes. Each mutation commits the data change, audit event, and idempotency result in one transaction.
@@ -42,7 +43,7 @@ This prevents accidental approval through the agent API and unsolicited website 
 
 ## Current limits
 
-No cloud sync, multi-user permissions, agent runner, MCP server, Linear importer, milestones/goals, general issue relationships, attachments, signed installer, automatic startup at login, or automatic scheduled backup yet. Product spaces have no artificial team cap. Full snapshots are not paginated; large workspaces need a later performance pass. Context includes the latest 100 comments and 50 events, with a truncation flag for comments; full archives preserve all records.
+No cloud sync, multi-user permissions, agent runner, remote or HTTP MCP transport, Linear importer, milestones/goals, general issue relationships, attachments, signed installer, automatic startup at login, or automatic scheduled backup yet. Product spaces have no artificial team cap. Full snapshots are not paginated; large workspaces need a later performance pass. Context includes the latest 100 comments and 50 events, with a truncation flag for comments; full archives preserve all records.
 
 Projects belong to a product and have stable IDs, a name/outcome, fixed status, shared priority, owner-controlled order, and a version for concurrent edits. Project progress is derived from real parent issues: only owner-verified Done counts as completion; Verify and Canceled are reported separately. Issues explicitly choose project work or the Inbox/maintenance route. Project work cannot become Ready without a same-product project. Grouping remains planning metadata and does not change approval evidence; verification children inherit their parent's project and route.
 
