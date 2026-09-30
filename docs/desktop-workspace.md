@@ -30,11 +30,14 @@ to the current directory.
 5. Confirm the desktop shortcut, CLI and WSL show the same tasks. Open a fresh
    `direct open` link for a browser tab; old tabs refer to the retired service.
 
-The desktop shortcut points at `target/debug/direct-desktop.exe` and requires
+The development launcher uses `target/debug/direct-desktop.exe` and requires
 both rebuilt executables next to each other. Build with
 `cargo build -p direct -p direct-desktop --features direct-desktop/custom-protocol`.
-`scripts/start.ps1 -SkipBuild` launches the same desktop. This remains a developer
-build; a signed installer and broader native acceptance are tracked by DIR-4.
+`scripts/start.ps1 -SkipBuild` launches that development build. For daily use,
+the unsigned portable package installs both release executables plus `web/` under
+`%USERPROFILE%\.direct\app` and creates a stable Start Menu shortcut. See
+[Windows desktop package and daily use](windows-desktop.md). A signed installer
+remains future work; owner acceptance is recorded through Direct's verification run.
 
 ## Pilot repair evidence
 

@@ -151,6 +151,39 @@ fn native_agent_handoff_claims_renews_retries_and_submits() {
 }
 
 #[test]
+fn owner_can_stop_cleanly_while_agent_capability_cannot() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("workspace");
+    let mut service = start(&dir);
+    let client = Client::new(&dir).unwrap();
+    let endpoint = endpoint(&dir).unwrap();
+    let url = format!("http://127.0.0.1:{}/api/shutdown", endpoint.port);
+    let response = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap()
+        .post(url)
+        .bearer_auth(endpoint.agent_token)
+        .send()
+        .unwrap();
+    assert_eq!(response.status(), 403);
+    assert!(client.healthy());
+
+    client.stop().unwrap();
+    for _ in 0..100 {
+        if service.0.try_wait().unwrap().is_some() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(50));
+    }
+    assert!(service.0.try_wait().unwrap().is_some());
+    assert!(!dir.join("endpoint.json").exists());
+
+    let _restart = start(&dir);
+    assert!(Client::new(&dir).unwrap().healthy());
+}
+
+#[test]
 fn two_real_clients_claim_once_and_http_enforces_local_capabilities() {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().join("workspace");

@@ -4,11 +4,11 @@
 
 - Rust workflow tests cover human-only review, all-step passing, cancellation, failure feedback, retests, reopening, and rejection of results for an old run even with a current issue version.
 - Version conflicts, exact-request replay, payload/ID conflicts, and expired claims are exercised.
-- A real HTTP integration test races two clients for one claim, checks agent/owner boundaries, rejects missing authentication, foreign Origin and Host, checks one-use launch grants, and verifies persistence across service restart.
+- A real HTTP integration test races two clients for one claim, checks agent/owner boundaries, rejects missing authentication, foreign Origin and Host, checks one-use launch grants, proves only the owner capability can request graceful service shutdown, and verifies persistence across service restart.
 - Archive round trips preserve identity, evidence, event cursors, and replay results; invalid references are rejected without changing restored data.
 - Svelte type/accessibility checks and the production frontend build pass.
-- All five Rust integration tests pass; workspace Clippy and Rust formatting checks pass.
-- Tauri desktop compilation succeeds. Interactive native window rendering has not yet been verified.
+- All Rust integration tests pass; workspace Clippy and Rust formatting checks pass.
+- Tauri desktop compilation succeeds. The portable-package harness verifies that the packaged native process exposes a Windows window, the service persists after window close, and an isolated fixture survives graceful restart. Visual correctness and real-workspace owner acceptance remain manual.
 
 ## Browser + Windows/WSL smoke test
 

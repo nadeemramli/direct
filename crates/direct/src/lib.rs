@@ -116,6 +116,17 @@ impl Client {
         let value: Value = response.json()?;
         Ok(value["url"].as_str().context("Missing launch URL")?.into())
     }
+    pub fn stop(&self) -> Result<()> {
+        self.http
+            .post(format!(
+                "http://127.0.0.1:{}/api/shutdown",
+                self.endpoint.port
+            ))
+            .bearer_auth(&self.endpoint.owner_token)
+            .send()?
+            .error_for_status()?;
+        Ok(())
+    }
     pub fn healthy(&self) -> bool {
         self.call(
             &Request {

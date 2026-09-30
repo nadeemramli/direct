@@ -26,6 +26,7 @@ struct App {
     endpoint: Endpoint,
     grants: Arc<Mutex<HashMap<String, i64>>>,
     sessions: Arc<Mutex<HashMap<String, i64>>>,
+    shutdown: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
 }
 fn fail(code: StatusCode, message: &str) -> Response {
     (code,Json(json!({"code":if code==StatusCode::FORBIDDEN{"forbidden"}else{"unauthorized"},"message":message}))).into_response()
@@ -111,6 +112,15 @@ async fn launch(State(app): State<App>, headers: HeaderMap) -> Response {
     Json(json!({"url":format!("http://127.0.0.1:{}/#grant={grant}",app.endpoint.port)}))
         .into_response()
 }
+async fn shutdown(State(app): State<App>, headers: HeaderMap) -> Response {
+    if !same_host(&headers, &app.endpoint) || bearer(&headers) != app.endpoint.owner_token {
+        return fail(StatusCode::FORBIDDEN, "Owner shutdown capability required");
+    }
+    if let Some(sender) = app.shutdown.lock().unwrap().take() {
+        let _ = sender.send(());
+    }
+    Json(json!({"stopping":true})).into_response()
+}
 #[derive(Deserialize)]
 struct Grant {
     grant: String,
@@ -152,13 +162,15 @@ pub async fn serve(dir: &Path, port: u16, assets: &Path) -> Result<()> {
     };
     // The exclusive process lock is held until all connections finish and serve returns.
     fs::write(dir.join("endpoint.json"), serde_json::to_vec(&endpoint)?)?;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let app = App {
         store: Arc::new(Mutex::new(store)),
         endpoint: endpoint.clone(),
         grants: Arc::new(Mutex::new(HashMap::new())),
         sessions: Arc::new(Mutex::new(HashMap::new())),
+        shutdown: Arc::new(Mutex::new(Some(shutdown_tx))),
     };
-    let router=Router::new().route("/api/command",post(command)).route("/api/launch",post(launch)).route("/api/session",post(session))
+    let router=Router::new().route("/api/command",post(command)).route("/api/launch",post(launch)).route("/api/session",post(session)).route("/api/shutdown",post(shutdown))
       .fallback_service(ServeDir::new(assets)).layer(DefaultBodyLimit::max(1024*1024))
       .layer(SetResponseHeaderLayer::overriding(axum::http::header::CACHE_CONTROL,axum::http::HeaderValue::from_static("no-store")))
       .layer(SetResponseHeaderLayer::overriding(axum::http::header::CONTENT_SECURITY_POLICY,axum::http::HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'")))
@@ -168,11 +180,16 @@ pub async fn serve(dir: &Path, port: u16, assets: &Path) -> Result<()> {
         endpoint.port,
         dir.display()
     );
-    axum::serve(listener, router)
+    let result = axum::serve(listener, router)
         .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = shutdown_rx => {},
+            }
         })
-        .await?;
+        .await;
+    let _ = fs::remove_file(dir.join("endpoint.json"));
     drop(lock);
+    result?;
     Ok(())
 }
