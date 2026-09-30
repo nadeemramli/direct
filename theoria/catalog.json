@@ -1,5 +1,5 @@
 {
-  "version": 1,
+  "version": 2,
   "documents": [
     {
       "id": "dos-core-principles",
@@ -21,6 +21,13 @@
       "description": "Current baseline, available experimental versions, and the rule against reconstructing unrecorded assignments.",
       "category": "playbook",
       "path": "Versions/0 - Version Guide.md"
+    },
+    {
+      "id": "dos-prototype-as-planning",
+      "title": "Prototype as planning",
+      "description": "Use on-demand context and bounded implementation probes for uncertain, reversible product discovery while preserving design-first safety boundaries.",
+      "category": "playbook",
+      "path": "Versions/v5 - Prototype as Planning.md"
     },
     {
       "id": "dos-e2e-verification",
