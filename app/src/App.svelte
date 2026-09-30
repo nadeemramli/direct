@@ -278,6 +278,21 @@
     parents.find((issue) => issue.key.toUpperCase() === normalizedSearch)?.key || "",
   );
   let current = $derived(data.issues.find((i) => i.key === selected));
+  // Server-computed deletion eligibility for exactly the version on screen. The
+  // delete command re-checks it atomically; this only decides what to explain.
+  let deletion = $derived(
+    context?.deletion &&
+      current &&
+      context.issue.key === current.key &&
+      context.issue.version === current.version
+      ? context.deletion
+      : null,
+  );
+  let deletionExplained = $derived(
+    !!deletion &&
+      !deletion.eligible &&
+      !deletion.blockers.some((blocker) => blocker.kind === "status"),
+  );
   let activeRun = $derived(
     context?.verifications.find((v) => v.id === current?.current_run),
   );
@@ -711,6 +726,8 @@
       await refresh();
     } catch (e) {
       error = String(e).replace(/^Error: /, "");
+      // The server refused under its own transaction; show the current reasons.
+      await refresh().catch(() => undefined);
     } finally {
       busy = false;
     }
@@ -1212,6 +1229,15 @@
           after: data.cursor,
         });
         if (changes.cursor !== data.cursor) await refresh();
+        else if (
+          current?.claim &&
+          current.claim.expires_at <= clock &&
+          deletion?.blockers.some((blocker) => blocker.kind === "active_claim")
+        ) {
+          // Lease expiry emits no event. Ask the server again rather than
+          // leaving a cached active-claim blocker on screen indefinitely.
+          await loadContext();
+        }
         connected = true;
       } catch {
         connected = false;
@@ -2051,7 +2077,7 @@
                     onclick={() => (tab = "verify")}
                     >Review the result <span>→</span></button
                   >{/if}
-                {#if ["backlog", "ready"].includes(current.status) && !current.claim}<button
+                {#if deletion?.eligible}<button
                     class="danger-button"
                     disabled={busy}
                     onclick={() => {
@@ -2060,6 +2086,43 @@
                     }}>Delete issue</button
                   >{/if}
               </div>
+              {#if deletion && deletionExplained}<div
+                  class="info-card deletion-blockers"
+                  role="note"
+                  aria-label="Why this issue cannot be deleted"
+                >
+                  <span class="card-symbol">i</span>
+                  <div>
+                    <b>Deletion unavailable</b>
+                    <ul>
+                      {#each deletion.blockers as blocker}<li>
+                          {blocker.message}.
+                          {#if blocker.kind === "issue_links"}<button
+                              class="text-button"
+                              onclick={() => (tab = "relations")}>Open relations</button
+                            >{:else if blocker.kind === "comments" || blocker.kind === "git_traces"}<button
+                              class="text-button"
+                              onclick={() => (tab = "activity")}>Open activity</button
+                            >{:else if blocker.kind === "method_findings"}<button
+                              class="text-button"
+                              onclick={() => (tab = "theoria")}>Open Theoria</button
+                            >{:else if blocker.kind === "verification_history" || blocker.kind === "verification_children"}<button
+                              class="text-button"
+                              onclick={() => (tab = "verify")}>Open verification</button
+                            >{:else if blocker.kind === "release_references" && blocker.removable}{#each blocker.references as releaseId}{@const release = data.releases.find((item) => item.id === releaseId)}{#if release}<button
+                                  class="text-button"
+                                  onclick={() => editRelease(release)}
+                                  >Edit {release.version_label}</button
+                                >{/if}{/each}{/if}
+                        </li>{/each}
+                    </ul>
+                    <p>
+                      {deletion.blockers.every((blocker) => blocker.removable)
+                        ? "Clear these and deletion becomes available."
+                        : "Direct retains this issue because of the history or release scope listed above."}
+                    </p>
+                  </div>
+                </div>{/if}
               {#if context?.releases.length}<div class="section-label">
                   RELEASES <span>{context.releases.length}</span>
                 </div>
@@ -2590,14 +2653,25 @@
             <div>
               <b>{current?.key} · {current?.title}</b>
               <p>
-                This permanently removes an unstarted issue. Direct refuses deletion when the issue has a claim, links, release references, submissions, or recorded evidence. Its key remains reserved in activity history.
+                This permanently removes an unstarted issue with no comments, links, explicit release references, submissions, or recorded evidence. Direct checks again when you confirm. The key stays reserved in activity history and is never reused.
               </p>
             </div>
           </div>
+          {#if deletion && !deletion.eligible}<div class="info-card deletion-blockers" role="alert">
+              <span class="card-symbol">i</span>
+              <div>
+                <b>This issue changed and can no longer be deleted</b>
+                <ul>
+                  {#each deletion.blockers as blocker}<li>{blocker.message}.</li>{/each}
+                </ul>
+              </div>
+            </div>{/if}
           <div class="modal-footer">
             <button type="button" class="secondary" onclick={() => (modal = null)}
               >Keep issue</button
-            ><button class="danger-button" disabled={busy}>Delete {current?.key}</button>
+            ><button class="danger-button" disabled={busy || !deletion?.eligible}
+              >Delete {current?.key}</button
+            >
           </div>
         </form>
       {:else if modal === "project"}<form onsubmit={saveProject}>

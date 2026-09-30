@@ -1,3 +1,9 @@
+mod index;
+mod package;
+mod workspace;
+
+pub use workspace::whole_workspace;
+
 use anyhow::{bail, Context, Result};
 use chrono::DateTime;
 use direct_core::{
@@ -9,10 +15,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs,
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
 };
 use uuid::Uuid;
 
@@ -33,35 +39,17 @@ struct CaptureFile {
     records: Vec<Value>,
 }
 
-#[derive(Debug, Deserialize)]
-struct Manifest {
-    format: u32,
-    captured_at: String,
-    #[serde(default)]
-    errors: Vec<Value>,
-    #[serde(default)]
-    missing_coverage: Vec<String>,
-    integrity: ManifestIntegrity,
-}
-
-#[derive(Debug, Deserialize)]
-struct ManifestIntegrity {
-    data_files: Vec<FileChecksum>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FileChecksum {
-    path: String,
-    sha256: String,
-    bytes: u64,
-}
-
-pub fn dry_run(source: &Path, project_id: &str, output: &Path) -> Result<Value> {
+pub fn dry_run(
+    source: &Path,
+    project_id: &str,
+    output: &Path,
+    owner_data_dir: Option<&Path>,
+) -> Result<Value> {
     let source = source
         .canonicalize()
         .context("Linear source package does not exist")?;
-    ensure_private_output(output)?;
-    let manifest = verify_package(&source)?;
+    ensure_private_output(output, owner_data_dir)?;
+    let manifest = package::verify_package(&source, REQUIRED_DATA)?.manifest;
     let data = source.join("data");
     let projects = records(&data, "projects.json")?;
     let source_project = projects
@@ -311,6 +299,7 @@ pub fn dry_run(source: &Path, project_id: &str, output: &Path) -> Result<Value> 
     let checksum_path = output.join("direct-import.sha256");
     let workspace = output.join("workspace");
     let idempotent_replay = if output.exists() {
+        validate_replay_workspace(output)?;
         if !archive_path.is_file()
             || !report_path.is_file()
             || !workspace.join("direct.db").is_file()
@@ -353,6 +342,8 @@ pub fn dry_run(source: &Path, project_id: &str, output: &Path) -> Result<Value> 
 
     Ok(json!({
         "verified": true,
+        "verified_scope": "Source package integrity and a deterministic isolated restore of one project. Not whole-workspace accounting or cutover readiness.",
+        "cutover_ready": false,
         "idempotent_replay": idempotent_replay,
         "duplicates_added": 0,
         "output": output,
@@ -364,7 +355,7 @@ pub fn dry_run(source: &Path, project_id: &str, output: &Path) -> Result<Value> 
     }))
 }
 
-fn ensure_private_output(output: &Path) -> Result<()> {
+fn ensure_private_output(output: &Path, owner_data_dir: Option<&Path>) -> Result<()> {
     if !output.is_absolute() {
         bail!("Linear dry-run output must be an absolute path");
     }
@@ -377,61 +368,84 @@ fn ensure_private_output(output: &Path) -> Result<()> {
     if normalized.starts_with(&repository) {
         bail!("Refusing to place private Linear import data inside the repository");
     }
+    if let Some(data) = owner_data_dir {
+        let data = resolved_path(data);
+        let target = resolved_path(output);
+        if target.starts_with(&data) || data.starts_with(&target) {
+            bail!(
+                "Refusing to place Linear import output in or over the Direct data directory {}; the owner's workspace is never replaced",
+                data.display()
+            );
+        }
+    }
     Ok(())
 }
 
-fn verify_package(source: &Path) -> Result<Manifest> {
-    let mut missing = Vec::new();
-    for file in ["manifest.json", "manifest.sha256"] {
-        if !source.join(file).is_file() {
-            missing.push(file.to_owned());
+/// SQLite opens may upgrade a database and write sidecars. Reject redirected
+/// replay paths before opening anything, including Windows directory junctions.
+fn validate_replay_workspace(output: &Path) -> Result<()> {
+    let workspace = output.join("workspace");
+    for directory in [output, workspace.as_path()] {
+        let metadata = fs::symlink_metadata(directory).with_context(|| {
+            format!(
+                "Existing import workspace is missing {}",
+                directory.display()
+            )
+        })?;
+        if redirected(&metadata) || !metadata.is_dir() {
+            bail!("Existing import workspace contains a symlink, reparse point or non-directory at {}", directory.display());
         }
     }
-    for file in REQUIRED_DATA {
-        if !source.join("data").join(file).is_file() {
-            missing.push(format!("data/{file}"));
+    for name in [
+        "direct.db",
+        "direct.db-wal",
+        "direct.db-shm",
+        "direct.db-journal",
+    ] {
+        let path = workspace.join(name);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && name != "direct.db" => {
+                continue
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("Read existing import workspace path {}", path.display())
+                })
+            }
+        };
+        if redirected(&metadata) || !metadata.is_file() {
+            bail!(
+                "Existing import workspace contains a symlink, reparse point or non-file at {}",
+                path.display()
+            );
         }
     }
-    if !missing.is_empty() {
-        bail!(
-            "Linear source package is missing required files: {}",
-            missing.join(", ")
-        );
+    Ok(())
+}
+
+fn redirected(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
     }
-    let manifest_bytes = fs::read(source.join("manifest.json"))?;
-    let checksum = fs::read_to_string(source.join("manifest.sha256"))?;
-    let expected = checksum
-        .split_whitespace()
-        .next()
-        .context("manifest.sha256 is empty")?;
-    if !expected.eq_ignore_ascii_case(&sha256(&manifest_bytes)) {
-        bail!("Linear source manifest checksum does not match");
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
     }
-    let manifest: Manifest = serde_json::from_slice(&manifest_bytes)?;
-    if manifest.format != 1 {
-        bail!(
-            "Unsupported Linear source package format {}",
-            manifest.format
-        );
+}
+
+/// Resolve a path that may not exist yet through its nearest existing parent.
+fn resolved_path(path: &Path) -> PathBuf {
+    if let Ok(path) = path.canonicalize() {
+        return path;
     }
-    let checksums: BTreeMap<_, _> = manifest
-        .integrity
-        .data_files
-        .iter()
-        .map(|entry| (entry.path.as_str(), entry))
-        .collect();
-    for file in REQUIRED_DATA {
-        let relative = format!("data/{file}");
-        let entry = checksums
-            .get(relative.as_str())
-            .with_context(|| format!("Manifest has no checksum for {relative}"))?;
-        let bytes = fs::read(source.join(&relative))?;
-        if bytes.len() as u64 != entry.bytes || !entry.sha256.eq_ignore_ascii_case(&sha256(&bytes))
-        {
-            bail!("Linear source integrity check failed for {relative}");
-        }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => resolved_path(parent).join(name),
+        _ => path.to_path_buf(),
     }
-    Ok(manifest)
 }
 
 fn records(data: &Path, name: &str) -> Result<Vec<Value>> {
@@ -730,7 +744,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::{collections::BTreeMap, fs};
     use tempfile::tempdir;
 
     fn write_json(path: &Path, value: &Value) {
@@ -782,6 +796,7 @@ mod tests {
                 json!({"path":format!("data/{name}"),"bytes":bytes.len(),"sha256":sha256(&bytes)}),
             );
         }
+        fs::write(root.join("attachment-manifest.json"), "[]\n").unwrap();
         let manifest = json!({"format":1,"captured_at":created,"errors":[],"missing_coverage":["deleted records unavailable"],"integrity":{"data_files":checksums}});
         write_json(&root.join("manifest.json"), &manifest);
         let bytes = fs::read(root.join("manifest.json")).unwrap();
@@ -799,9 +814,9 @@ mod tests {
         fixture(&source, "completed", true);
         let output = temp.path().join("output");
         let project = "11111111-1111-4111-8111-111111111111";
-        let first = dry_run(&source, project, &output).unwrap();
+        let first = dry_run(&source, project, &output, None).unwrap();
         assert_eq!(first["idempotent_replay"], false);
-        let second = dry_run(&source, project, &output).unwrap();
+        let second = dry_run(&source, project, &output, None).unwrap();
         assert_eq!(second["idempotent_replay"], true);
         assert_eq!(second["duplicates_added"], 0);
         let archive: Archive =
@@ -836,7 +851,13 @@ mod tests {
         let source = temp.path().join("source");
         fixture(&source, "custom_state", false);
         let output = temp.path().join("output");
-        let result = dry_run(&source, "11111111-1111-4111-8111-111111111111", &output).unwrap();
+        let result = dry_run(
+            &source,
+            "11111111-1111-4111-8111-111111111111",
+            &output,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             result["reconciliation"]["unknown_issue_state_types"][0],
             "custom_state"
@@ -849,6 +870,7 @@ mod tests {
             &broken,
             "11111111-1111-4111-8111-111111111111",
             &temp.path().join("broken-output"),
+            None,
         )
         .unwrap_err()
         .to_string();

@@ -1,5 +1,5 @@
 use anyhow::{bail, Context, Result};
-use clap::{Parser, Subcommand};
+use clap::{ArgGroup, Parser, Subcommand};
 use direct_core::{
     Archive, Command, GitTraceKind, PlanningScope, Request, Role, Step, Store, TheoriaDocumentInput,
 };
@@ -202,12 +202,21 @@ enum Cli {
         from: PathBuf,
         restore_dir: PathBuf,
     },
-    /// Convert one captured Linear project into an isolated, reconciled Direct workspace.
+    /// Convert a captured Linear package into an isolated, reconciled Direct workspace:
+    /// one project (--project-id) or every team, project and issue (--whole-workspace).
+    #[command(group(
+        ArgGroup::new("scope")
+            .required(true)
+            .args(["project_id", "whole_workspace"])
+    ))]
     LinearImportDryRun {
         #[arg(long)]
         source: PathBuf,
         #[arg(long)]
-        project_id: String,
+        project_id: Option<String>,
+        /// Reconcile the whole workspace and retain a verified source bundle beside it.
+        #[arg(long)]
+        whole_workspace: bool,
         #[arg(long)]
         output: PathBuf,
     },
@@ -616,16 +625,16 @@ fn run() -> Result<()> {
         Cli::LinearImportDryRun {
             source,
             project_id,
+            whole_workspace,
             output,
         } => {
-            println!(
-                "{}",
-                serde_json::to_string_pretty(&linear_import::dry_run(
-                    &source,
-                    &project_id,
-                    &output,
-                )?)?
-            );
+            let report = match project_id {
+                Some(project_id) if !whole_workspace => {
+                    linear_import::dry_run(&source, &project_id, &output, Some(&dir))?
+                }
+                _ => linear_import::whole_workspace(&source, &output, Some(&dir))?,
+            };
+            println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }
         other => {

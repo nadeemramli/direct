@@ -491,6 +491,51 @@ pub struct Issue {
     pub external: Option<ExternalIssueRecord>,
 }
 
+/// Why an issue cannot be deleted right now. Issue `context` and the atomic
+/// `delete_issue` command derive this from the same calculation.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum DeletionBlockerKind {
+    /// Only unstarted Backlog or Ready issues can be deleted.
+    Status,
+    /// A lease that has not yet expired. Expired claims never block.
+    ActiveClaim,
+    /// Retained discussion history.
+    Comments,
+    /// Submissions, verification runs, or a linked verification issue.
+    VerificationHistory,
+    /// Generated verification issues whose parent is this issue.
+    VerificationChildren,
+    MethodFindings,
+    GitTraces,
+    /// Parent, blocker, related, or legacy links where this issue is either end.
+    IssueLinks,
+    /// Releases that list this issue explicitly. Releases that only link the
+    /// issue's project are visible in context but are not references.
+    ReleaseReferences,
+    ReleaseEvidence,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeletionBlocker {
+    pub kind: DeletionBlockerKind,
+    pub count: u64,
+    /// Identifiers the owner can act on: issue keys, release IDs, run IDs, commit SHAs.
+    pub references: Vec<String>,
+    /// True when the owner can clear this blocker without losing retained history
+    /// (unlink an issue, remove the issue from a release, release a claim).
+    pub removable: bool,
+    pub message: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeletionEligibility {
+    pub key: String,
+    pub version: u64,
+    pub eligible: bool,
+    pub blockers: Vec<DeletionBlocker>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExternalIssueState {
     pub id: String,
