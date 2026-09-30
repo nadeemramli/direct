@@ -9,3 +9,5 @@
 endpoint.json
 *.log
 .DS_Store
+linear-source-*/
+linear-migration-*/
