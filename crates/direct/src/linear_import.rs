@@ -1,3 +1,9 @@
+mod index;
+mod package;
+mod workspace;
+
+pub use workspace::whole_workspace;
+
 use anyhow::{bail, Context, Result};
 use chrono::DateTime;
 use direct_core::{
@@ -9,10 +15,10 @@ use serde::Deserialize;
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
-    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap, HashSet},
     fs,
     io::Write,
-    path::Path,
+    path::{Path, PathBuf},
 };
 use uuid::Uuid;
 
@@ -33,35 +39,17 @@ struct CaptureFile {
     records: Vec<Value>,
 }
 
-#[derive(Debug, Deserialize)]
-struct Manifest {
-    format: u32,
-    captured_at: String,
-    #[serde(default)]
-    errors: Vec<Value>,
-    #[serde(default)]
-    missing_coverage: Vec<String>,
-    integrity: ManifestIntegrity,
-}
-
-#[derive(Debug, Deserialize)]
-struct ManifestIntegrity {
-    data_files: Vec<FileChecksum>,
-}
-
-#[derive(Debug, Deserialize)]
-struct FileChecksum {
-    path: String,
-    sha256: String,
-    bytes: u64,
-}
-
-pub fn dry_run(source: &Path, project_id: &str, output: &Path) -> Result<Value> {
+pub fn dry_run(
+    source: &Path,
+    project_id: &str,
+    output: &Path,
+    owner_data_dir: Option<&Path>,
+) -> Result<Value> {
     let source = source
         .canonicalize()
         .context("Linear source package does not exist")?;
-    ensure_private_output(output)?;
-    let manifest = verify_package(&source)?;
+    ensure_private_output(output, owner_data_dir)?;
+    let manifest = package::verify_package(&source, REQUIRED_DATA)?.manifest;
     let data = source.join("data");
     let projects = records(&data, "projects.json")?;
     let source_project = projects
@@ -353,6 +341,8 @@ pub fn dry_run(source: &Path, project_id: &str, output: &Path) -> Result<Value> 
 
     Ok(json!({
         "verified": true,
+        "verified_scope": "Source package integrity and a deterministic isolated restore of one project. Not whole-workspace accounting or cutover readiness.",
+        "cutover_ready": false,
         "idempotent_replay": idempotent_replay,
         "duplicates_added": 0,
         "output": output,
@@ -364,7 +354,7 @@ pub fn dry_run(source: &Path, project_id: &str, output: &Path) -> Result<Value> 
     }))
 }
 
-fn ensure_private_output(output: &Path) -> Result<()> {
+fn ensure_private_output(output: &Path, owner_data_dir: Option<&Path>) -> Result<()> {
     if !output.is_absolute() {
         bail!("Linear dry-run output must be an absolute path");
     }
@@ -377,61 +367,28 @@ fn ensure_private_output(output: &Path) -> Result<()> {
     if normalized.starts_with(&repository) {
         bail!("Refusing to place private Linear import data inside the repository");
     }
+    if let Some(data) = owner_data_dir {
+        let data = resolved_path(data);
+        let target = resolved_path(output);
+        if target.starts_with(&data) || data.starts_with(&target) {
+            bail!(
+                "Refusing to place Linear import output in or over the Direct data directory {}; the owner's workspace is never replaced",
+                data.display()
+            );
+        }
+    }
     Ok(())
 }
 
-fn verify_package(source: &Path) -> Result<Manifest> {
-    let mut missing = Vec::new();
-    for file in ["manifest.json", "manifest.sha256"] {
-        if !source.join(file).is_file() {
-            missing.push(file.to_owned());
-        }
+/// Resolve a path that may not exist yet through its nearest existing parent.
+fn resolved_path(path: &Path) -> PathBuf {
+    if let Ok(path) = path.canonicalize() {
+        return path;
     }
-    for file in REQUIRED_DATA {
-        if !source.join("data").join(file).is_file() {
-            missing.push(format!("data/{file}"));
-        }
+    match (path.parent(), path.file_name()) {
+        (Some(parent), Some(name)) => resolved_path(parent).join(name),
+        _ => path.to_path_buf(),
     }
-    if !missing.is_empty() {
-        bail!(
-            "Linear source package is missing required files: {}",
-            missing.join(", ")
-        );
-    }
-    let manifest_bytes = fs::read(source.join("manifest.json"))?;
-    let checksum = fs::read_to_string(source.join("manifest.sha256"))?;
-    let expected = checksum
-        .split_whitespace()
-        .next()
-        .context("manifest.sha256 is empty")?;
-    if !expected.eq_ignore_ascii_case(&sha256(&manifest_bytes)) {
-        bail!("Linear source manifest checksum does not match");
-    }
-    let manifest: Manifest = serde_json::from_slice(&manifest_bytes)?;
-    if manifest.format != 1 {
-        bail!(
-            "Unsupported Linear source package format {}",
-            manifest.format
-        );
-    }
-    let checksums: BTreeMap<_, _> = manifest
-        .integrity
-        .data_files
-        .iter()
-        .map(|entry| (entry.path.as_str(), entry))
-        .collect();
-    for file in REQUIRED_DATA {
-        let relative = format!("data/{file}");
-        let entry = checksums
-            .get(relative.as_str())
-            .with_context(|| format!("Manifest has no checksum for {relative}"))?;
-        let bytes = fs::read(source.join(&relative))?;
-        if bytes.len() as u64 != entry.bytes || !entry.sha256.eq_ignore_ascii_case(&sha256(&bytes))
-        {
-            bail!("Linear source integrity check failed for {relative}");
-        }
-    }
-    Ok(manifest)
 }
 
 fn records(data: &Path, name: &str) -> Result<Vec<Value>> {
@@ -730,7 +687,7 @@ fn write_new(path: &Path, bytes: &[u8]) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::fs;
+    use std::{collections::BTreeMap, fs};
     use tempfile::tempdir;
 
     fn write_json(path: &Path, value: &Value) {
@@ -782,6 +739,7 @@ mod tests {
                 json!({"path":format!("data/{name}"),"bytes":bytes.len(),"sha256":sha256(&bytes)}),
             );
         }
+        fs::write(root.join("attachment-manifest.json"), "[]\n").unwrap();
         let manifest = json!({"format":1,"captured_at":created,"errors":[],"missing_coverage":["deleted records unavailable"],"integrity":{"data_files":checksums}});
         write_json(&root.join("manifest.json"), &manifest);
         let bytes = fs::read(root.join("manifest.json")).unwrap();
@@ -799,9 +757,9 @@ mod tests {
         fixture(&source, "completed", true);
         let output = temp.path().join("output");
         let project = "11111111-1111-4111-8111-111111111111";
-        let first = dry_run(&source, project, &output).unwrap();
+        let first = dry_run(&source, project, &output, None).unwrap();
         assert_eq!(first["idempotent_replay"], false);
-        let second = dry_run(&source, project, &output).unwrap();
+        let second = dry_run(&source, project, &output, None).unwrap();
         assert_eq!(second["idempotent_replay"], true);
         assert_eq!(second["duplicates_added"], 0);
         let archive: Archive =
@@ -836,7 +794,13 @@ mod tests {
         let source = temp.path().join("source");
         fixture(&source, "custom_state", false);
         let output = temp.path().join("output");
-        let result = dry_run(&source, "11111111-1111-4111-8111-111111111111", &output).unwrap();
+        let result = dry_run(
+            &source,
+            "11111111-1111-4111-8111-111111111111",
+            &output,
+            None,
+        )
+        .unwrap();
         assert_eq!(
             result["reconciliation"]["unknown_issue_state_types"][0],
             "custom_state"
@@ -849,6 +813,7 @@ mod tests {
             &broken,
             "11111111-1111-4111-8111-111111111111",
             &temp.path().join("broken-output"),
+            None,
         )
         .unwrap_err()
         .to_string();
