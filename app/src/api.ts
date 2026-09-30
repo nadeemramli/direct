@@ -25,6 +25,7 @@ export interface Issue {
   project_id: string | null;
   planning_scope?: PlanningScope;
   theoria_refs: TheoriaReference[];
+  labels?: string[];
   title: string;
   body: string;
   acceptance: string;
@@ -39,6 +40,26 @@ export interface Issue {
   parent: string | null;
   verification_key: string | null;
   current_run: string | null;
+}
+export interface LabelProductRule {
+  product_id: string;
+  default_for_new_issues: boolean;
+}
+export interface LinearLabelOrigin {
+  id: string;
+  name: string;
+}
+export interface Label {
+  id: string;
+  name: string;
+  description: string;
+  color: string;
+  aliases: string[];
+  products: LabelProductRule[];
+  linear_origins: LinearLabelOrigin[];
+  version: number;
+  created_at: number;
+  updated_at: number;
 }
 export interface TheoriaReference {
   document_id: string;
@@ -121,6 +142,8 @@ export interface Context {
   product: Product;
   project: Project | null;
   project_progress?: ProjectProgress | null;
+  labels?: Label[];
+  project_labels?: Label[];
   comments: { id: string; actor: string; body: string; at: number }[];
   more_comments: boolean;
   verifications: Verification[];
@@ -133,6 +156,7 @@ export interface Snapshot {
   products: Product[];
   projects: Project[];
   project_progress?: ProjectProgress[];
+  labels?: Label[];
   theoria_documents: TheoriaDocument[];
   method_findings: MethodFinding[];
   git_traces?: GitTrace[];
@@ -147,6 +171,7 @@ export interface Project {
   status?: ProjectStatus;
   priority?: string;
   sort_order?: number;
+  labels?: string[];
   version: number;
   created_at: number;
   updated_at: number;

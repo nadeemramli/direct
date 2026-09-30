@@ -61,6 +61,8 @@ pub struct Project {
     pub priority: String,
     #[serde(default)]
     pub sort_order: i64,
+    #[serde(default)]
+    pub labels: Vec<String>,
     pub version: u64,
     pub created_at: i64,
     pub updated_at: i64,
@@ -76,6 +78,44 @@ pub struct ProjectProgress {
     pub completed: u64,
     pub canceled: u64,
     pub completion_percent: u8,
+}
+
+/// Optional per-product rule for a workspace-level label. A label with no rules
+/// applies to every product; listed rules restrict it to those products.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LabelProductRule {
+    pub product_id: String,
+    /// Attach automatically to new issues captured in this product.
+    #[serde(default)]
+    pub default_for_new_issues: bool,
+}
+
+/// Original Linear label identity preserved for a later import.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct LinearLabelOrigin {
+    pub id: String,
+    #[serde(default)]
+    pub name: String,
+}
+
+/// One canonical definition shared by issues and projects across products.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Label {
+    pub id: String,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    #[serde(default)]
+    pub color: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub products: Vec<LabelProductRule>,
+    #[serde(default)]
+    pub linear_origins: Vec<LinearLabelOrigin>,
+    pub version: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
@@ -214,6 +254,8 @@ pub struct Issue {
     pub planning_scope: PlanningScope,
     #[serde(default)]
     pub theoria_refs: Vec<TheoriaReference>,
+    #[serde(default)]
+    pub labels: Vec<String>,
     pub title: String,
     pub body: String,
     pub acceptance: String,
@@ -336,6 +378,54 @@ pub enum Command {
         key: String,
         expected_version: u64,
         project_id: Option<String>,
+    },
+    CreateLabel {
+        name: String,
+        #[serde(default)]
+        description: String,
+        #[serde(default)]
+        color: String,
+        #[serde(default)]
+        aliases: Vec<String>,
+        #[serde(default)]
+        products: Vec<LabelProductRule>,
+        #[serde(default)]
+        linear_origins: Vec<LinearLabelOrigin>,
+    },
+    UpdateLabel {
+        id: String,
+        expected_version: u64,
+        name: String,
+        #[serde(default)]
+        description: String,
+        #[serde(default)]
+        color: String,
+        #[serde(default)]
+        aliases: Vec<String>,
+        #[serde(default)]
+        products: Vec<LabelProductRule>,
+        #[serde(default)]
+        linear_origins: Vec<LinearLabelOrigin>,
+    },
+    AttachIssueLabel {
+        key: String,
+        expected_version: u64,
+        label_id: String,
+    },
+    DetachIssueLabel {
+        key: String,
+        expected_version: u64,
+        label_id: String,
+    },
+    AttachProjectLabel {
+        id: String,
+        expected_version: u64,
+        label_id: String,
+    },
+    DetachProjectLabel {
+        id: String,
+        expected_version: u64,
+        label_id: String,
     },
     SyncTheoria {
         product: String,
@@ -478,6 +568,8 @@ pub struct Archive {
     pub products: Vec<Product>,
     #[serde(default)]
     pub projects: Vec<Project>,
+    #[serde(default)]
+    pub labels: Vec<Label>,
     #[serde(default)]
     pub theoria_documents: Vec<TheoriaDocument>,
     #[serde(default)]

@@ -151,6 +151,55 @@ fn native_agent_handoff_claims_renews_retries_and_submits() {
 }
 
 #[test]
+fn labels_cross_the_wire_with_owner_definitions_and_agent_assignments() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("workspace");
+    let _service = start(&dir);
+    let client = Client::new(&dir).unwrap();
+    let definition = req(
+        json!({"op":"create_label","name":"Bug","color":"#d73a49","aliases":["defect"],"linear_origins":[{"id":"lin-bug","name":"Bug"}]}),
+    );
+    assert!(client.call(&definition, Role::Agent).is_err());
+    let label = client.call(&definition, Role::Human).unwrap();
+    assert_eq!(label["version"], 1);
+    assert!(client
+        .call(
+            &req(json!({"op":"create_label","name":"defect"})),
+            Role::Human
+        )
+        .unwrap_err()
+        .to_string()
+        .starts_with("conflict"));
+    client
+        .call(
+            &req(json!({"op":"create_issue","product":"DIR","title":"Labelled work","body":"Filter me"})),
+            Role::Agent,
+        )
+        .unwrap();
+    let attached = client
+        .call(
+            &req(json!({"op":"attach_issue_label","key":"DIR-1","expected_version":1,"label_id":label["id"]})),
+            Role::Agent,
+        )
+        .unwrap();
+    assert_eq!(attached["labels"], json!([label["id"]]));
+    assert!(client
+        .call(
+            &req(json!({"op":"attach_issue_label","key":"DIR-1","expected_version":1,"label_id":label["id"]})),
+            Role::Agent,
+        )
+        .unwrap_err()
+        .to_string()
+        .starts_with("conflict"));
+    let context = native(&dir, &["--actor", "handoff-agent", "context", "DIR-1"]);
+    assert_eq!(context["labels"][0]["name"], "Bug");
+    assert_eq!(context["labels"][0]["linear_origins"][0]["id"], "lin-bug");
+    let snapshot = native(&dir, &["list"]);
+    assert_eq!(snapshot["labels"][0]["aliases"], json!(["defect"]));
+    assert_eq!(snapshot["issues"][0]["labels"], json!([label["id"]]));
+}
+
+#[test]
 fn two_real_clients_claim_once_and_http_enforces_local_capabilities() {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().join("workspace");

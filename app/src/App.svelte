@@ -9,6 +9,7 @@
     Status,
     Outcome,
     Project,
+    Label,
     TheoriaDocument,
     FindingClassification,
     EvidenceKind,
@@ -18,6 +19,7 @@
     products: [],
     projects: [],
     project_progress: [],
+    labels: [],
     theoria_documents: [],
     method_findings: [],
     git_traces: [],
@@ -29,6 +31,7 @@
   let view = $state("all");
   let product = $state("all");
   let projectFilter = $state("all");
+  let labelFilter = $state("all");
   let listMode = $state<"flat" | "project">("flat");
   let sortMode = $state<"updated" | "key">("updated");
   let selectedProject = $derived(
@@ -52,13 +55,59 @@
     )
       projectFilter = "all";
   });
+  let allLabels = $derived(
+    [...(data.labels || [])].sort((a, b) => a.name.localeCompare(b.name)),
+  );
+  function labelApplies(label: Label, productId: string) {
+    return (
+      label.products.length === 0 ||
+      label.products.some((rule) => rule.product_id === productId)
+    );
+  }
+  function labelOf(id: string) {
+    return data.labels?.find((label) => label.id === id);
+  }
+  function labelNames(ids: string[] | undefined) {
+    return (ids || [])
+      .map((id) => labelOf(id)?.name)
+      .filter((name): name is string => !!name);
+  }
+  let availableLabels = $derived(
+    allLabels.filter(
+      (label) => product === "all" || labelApplies(label, product),
+    ),
+  );
+  let selectedLabel = $derived(allLabels.find((l) => l.id === labelFilter));
+  $effect(() => {
+    if (
+      labelFilter !== "all" &&
+      labelFilter !== "none" &&
+      !availableLabels.some((label) => label.id === labelFilter)
+    )
+      labelFilter = "all";
+  });
+  let labelDraft = $state({
+    id: "",
+    name: "",
+    description: "",
+    color: "",
+    aliases: "",
+    products: [] as {
+      product_id: string;
+      name: string;
+      applies: boolean;
+      default_for_new_issues: boolean;
+    }[],
+    linear_origins: "",
+    version: 0,
+  });
   let search = $state("");
   let connected = $state(false);
   let error = $state("");
   let busy = $state(false);
   let tab = $state("brief");
   let modal = $state<
-    "issue" | "product" | "project" | "edit" | "submit" | null
+    "issue" | "product" | "project" | "label" | "edit" | "submit" | null
   >(null);
   let projectDraft = $state({
     id: "",
@@ -169,13 +218,17 @@
             (projectFilter === "none"
               ? !i.project_id
               : i.project_id === projectFilter)) &&
+          (labelFilter === "all" ||
+            (labelFilter === "none"
+              ? !(i.labels || []).length
+              : (i.labels || []).includes(labelFilter))) &&
           (view === "all" ||
             (view === "needs"
               ? needsMe(i)
               : view === "active"
                 ? ["ready", "doing"].includes(i.status)
                 : i.status === view)) &&
-          `${i.key} ${i.title} ${i.body}`
+          `${i.key} ${i.title} ${i.body} ${labelNames(i.labels).join(" ")}`
             .toLowerCase()
             .includes(search.toLowerCase()),
       )
@@ -514,6 +567,100 @@
       busy = false;
     }
   }
+  function editLabel(label?: Label) {
+    labelDraft = {
+      id: label?.id || "",
+      name: label?.name || "",
+      description: label?.description || "",
+      color: label?.color || "",
+      aliases: (label?.aliases || []).join(", "),
+      products: data.products.map((p) => {
+        const rule = label?.products.find((rule) => rule.product_id === p.id);
+        return {
+          product_id: p.id,
+          name: p.name,
+          applies: !!rule,
+          default_for_new_issues: rule?.default_for_new_issues || false,
+        };
+      }),
+      linear_origins: (label?.linear_origins || [])
+        .map((origin) => (origin.name ? `${origin.id} | ${origin.name}` : origin.id))
+        .join("\n"),
+      version: label?.version || 0,
+    };
+    modal = "label";
+  }
+  async function saveLabel(event: SubmitEvent) {
+    event.preventDefault();
+    if (busy) return;
+    busy = true;
+    error = "";
+    const fields = {
+      name: labelDraft.name,
+      description: labelDraft.description,
+      color: labelDraft.color.trim(),
+      aliases: labelDraft.aliases
+        .split(",")
+        .map((alias) => alias.trim())
+        .filter(Boolean),
+      products: labelDraft.products
+        .filter((rule) => rule.applies)
+        .map((rule) => ({
+          product_id: rule.product_id,
+          default_for_new_issues: rule.default_for_new_issues,
+        })),
+      linear_origins: labelDraft.linear_origins
+        .split("\n")
+        .map((line) => line.trim())
+        .filter(Boolean)
+        .map((line) => {
+          const [id, ...rest] = line.split("|");
+          return { id: id.trim(), name: rest.join("|").trim() };
+        }),
+    };
+    try {
+      const saved = await api<Label>(
+        labelDraft.id
+          ? {
+              op: "update_label",
+              id: labelDraft.id,
+              expected_version: labelDraft.version,
+              ...fields,
+            }
+          : { op: "create_label", ...fields },
+        true,
+      );
+      await refresh();
+      labelFilter = saved.id;
+      modal = null;
+    } catch (e) {
+      error = String(e).replace(/^Error: /, "");
+    } finally {
+      busy = false;
+    }
+  }
+  async function toggleIssueLabel(issue: Issue, labelId: string, attach: boolean) {
+    if (!labelId) return;
+    await act({
+      op: attach ? "attach_issue_label" : "detach_issue_label",
+      key: issue.key,
+      expected_version: issue.version,
+      label_id: labelId,
+    });
+  }
+  async function toggleProjectLabel(
+    project: Project,
+    labelId: string,
+    attach: boolean,
+  ) {
+    if (!labelId) return;
+    await act({
+      op: attach ? "attach_project_label" : "detach_project_label",
+      id: project.id,
+      expected_version: project.version,
+      label_id: labelId,
+    });
+  }
   async function submit(event: SubmitEvent) {
     event.preventDefault();
     if (!current) return;
@@ -609,6 +756,50 @@
   });
 </script>
 
+{#snippet labelChips(ids: string[] | undefined, remove?: (id: string) => void)}
+  {#each ids || [] as id}
+    {@const label = labelOf(id)}
+    {#if label}<span
+        class="label-chip"
+        title={label.description || label.name}
+        style={label.color ? `--label-color: ${label.color}` : ""}
+        ><i></i>{label.name}{#if remove}<button
+            type="button"
+            aria-label={`Remove label ${label.name}`}
+            disabled={busy || !connected}
+            onclick={(event) => {
+              event.stopPropagation();
+              remove(id);
+            }}>×</button
+          >{/if}</span
+      >{/if}
+  {/each}
+{/snippet}
+
+{#snippet labelPicker(
+  productId: string,
+  attached: string[] | undefined,
+  attach: (id: string) => void,
+)}
+  {@const choices = allLabels.filter(
+    (label) => labelApplies(label, productId) && !(attached || []).includes(label.id),
+  )}
+  {#if choices.length}<select
+      class="label-picker"
+      aria-label="Add label"
+      value=""
+      disabled={busy || !connected}
+      onchange={(event) => {
+        const control = event.currentTarget;
+        attach(control.value);
+        control.value = "";
+      }}
+    >
+      <option value="" disabled>＋ Add label…</option>
+      {#each choices as label}<option value={label.id}>{label.name}</option>{/each}
+    </select>{/if}
+{/snippet}
+
 {#snippet issueRow(i: Issue)}
   <button
     class="issue-row"
@@ -626,6 +817,7 @@
         {#if i.project_id}<span class="project-tag"
             >{data.projects.find((p) => p.id === i.project_id)?.name}</span
           >{:else}<span class="inbox-tag">Inbox</span>{/if}
+        {@render labelChips(i.labels)}
       </div>
     </div>
     <span class="status-badge {i.status}">{labels[i.status]}</span></button
@@ -962,6 +1154,41 @@
               ></label
             >{/if}
         </div>
+        <div class="project-toolbar label-toolbar">
+          <label class="project-filter"
+            >Label
+            <select aria-label="Filter by label" bind:value={labelFilter}>
+              <option value="all">All labels</option>
+              <option value="none">No label</option>
+              {#each availableLabels as label}<option value={label.id}
+                  >{label.name}</option
+                >{/each}
+            </select>
+          </label>
+          <button
+            class="text-button"
+            disabled={!connected || busy}
+            onclick={() => editLabel()}>＋ New label</button
+          >
+          {#if selectedLabel}<button
+              class="text-button"
+              disabled={!connected || busy}
+              onclick={() => editLabel(selectedLabel)}>Edit label</button
+            >
+            <span class="label-filter-note"
+              >{selectedLabel.products.length
+                ? `Applies to ${selectedLabel.products
+                    .map(
+                      (rule) =>
+                        data.products.find((p) => p.id === rule.product_id)?.name ||
+                        "?",
+                    )
+                    .join(", ")}`
+                : "Applies to every product"}{selectedLabel.aliases.length
+                ? ` · aliases: ${selectedLabel.aliases.join(", ")}`
+                : ""}</span
+            >{/if}
+        </div>
         {#if selectedProject}
           {@const progress = projectProgress(selectedProject.id)}
           <div class="project-summary">
@@ -981,6 +1208,17 @@
             <div class="progress-track" aria-label="Project completion">
               <span style={`width: ${progress.completion_percent}%`}></span>
             </div>
+            <div class="label-row project-labels" aria-label="Project labels">
+              <span class="label-row-title">Labels</span>
+              {@render labelChips(selectedProject.labels, (id) =>
+                toggleProjectLabel(selectedProject, id, false),
+              )}
+              {@render labelPicker(
+                selectedProject.product_id,
+                selectedProject.labels,
+                (id) => toggleProjectLabel(selectedProject, id, true),
+              )}
+            </div>
           </div>
         {/if}
         <div class="list-label"><span>ISSUE</span><span>STATUS</span></div>
@@ -997,7 +1235,9 @@
                     {#if group.project}<span
                         >{group.project.status || "active"} · {group.project.priority ||
                           "medium"}</span
-                      >{:else}<span>Explicitly ungrouped work</span>{/if}
+                      >{@render labelChips(group.project.labels)}{:else}<span
+                        >Explicitly ungrouped work</span
+                      >{/if}
                   </div>
                   {#if progress}<small
                       >{progress.completion_percent}% · {progress.completed} done · {progress.pending_verification} verify</small
@@ -1098,6 +1338,18 @@
                   >{/each}
               </select>
             </label>
+            <div class="label-row issue-labels" aria-label="Issue labels">
+              <span class="label-row-title">Labels</span>
+              {#if !(current.labels || []).length}<span class="muted tiny"
+                  >None</span
+                >{/if}
+              {@render labelChips(current.labels, (id) =>
+                toggleIssueLabel(current, id, false),
+              )}
+              {@render labelPicker(current.product_id, current.labels, (id) =>
+                toggleIssueLabel(current, id, true),
+              )}
+            </div>
           </div>
           <div class="tabs" role="tablist" aria-label="Issue sections">
             {#each [["brief", "Brief"], ["theoria", "Theoria"], ["verify", "Verification"], ["activity", "Activity"]] as [id, label]}<button
@@ -1572,6 +1824,10 @@
         ? projectDraft.id
           ? "Edit project"
           : "New project"
+        : modal === "label"
+          ? labelDraft.id
+            ? "Edit label"
+            : "New label"
         : modal === "product"
           ? "New product"
           : modal === "submit"
@@ -1591,6 +1847,10 @@
               ? projectDraft.id
                 ? "Shape the project"
                 : "Group work into a project"
+              : modal === "label"
+                ? labelDraft.id
+                  ? "Refine a shared label"
+                  : "Define a shared label"
               : modal === "product"
                 ? "A space for your product"
                 : modal === "submit"
@@ -1660,6 +1920,80 @@
           <div class="modal-footer">
             <button class="primary" disabled={busy}
               >{projectDraft.id ? "Save project" : "Create project"}</button
+            >
+          </div>
+        </form>
+      {:else if modal === "label"}<form onsubmit={saveLabel}>
+          <div class="form-grid">
+            <label class="field"
+              >Label name<input
+                required
+                maxlength="80"
+                bind:value={labelDraft.name}
+                placeholder="e.g. Bug"
+              /></label
+            ><label class="field"
+              >Color<input
+                bind:value={labelDraft.color}
+                pattern={"#[0-9a-fA-F]{6}"}
+                maxlength="7"
+                placeholder="#d73a49 (optional)"
+              /></label
+            >
+          </div>
+          <label class="field"
+            >Description<input
+              maxlength="1000"
+              bind:value={labelDraft.description}
+              placeholder="When should this label be used?"
+            /></label
+          >
+          <label class="field"
+            >Aliases<input
+              bind:value={labelDraft.aliases}
+              placeholder="Comma-separated, e.g. defect, bugfix"
+            /><small
+              >Aliases map imported or informal names to this one canonical
+              label. Names and aliases are unique across the workspace.</small
+            ></label
+          >
+          <div class="section-label">PRODUCT APPLICABILITY</div>
+          <p class="hint">
+            Leave every product unchecked to apply this label everywhere.
+            Checked products restrict it; “default” attaches it to new issues in
+            that product. One definition is shared either way.
+          </p>
+          {#each labelDraft.products as rule}<div class="label-rule">
+              <label
+                ><input type="checkbox" bind:checked={rule.applies} />
+                {rule.name}</label
+              ><label class:disabled={!rule.applies}
+                ><input
+                  type="checkbox"
+                  disabled={!rule.applies}
+                  bind:checked={rule.default_for_new_issues}
+                /> Default for new issues</label
+              >
+            </div>{/each}
+          <label class="field"
+            >Linear origins (optional)<textarea
+              rows="2"
+              bind:value={labelDraft.linear_origins}
+              placeholder="One per line: linear-label-id | Original name"
+            ></textarea><small
+              >Preserved for a later import; a Linear ID can map to only one
+              canonical label.</small
+            ></label
+          >
+          <p class="hint">
+            Labels are filtering metadata only. They never change readiness,
+            priority, ownership, or verification.
+          </p>
+          <div class="modal-footer">
+            <span class="hint"
+              >{labelDraft.id ? `Editing version ${labelDraft.version}` : ""}</span
+            ><button class="primary" disabled={busy}
+              >{labelDraft.id ? "Save label" : "Create label"}</button
             >
           </div>
         </form>

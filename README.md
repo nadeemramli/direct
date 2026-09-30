@@ -30,13 +30,13 @@ The routine agent handoff does not require editing JSON: inspect the assigned is
 
 ## Scope
 
-Included: product spaces with repository/vault paths, projects and issue grouping, issue capture and filtering, acceptance criteria, ownership and priority, expiring claims, comments, change history, build-specific verification, retesting, reopening, automatic updates, JSON export/restore, and Theoria guidance references with source fingerprints and structured method findings.
+Included: product spaces with repository/vault paths, projects and issue grouping, a shared label taxonomy with aliases and product applicability, issue capture and filtering, acceptance criteria, ownership and priority, expiring claims, comments, change history, build-specific verification, retesting, reopening, automatic updates, JSON export/restore, and Theoria guidance references with source fingerprints and structured method findings.
 
 Still to build: milestones/goals, general issue relationships, MCP, Linear migration, a signed installer, and multi-device collaboration. The desktop executable compiles; the browser interface has completed the full Windows/WSL smoke test. Native desktop rendering still needs an interactive acceptance check. This is a single-owner foundation, not yet the complete Linear replacement.
 
 Direct now tracks its own development in the normal local workspace. See [the real pilot](docs/pilot.md); ten scoped tasks were captured and project grouping is the first delivery. Final acceptance is recorded by the owner in Direct.
 
-Theoria upgrades the database to schema 3 and writes archive format 3. Format-1 and format-2 backups remain readable; older Direct binaries cannot open the upgraded database. Export before upgrading and use a new directory when restoring an older backup. See [Theoria's authority and import contract](docs/theoria.md).
+The current build upgrades the database to schema 6 and writes archive format 6. Format 1–5 backups remain readable; older Direct binaries cannot open the upgraded database. Export before upgrading and use a new directory when restoring an older backup. See [Theoria's authority and import contract](docs/theoria.md).
 
 ## Backup and restore
 
