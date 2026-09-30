@@ -156,6 +156,28 @@ fn validate_git_trace_fields(
         GitTraceKind::Commit => Ok(()),
     }
 }
+fn validate_release_fields(
+    name: &str,
+    version_label: &str,
+    target_ref: &str,
+    preview_url: Option<&str>,
+    notes: &str,
+) -> Result<()> {
+    required(name, "release name")?;
+    required(version_label, "release version")?;
+    required(target_ref, "release target ref")?;
+    limited(name, "release name", 160)?;
+    limited(version_label, "release version", 80)?;
+    limited(target_ref, "release target ref", 512)?;
+    limited(notes, "release notes", 20_000)?;
+    if preview_url.is_some_and(|url| url.trim().is_empty() || url.len() > 2_000) {
+        return Err(err(
+            "invalid",
+            "Preview URL must be non-empty and at most 2000 bytes",
+        ));
+    }
+    Ok(())
+}
 fn human(role: Role) -> Result<()> {
     if role != Role::Human {
         Err(err("forbidden", "This operation requires human review"))
@@ -188,7 +210,7 @@ impl Store {
             .as_deref()
             .is_some_and(|schema| matches!(schema, "1" | "2" | "3" | "4"));
         if let Some(schema) = schema.as_deref() {
-            if !matches!(schema, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8") {
+            if !matches!(schema, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9") {
                 return Err(err("unsupported", "Unsupported database schema"));
             }
         } else {
@@ -218,7 +240,9 @@ impl Store {
              CREATE TABLE IF NOT EXISTS issue_links (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS goals (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS milestones (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-             UPDATE meta SET value='8' WHERE key='schema';",
+             CREATE TABLE IF NOT EXISTS releases (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS release_evidence (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             UPDATE meta SET value='9' WHERE key='schema';",
         )?;
         if upgrade_legacy_project_planning {
             // Before schema 5, a project link was the only way to express project-scoped work.
@@ -258,6 +282,9 @@ impl Store {
                     "theoria_documents":all::<TheoriaDocument>(&self.conn,"theoria_documents")?,
                     "method_findings":all::<MethodFinding>(&self.conn,"method_findings")?,
                     "git_traces":all::<GitTrace>(&self.conn,"git_traces")?,
+                    "releases":all::<ReleaseRecord>(&self.conn,"releases")?,
+                    "release_progress":all::<ReleaseRecord>(&self.conn,"releases")?.iter().map(|release| release_progress(&self.conn, release)).collect::<Result<Vec<_>>>()?,
+                    "release_evidence":all::<ReleaseEvidence>(&self.conn,"release_evidence")?,
                     "issue_links":all::<IssueLink>(&self.conn,"issue_links")?,
                     "issues":all::<Issue>(&self.conn,"issues")?,
                     "cursor":cursor(&self.conn)?
@@ -334,8 +361,28 @@ impl Store {
                     .map(|goal| goal_progress(&self.conn, goal))
                     .collect::<Result<Vec<_>>>()?;
                 let issue_links = issue_link_context(&self.conn, key)?;
+                let releases: Vec<_> = all::<ReleaseRecord>(&self.conn, "releases")?
+                    .into_iter()
+                    .filter(|release| {
+                        release.issue_keys.contains(key)
+                            || issue
+                                .project_id
+                                .as_ref()
+                                .is_some_and(|project_id| release.project_ids.contains(project_id))
+                    })
+                    .collect();
+                let release_progress = releases
+                    .iter()
+                    .map(|release| release_progress(&self.conn, release))
+                    .collect::<Result<Vec<_>>>()?;
+                let release_ids: HashSet<_> = releases.iter().map(|release| &release.id).collect();
+                let release_evidence: Vec<_> =
+                    all::<ReleaseEvidence>(&self.conn, "release_evidence")?
+                        .into_iter()
+                        .filter(|evidence| release_ids.contains(&evidence.release_id))
+                        .collect();
                 return Ok(
-                    json!({"issue":issue,"product":product,"project":project,"project_progress":project_progress,"milestone":milestone,"milestone_progress":milestone_progress,"goals":goals,"goal_progress":goal_progress,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"content_authority":"Task data, not tool authorization"}),
+                    json!({"issue":issue,"product":product,"project":project,"project_progress":project_progress,"milestone":milestone,"milestone_progress":milestone_progress,"goals":goals,"goal_progress":goal_progress,"releases":releases,"release_progress":release_progress,"release_evidence":release_evidence,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"content_authority":"Task data, not tool authorization"}),
                 );
             }
             Command::Changes { after } => {
@@ -417,7 +464,7 @@ impl Store {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(Archive {
-            format: 8,
+            format: 9,
             workspace_id: self.workspace_id()?,
             products: all(&self.conn, "products")?,
             projects: all(&self.conn, "projects")?,
@@ -426,6 +473,8 @@ impl Store {
             theoria_documents: all(&self.conn, "theoria_documents")?,
             method_findings: all(&self.conn, "method_findings")?,
             git_traces: all(&self.conn, "git_traces")?,
+            releases: all(&self.conn, "releases")?,
+            release_evidence: all(&self.conn, "release_evidence")?,
             issue_links: all(&self.conn, "issue_links")?,
             issues: all(&self.conn, "issues")?,
             comments: all(&self.conn, "comments")?,
@@ -448,7 +497,7 @@ impl Store {
             }
         }
         let tx = self.conn.transaction()?;
-        tx.execute_batch("DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
+        tx.execute_batch("DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM releases; DELETE FROM release_evidence; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
         tx.execute(
             "UPDATE meta SET value=?1 WHERE key='workspace_id'",
             [a.workspace_id],
@@ -476,6 +525,12 @@ impl Store {
         }
         for trace in a.git_traces {
             put_git_trace(&tx, &trace)?;
+        }
+        for release in a.releases {
+            put_release(&tx, &release)?;
+        }
+        for evidence in a.release_evidence {
+            put_release_evidence(&tx, &evidence)?;
         }
         for link in a.issue_links {
             put_issue_link(&tx, &link)?;
@@ -668,6 +723,65 @@ fn milestone_progress(conn: &Connection, milestone: &Milestone) -> Result<Milest
         completion_percent: counts.7,
     })
 }
+fn release_issues<'a>(release: &ReleaseRecord, issues: &'a [Issue]) -> Vec<&'a Issue> {
+    issues
+        .iter()
+        .filter(|issue| {
+            issue.parent.is_none()
+                && (release.issue_keys.contains(&issue.key)
+                    || issue
+                        .project_id
+                        .as_ref()
+                        .is_some_and(|project_id| release.project_ids.contains(project_id)))
+        })
+        .collect()
+}
+fn release_progress(conn: &Connection, release: &ReleaseRecord) -> Result<ReleaseProgress> {
+    let issues = all::<Issue>(conn, "issues")?;
+    let linked = release_issues(release, &issues);
+    let total = linked.len() as u64;
+    let backlog = linked
+        .iter()
+        .filter(|issue| issue.status == Status::Backlog)
+        .count() as u64;
+    let failed_verification = linked.iter().filter(|issue| issue.needs_fix).count() as u64;
+    let active = linked
+        .iter()
+        .filter(|issue| matches!(issue.status, Status::Ready | Status::Doing) && !issue.needs_fix)
+        .count() as u64;
+    let pending_verification = linked
+        .iter()
+        .filter(|issue| issue.status == Status::Verify)
+        .count() as u64;
+    let completed = linked
+        .iter()
+        .filter(|issue| issue.status == Status::Done)
+        .count() as u64;
+    let legacy_completed = linked
+        .iter()
+        .filter(|issue| issue.status == Status::LegacyCompleted)
+        .count() as u64;
+    let canceled = linked
+        .iter()
+        .filter(|issue| issue.status == Status::Canceled)
+        .count() as u64;
+    let eligible = total.saturating_sub(canceled + legacy_completed);
+    Ok(ReleaseProgress {
+        release_id: release.id.clone(),
+        total,
+        backlog,
+        active,
+        pending_verification,
+        failed_verification,
+        completed,
+        legacy_completed,
+        canceled,
+        completion_percent: completed
+            .saturating_mul(100)
+            .checked_div(eligible)
+            .unwrap_or(0) as u8,
+    })
+}
 fn put_project(conn: &Connection, p: &Project) -> Result<()> {
     conn.execute(
         "INSERT INTO projects VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
@@ -737,6 +851,28 @@ fn put_git_trace(conn: &Connection, trace: &GitTrace) -> Result<()> {
     conn.execute(
         "INSERT INTO git_traces VALUES (?1,?2)",
         params![trace.id, serde_json::to_string(trace)?],
+    )?;
+    Ok(())
+}
+fn release(conn: &Connection, id: &str) -> Result<ReleaseRecord> {
+    let data: Option<String> = conn
+        .query_row("SELECT data FROM releases WHERE id=?1", [id], |r| r.get(0))
+        .optional()?;
+    Ok(serde_json::from_str(
+        &data.ok_or_else(|| err("not_found", "Unknown release"))?,
+    )?)
+}
+fn put_release(conn: &Connection, release: &ReleaseRecord) -> Result<()> {
+    conn.execute(
+        "INSERT INTO releases VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+        params![release.id, serde_json::to_string(release)?],
+    )?;
+    Ok(())
+}
+fn put_release_evidence(conn: &Connection, evidence: &ReleaseEvidence) -> Result<()> {
+    conn.execute(
+        "INSERT INTO release_evidence VALUES (?1,?2)",
+        params![evidence.id, serde_json::to_string(evidence)?],
     )?;
     Ok(())
 }
@@ -909,6 +1045,57 @@ fn validate_goal_projects(
             return Err(err(
                 "invalid",
                 "Goal projects must be unique and belong to the goal's product",
+            ));
+        }
+    }
+    Ok(())
+}
+fn release_name(
+    conn: &Connection,
+    product_id: &str,
+    version_label: &str,
+    except: Option<&str>,
+) -> Result<()> {
+    if all::<ReleaseRecord>(conn, "releases")?
+        .iter()
+        .any(|release| {
+            release.product_id == product_id
+                && Some(release.id.as_str()) != except
+                && release
+                    .version_label
+                    .eq_ignore_ascii_case(version_label.trim())
+        })
+    {
+        return Err(err(
+            "conflict",
+            "A release with this version already exists in this product",
+        ));
+    }
+    Ok(())
+}
+fn validate_release_links(
+    conn: &Connection,
+    product_id: &str,
+    project_ids: &[String],
+    issue_keys: &[String],
+) -> Result<()> {
+    let mut unique_projects = HashSet::new();
+    for id in project_ids {
+        if !unique_projects.insert(id) || project(conn, id)?.product_id != product_id {
+            return Err(err(
+                "invalid",
+                "Release projects must be unique and belong to the release product",
+            ));
+        }
+    }
+    let mut unique_issues = HashSet::new();
+    for key in issue_keys {
+        let linked = issue(conn, key)?;
+        if !unique_issues.insert(key) || linked.product_id != product_id || linked.parent.is_some()
+        {
+            return Err(err(
+                "invalid",
+                "Release issues must be unique real issues in the release product",
             ));
         }
     }
@@ -1694,6 +1881,388 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             };
             save(tx, i, actor, event, at)
         }
+        Command::CreateRelease {
+            product,
+            name,
+            version_label,
+            target_ref,
+            preview_url,
+            notes,
+            project_ids,
+            issue_keys,
+            external_source,
+            external_id,
+        } => {
+            human(role)?;
+            validate_release_fields(
+                name,
+                version_label,
+                target_ref,
+                preview_url.as_deref(),
+                notes,
+            )?;
+            validate_optional_provenance(external_source.as_deref(), external_id.as_deref())?;
+            let product = all::<Product>(tx, "products")?
+                .into_iter()
+                .find(|candidate| candidate.key == *product)
+                .ok_or_else(|| err("not_found", "Unknown product"))?;
+            release_name(tx, &product.id, version_label, None)?;
+            validate_release_links(tx, &product.id, project_ids, issue_keys)?;
+            let release = ReleaseRecord {
+                id: id(),
+                product_id: product.id,
+                name: name.trim().into(),
+                version_label: version_label.trim().into(),
+                status: ReleaseStatus::Planned,
+                target_ref: target_ref.trim().into(),
+                preview_url: preview_url
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
+                notes: notes.clone(),
+                project_ids: project_ids.clone(),
+                issue_keys: issue_keys.clone(),
+                external_source: external_source.clone(),
+                external_id: external_id.clone(),
+                external_url: None,
+                version: 1,
+                created_at: at,
+                updated_at: at,
+            };
+            put_release(tx, &release)?;
+            emit(tx, actor, "release_created", &release.id, at)?;
+            Ok(json!(release))
+        }
+        Command::UpdateRelease {
+            id,
+            expected_version,
+            name,
+            version_label,
+            status,
+            target_ref,
+            preview_url,
+            notes,
+            project_ids,
+            issue_keys,
+        } => {
+            human(role)?;
+            let mut release = release(tx, id)?;
+            if release.version != *expected_version {
+                return Err(err(
+                    "conflict",
+                    "Release version changed; refresh and retry",
+                ));
+            }
+            validate_release_fields(
+                name,
+                version_label,
+                target_ref,
+                preview_url.as_deref(),
+                notes,
+            )?;
+            release_name(tx, &release.product_id, version_label, Some(id))?;
+            validate_release_links(tx, &release.product_id, project_ids, issue_keys)?;
+            if matches!(
+                release.status,
+                ReleaseStatus::Preview | ReleaseStatus::Production
+            ) && (release.version_label != version_label.trim()
+                || release.target_ref != target_ref.trim()
+                || release.project_ids != *project_ids
+                || release.issue_keys != *issue_keys)
+            {
+                return Err(err(
+                    "invalid",
+                    "Release version, target, and linked work are frozen after deployment evidence",
+                ));
+            }
+            let status_allowed = matches!(
+                (&release.status, status),
+                (
+                    ReleaseStatus::Planned,
+                    ReleaseStatus::Planned | ReleaseStatus::Active | ReleaseStatus::Canceled,
+                ) | (
+                    ReleaseStatus::Active,
+                    ReleaseStatus::Active | ReleaseStatus::Canceled
+                ) | (
+                    ReleaseStatus::Preview,
+                    ReleaseStatus::Preview | ReleaseStatus::Canceled
+                ) | (
+                    ReleaseStatus::Production,
+                    ReleaseStatus::Production | ReleaseStatus::Retired
+                ) | (ReleaseStatus::Retired, ReleaseStatus::Retired)
+                    | (ReleaseStatus::Canceled, ReleaseStatus::Canceled)
+            );
+            if !status_allowed {
+                return Err(err(
+                    "invalid",
+                    "Preview and production status require deployment evidence; completed lifecycle states cannot be reopened",
+                ));
+            }
+            release.name = name.trim().into();
+            release.version_label = version_label.trim().into();
+            release.status = status.clone();
+            release.target_ref = target_ref.trim().into();
+            release.preview_url = preview_url
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
+            release.notes = notes.clone();
+            release.project_ids = project_ids.clone();
+            release.issue_keys = issue_keys.clone();
+            release.version += 1;
+            release.updated_at = at;
+            put_release(tx, &release)?;
+            emit(tx, actor, "release_updated", id, at)?;
+            Ok(json!(release))
+        }
+        Command::RecordReleaseEvidence {
+            release_id,
+            expected_version,
+            kind,
+            git_trace_id,
+            verification_id,
+            deployment_ref,
+            commit_sha,
+            target_ref,
+            url,
+        } => {
+            human(role)?;
+            let mut release = release(tx, release_id)?;
+            if release.version != *expected_version {
+                return Err(err(
+                    "conflict",
+                    "Release version changed; refresh and retry",
+                ));
+            }
+            if matches!(
+                release.status,
+                ReleaseStatus::Retired | ReleaseStatus::Canceled
+            ) {
+                return Err(err(
+                    "invalid",
+                    "Evidence cannot be added to a closed release",
+                ));
+            }
+            let existing = all::<ReleaseEvidence>(tx, "release_evidence")?;
+            let all_issues = all::<Issue>(tx, "issues")?;
+            let linked_issues = release_issues(&release, &all_issues)
+                .into_iter()
+                .map(|issue| issue.key.clone())
+                .collect::<HashSet<_>>();
+            let mut issue_key = None;
+            let mut normalized_trace = None;
+            let mut normalized_verification = None;
+            let mut normalized_deployment = None;
+            let mut normalized_commit = None;
+            let mut normalized_target = None;
+            let mut normalized_url = None;
+            let mut approver = None;
+            match kind {
+                ReleaseEvidenceKind::Commit | ReleaseEvidenceKind::Push => {
+                    let trace_id = git_trace_id.as_deref().ok_or_else(|| {
+                        err("invalid", "Git release evidence requires a Git trace")
+                    })?;
+                    if verification_id.is_some()
+                        || deployment_ref.is_some()
+                        || commit_sha.is_some()
+                        || target_ref.is_some()
+                        || url.is_some()
+                    {
+                        return Err(err(
+                            "invalid",
+                            "Git release evidence only accepts git_trace_id",
+                        ));
+                    }
+                    let trace = all::<GitTrace>(tx, "git_traces")?
+                        .into_iter()
+                        .find(|trace| trace.id == trace_id)
+                        .ok_or_else(|| err("not_found", "Unknown Git trace"))?;
+                    let expected_kind = if *kind == ReleaseEvidenceKind::Commit {
+                        GitTraceKind::Commit
+                    } else {
+                        GitTraceKind::Push
+                    };
+                    if trace.kind != expected_kind || !linked_issues.contains(&trace.issue_key) {
+                        return Err(err(
+                            "invalid",
+                            "Git evidence must match its kind and a real issue in this release",
+                        ));
+                    }
+                    issue_key = Some(trace.issue_key);
+                    normalized_trace = Some(trace.id);
+                }
+                ReleaseEvidenceKind::Check => {
+                    let verification_id = verification_id.as_deref().ok_or_else(|| {
+                        err("invalid", "Check evidence requires a verification run")
+                    })?;
+                    if git_trace_id.is_some()
+                        || deployment_ref.is_some()
+                        || commit_sha.is_some()
+                        || target_ref.is_some()
+                        || url.is_some()
+                    {
+                        return Err(err(
+                            "invalid",
+                            "Check evidence only accepts verification_id",
+                        ));
+                    }
+                    let verification = run(tx, verification_id)?;
+                    let linked = issue(tx, &verification.issue_key)?;
+                    if !linked_issues.contains(&verification.issue_key)
+                        || linked.status != Status::Done
+                        || verification.outcome != Outcome::Passed
+                        || verification.results.len() != verification.steps.len()
+                        || verification
+                            .results
+                            .iter()
+                            .any(|result| result.outcome != Outcome::Passed)
+                    {
+                        return Err(err(
+                            "invalid",
+                            "Release checks require owner-passed verification for a linked Done issue",
+                        ));
+                    }
+                    issue_key = Some(verification.issue_key);
+                    normalized_verification = Some(verification.id);
+                }
+                ReleaseEvidenceKind::PreviewDeployment
+                | ReleaseEvidenceKind::ProductionDeployment => {
+                    if git_trace_id.is_some() || verification_id.is_some() {
+                        return Err(err(
+                            "invalid",
+                            "Deployment evidence cannot substitute a Git trace or verification run",
+                        ));
+                    }
+                    let deployment = deployment_ref.as_deref().ok_or_else(|| {
+                        err(
+                            "invalid",
+                            "Deployment evidence requires a deployment reference",
+                        )
+                    })?;
+                    let commit = commit_sha
+                        .as_deref()
+                        .map(str::trim)
+                        .map(str::to_ascii_lowercase)
+                        .ok_or_else(|| {
+                            err("invalid", "Deployment evidence requires a commit SHA")
+                        })?;
+                    let deployed_ref = target_ref.as_deref().ok_or_else(|| {
+                        err(
+                            "invalid",
+                            "Deployment evidence requires the deployed target ref",
+                        )
+                    })?;
+                    let deployment_url = url.as_deref().ok_or_else(|| {
+                        err("invalid", "Deployment evidence requires its exact URL")
+                    })?;
+                    required(deployment, "deployment reference")?;
+                    required(deployment_url, "deployment URL")?;
+                    limited(deployment, "deployment reference", 512)?;
+                    limited(deployment_url, "deployment URL", 2_000)?;
+                    if !valid_commit_sha(&commit) || deployed_ref != release.target_ref {
+                        return Err(err(
+                            "invalid",
+                            "Deployment must identify a full commit SHA and the release target ref",
+                        ));
+                    }
+                    let traces = all::<GitTrace>(tx, "git_traces")?;
+                    let has_linked_trace = existing.iter().any(|evidence| {
+                        evidence.release_id == *release_id
+                            && matches!(
+                                evidence.kind,
+                                ReleaseEvidenceKind::Commit | ReleaseEvidenceKind::Push
+                            )
+                            && evidence.git_trace_id.as_ref().is_some_and(|trace_id| {
+                                traces.iter().any(|trace| {
+                                    trace.id == *trace_id && trace.commit_sha == commit
+                                })
+                            })
+                    });
+                    if !has_linked_trace {
+                        return Err(err(
+                            "invalid",
+                            "Deployment commit must first be attached as release Git evidence",
+                        ));
+                    }
+                    if *kind == ReleaseEvidenceKind::ProductionDeployment {
+                        let has_push = existing.iter().any(|evidence| {
+                            evidence.release_id == *release_id
+                                && evidence.kind == ReleaseEvidenceKind::Push
+                                && evidence.git_trace_id.as_ref().is_some_and(|trace_id| {
+                                    traces.iter().any(|trace| {
+                                        trace.id == *trace_id && trace.commit_sha == commit
+                                    })
+                                })
+                        });
+                        let has_preview = existing.iter().any(|evidence| {
+                            evidence.release_id == *release_id
+                                && evidence.kind == ReleaseEvidenceKind::PreviewDeployment
+                                && evidence.commit_sha.as_deref() == Some(commit.as_str())
+                        });
+                        let issues = all::<Issue>(tx, "issues")?;
+                        let work = release_issues(&release, &issues);
+                        if !has_push
+                            || !has_preview
+                            || work.is_empty()
+                            || work.iter().any(|i| i.status != Status::Done)
+                        {
+                            return Err(err(
+                                "invalid",
+                                "Production requires a successful push, matching preview, and owner-verified Done for every linked issue",
+                            ));
+                        }
+                        approver = Some(actor.to_string());
+                        release.status = ReleaseStatus::Production;
+                    } else {
+                        release.status = ReleaseStatus::Preview;
+                        release.preview_url = Some(deployment_url.trim().into());
+                    }
+                    normalized_deployment = Some(deployment.trim().into());
+                    normalized_commit = Some(commit);
+                    normalized_target = Some(deployed_ref.trim().into());
+                    normalized_url = Some(deployment_url.trim().into());
+                }
+            }
+            let evidence = ReleaseEvidence {
+                id: id(),
+                release_id: release_id.clone(),
+                kind: kind.clone(),
+                issue_key,
+                git_trace_id: normalized_trace,
+                verification_id: normalized_verification,
+                deployment_ref: normalized_deployment,
+                commit_sha: normalized_commit,
+                target_ref: normalized_target,
+                url: normalized_url,
+                approver,
+                recorded_by: actor.into(),
+                recorded_at: at,
+            };
+            if existing.iter().any(|prior| {
+                prior.release_id == evidence.release_id
+                    && prior.kind == evidence.kind
+                    && prior.git_trace_id == evidence.git_trace_id
+                    && prior.verification_id == evidence.verification_id
+                    && prior.deployment_ref == evidence.deployment_ref
+            }) {
+                return Err(err("conflict", "This release evidence is already recorded"));
+            }
+            put_release_evidence(tx, &evidence)?;
+            release.version += 1;
+            release.updated_at = at;
+            put_release(tx, &release)?;
+            let event = match kind {
+                ReleaseEvidenceKind::Commit => "release_commit_recorded",
+                ReleaseEvidenceKind::Push => "release_push_recorded",
+                ReleaseEvidenceKind::Check => "release_check_recorded",
+                ReleaseEvidenceKind::PreviewDeployment => "release_preview_recorded",
+                ReleaseEvidenceKind::ProductionDeployment => "release_production_recorded",
+            };
+            emit(tx, actor, event, release_id, at)?;
+            Ok(json!({"release": release, "evidence": evidence}))
+        }
         Command::CreateProduct {
             key,
             name,
@@ -2109,7 +2678,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
 }
 
 pub fn validate_archive(a: &Archive) -> Result<()> {
-    if !matches!(a.format, 1..=8) {
+    if !matches!(a.format, 1..=9) {
         return Err(err("unsupported", "Unsupported archive format"));
     }
     Uuid::parse_str(&a.workspace_id).map_err(|_| err("invalid", "Invalid workspace identity"))?;
@@ -2291,6 +2860,9 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             "External migration provenance requires archive format 8",
         ));
     }
+    if a.format < 9 && (!a.releases.is_empty() || !a.release_evidence.is_empty()) {
+        return Err(err("invalid", "Release data requires archive format 9"));
+    }
     let mut project_ids = HashSet::new();
     let mut project_names = HashSet::new();
     let mut project_sources = HashSet::new();
@@ -2367,6 +2939,59 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
                 .is_some_and(|url| url.trim().is_empty())
         {
             return Err(err("invalid", "Invalid or duplicate milestone"));
+        }
+    }
+    let mut release_ids = HashSet::new();
+    let mut release_versions = HashSet::new();
+    let mut release_sources = HashSet::new();
+    for release in &a.releases {
+        validate_release_fields(
+            &release.name,
+            &release.version_label,
+            &release.target_ref,
+            release.preview_url.as_deref(),
+            &release.notes,
+        )?;
+        validate_optional_provenance(
+            release.external_source.as_deref(),
+            release.external_id.as_deref(),
+        )?;
+        let mut linked_projects = HashSet::new();
+        let mut linked_issues = HashSet::new();
+        if Uuid::parse_str(&release.id).is_err()
+            || release.version == 0
+            || !product_ids.contains(&release.product_id)
+            || !release_ids.insert(release.id.clone())
+            || !release_versions.insert((
+                release.product_id.clone(),
+                release.version_label.trim().to_lowercase(),
+            ))
+            || release.external_source.as_ref().is_some_and(|source| {
+                !release_sources.insert((source.clone(), release.external_id.clone().unwrap()))
+            })
+            || release
+                .external_url
+                .as_deref()
+                .is_some_and(|url| url.trim().is_empty())
+            || release.project_ids.iter().any(|id| {
+                !linked_projects.insert(id)
+                    || !a.projects.iter().any(|project| {
+                        project.id == *id && project.product_id == release.product_id
+                    })
+            })
+            || release.issue_keys.iter().any(|key| {
+                !linked_issues.insert(key)
+                    || !a.issues.iter().any(|issue| {
+                        issue.key == *key
+                            && issue.product_id == release.product_id
+                            && issue.parent.is_none()
+                    })
+            })
+        {
+            return Err(err(
+                "invalid",
+                "Invalid, duplicate, or cross-product release",
+            ));
         }
     }
     for i in &a.issues {
@@ -2543,6 +3168,155 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             || trace.recorded_at <= 0
         {
             return Err(err("invalid", "Invalid or duplicate Git trace"));
+        }
+    }
+    let traces: HashMap<_, _> = a
+        .git_traces
+        .iter()
+        .map(|trace| (trace.id.as_str(), trace))
+        .collect();
+    let runs: HashMap<_, _> = a
+        .verifications
+        .iter()
+        .map(|run| (run.id.as_str(), run))
+        .collect();
+    let mut evidence_ids = HashSet::new();
+    let mut logical_evidence = HashSet::new();
+    for evidence in &a.release_evidence {
+        let release = a
+            .releases
+            .iter()
+            .find(|release| release.id == evidence.release_id)
+            .ok_or_else(|| err("invalid", "Release evidence has no release"))?;
+        let linked_issue_keys: HashSet<_> = release_issues(release, &a.issues)
+            .into_iter()
+            .map(|issue| issue.key.as_str())
+            .collect();
+        let valid = match evidence.kind {
+            ReleaseEvidenceKind::Commit | ReleaseEvidenceKind::Push => {
+                evidence.verification_id.is_none()
+                    && evidence.deployment_ref.is_none()
+                    && evidence.commit_sha.is_none()
+                    && evidence.target_ref.is_none()
+                    && evidence.url.is_none()
+                    && evidence.approver.is_none()
+                    && evidence.git_trace_id.as_deref().is_some_and(|id| {
+                        traces.get(id).is_some_and(|trace| {
+                            evidence.issue_key.as_deref() == Some(trace.issue_key.as_str())
+                                && linked_issue_keys.contains(trace.issue_key.as_str())
+                                && ((evidence.kind == ReleaseEvidenceKind::Commit
+                                    && trace.kind == GitTraceKind::Commit)
+                                    || (evidence.kind == ReleaseEvidenceKind::Push
+                                        && trace.kind == GitTraceKind::Push))
+                        })
+                    })
+            }
+            ReleaseEvidenceKind::Check => {
+                evidence.git_trace_id.is_none()
+                    && evidence.deployment_ref.is_none()
+                    && evidence.commit_sha.is_none()
+                    && evidence.target_ref.is_none()
+                    && evidence.url.is_none()
+                    && evidence.approver.is_none()
+                    && evidence.verification_id.as_deref().is_some_and(|id| {
+                        runs.get(id).is_some_and(|run| {
+                            evidence.issue_key.as_deref() == Some(run.issue_key.as_str())
+                                && linked_issue_keys.contains(run.issue_key.as_str())
+                                && run.outcome == Outcome::Passed
+                                && run.results.len() == run.steps.len()
+                                && run
+                                    .results
+                                    .iter()
+                                    .all(|result| result.outcome == Outcome::Passed)
+                        })
+                    })
+            }
+            ReleaseEvidenceKind::PreviewDeployment | ReleaseEvidenceKind::ProductionDeployment => {
+                evidence.issue_key.is_none()
+                    && evidence.git_trace_id.is_none()
+                    && evidence.verification_id.is_none()
+                    && evidence
+                        .deployment_ref
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty())
+                    && evidence.commit_sha.as_deref().is_some_and(valid_commit_sha)
+                    && evidence.target_ref.as_deref() == Some(release.target_ref.as_str())
+                    && evidence
+                        .url
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty())
+                    && (evidence.kind != ReleaseEvidenceKind::ProductionDeployment
+                        || evidence
+                            .approver
+                            .as_deref()
+                            .is_some_and(|value| !value.trim().is_empty()))
+                    && (evidence.kind != ReleaseEvidenceKind::PreviewDeployment
+                        || evidence.approver.is_none())
+            }
+        };
+        let logical = (
+            evidence.release_id.clone(),
+            evidence.kind.clone(),
+            evidence.git_trace_id.clone(),
+            evidence.verification_id.clone(),
+            evidence.deployment_ref.clone(),
+        );
+        if Uuid::parse_str(&evidence.id).is_err()
+            || !evidence_ids.insert(evidence.id.clone())
+            || !logical_evidence.insert(logical)
+            || evidence.recorded_by.trim().is_empty()
+            || evidence.recorded_at <= 0
+            || !valid
+        {
+            return Err(err("invalid", "Invalid or duplicate release evidence"));
+        }
+    }
+    for release in &a.releases {
+        let evidence: Vec<_> = a
+            .release_evidence
+            .iter()
+            .filter(|evidence| evidence.release_id == release.id)
+            .collect();
+        if release.status == ReleaseStatus::Preview
+            && !evidence
+                .iter()
+                .any(|evidence| evidence.kind == ReleaseEvidenceKind::PreviewDeployment)
+        {
+            return Err(err(
+                "invalid",
+                "Preview release is missing preview deployment evidence",
+            ));
+        }
+        if release.status == ReleaseStatus::Production {
+            let production = evidence
+                .iter()
+                .rev()
+                .find(|evidence| evidence.kind == ReleaseEvidenceKind::ProductionDeployment)
+                .ok_or_else(|| {
+                    err(
+                        "invalid",
+                        "Production release is missing deployment evidence",
+                    )
+                })?;
+            let commit = production.commit_sha.as_deref().unwrap();
+            let has_preview = evidence.iter().any(|evidence| {
+                evidence.kind == ReleaseEvidenceKind::PreviewDeployment
+                    && evidence.commit_sha.as_deref() == Some(commit)
+            });
+            let has_push = evidence.iter().any(|evidence| {
+                evidence.kind == ReleaseEvidenceKind::Push
+                    && evidence.git_trace_id.as_deref().is_some_and(|id| {
+                        traces
+                            .get(id)
+                            .is_some_and(|trace| trace.commit_sha == commit)
+                    })
+            });
+            if !has_preview || !has_push || release_issues(release, &a.issues).is_empty() {
+                return Err(err(
+                    "invalid",
+                    "Production release lacks matching push, preview, or verified work",
+                ));
+            }
         }
     }
     let mut finding_ids = HashSet::new();

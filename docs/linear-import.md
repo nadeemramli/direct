@@ -35,6 +35,11 @@ does not count as owner-verified completion. Cross-project relations are
 counted in the reconciliation report but are not followed into the bounded
 workspace.
 
+The captured Linear package has no release/deployment record type. The
+reconciliation report therefore records zero imported releases and explains
+that Direct does not invent release or production evidence. Releases may be
+added after import with explicit provenance and exact delivery evidence.
+
 Use `recovery-check` with a new directory to prove the imported archive restores
 byte for byte. This dry-run is migration evidence, not permission to cut over a
 product or replace the live Direct workspace. Full cutover still needs a final

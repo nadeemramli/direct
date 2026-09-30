@@ -138,6 +138,64 @@ export interface GitTrace {
   recorded_by: string;
   recorded_at: number;
 }
+export type ReleaseStatus =
+  | "planned"
+  | "active"
+  | "preview"
+  | "production"
+  | "retired"
+  | "canceled";
+export type ReleaseEvidenceKind =
+  | "commit"
+  | "push"
+  | "check"
+  | "preview_deployment"
+  | "production_deployment";
+export interface ReleaseRecord {
+  id: string;
+  product_id: string;
+  name: string;
+  version_label: string;
+  status: ReleaseStatus;
+  target_ref: string;
+  preview_url: string | null;
+  notes: string;
+  project_ids: string[];
+  issue_keys: string[];
+  external_source: string | null;
+  external_id: string | null;
+  external_url: string | null;
+  version: number;
+  created_at: number;
+  updated_at: number;
+}
+export interface ReleaseEvidence {
+  id: string;
+  release_id: string;
+  kind: ReleaseEvidenceKind;
+  issue_key: string | null;
+  git_trace_id: string | null;
+  verification_id: string | null;
+  deployment_ref: string | null;
+  commit_sha: string | null;
+  target_ref: string | null;
+  url: string | null;
+  approver: string | null;
+  recorded_by: string;
+  recorded_at: number;
+}
+export interface ReleaseProgress {
+  release_id: string;
+  total: number;
+  backlog: number;
+  active: number;
+  pending_verification: number;
+  failed_verification: number;
+  completed: number;
+  legacy_completed: number;
+  canceled: number;
+  completion_percent: number;
+}
 export interface Verification {
   id: string;
   issue_key: string;
@@ -171,6 +229,9 @@ export interface Context {
   verifications: Verification[];
   method_findings: MethodFinding[];
   git_traces?: GitTrace[];
+  releases: ReleaseRecord[];
+  release_progress: ReleaseProgress[];
+  release_evidence: ReleaseEvidence[];
   history: { seq: number; kind: string; actor: string; at: number }[];
 }
 export interface Snapshot {
@@ -185,6 +246,9 @@ export interface Snapshot {
   theoria_documents: TheoriaDocument[];
   method_findings: MethodFinding[];
   git_traces?: GitTrace[];
+  releases: ReleaseRecord[];
+  release_progress: ReleaseProgress[];
+  release_evidence: ReleaseEvidence[];
   issue_links: IssueLink[];
   issues: Issue[];
   cursor: number;

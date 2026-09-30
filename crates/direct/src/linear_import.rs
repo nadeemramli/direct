@@ -229,7 +229,7 @@ pub fn dry_run(source: &Path, project_id: &str, output: &Path) -> Result<Value> 
         })
         .sum();
     let archive = Archive {
-        format: 8,
+        format: 9,
         workspace_id: project_id.to_owned(),
         products: vec![product],
         projects: vec![project],
@@ -238,6 +238,8 @@ pub fn dry_run(source: &Path, project_id: &str, output: &Path) -> Result<Value> 
         theoria_documents: vec![],
         method_findings: vec![],
         git_traces: vec![],
+        releases: vec![],
+        release_evidence: vec![],
         issue_links,
         issues: direct_issues,
         comments,
@@ -266,6 +268,7 @@ pub fn dry_run(source: &Path, project_id: &str, output: &Path) -> Result<Value> 
             "projects": 1,
             "goals": archive.goals.len(),
             "milestones": archive.milestones.len(),
+            "releases": 0,
             "issues": archive.issues.len(),
             "comments": archive.comments.len(),
             "history_entries": history_entries,
@@ -283,6 +286,8 @@ pub fn dry_run(source: &Path, project_id: &str, output: &Path) -> Result<Value> 
             "history_entries": history_entries,
             "issue_links": archive.issue_links.len(),
             "verification_runs": archive.verifications.len(),
+            "releases": archive.releases.len(),
+            "release_evidence": archive.release_evidence.len(),
             "legacy_completed": archive.issues.iter().filter(|issue| issue.status == Status::LegacyCompleted).count(),
         },
         "omitted_cross_boundary_relations": touching_relations.len() - internal_relations.len() + external_parent_links as usize,
@@ -290,6 +295,7 @@ pub fn dry_run(source: &Path, project_id: &str, output: &Path) -> Result<Value> 
         "unknown_planning_state_types": unknown_goal_states,
         "unknown_relation_types": unknown_relation_types,
         "legacy_completion_policy": "Linear completed issues use legacy_completed with source state, timestamps, and history. No Direct verification run or passed result is created.",
+        "release_policy": "The captured Linear project package has no release/deployment record type, so no Direct release or release evidence is invented. Releases can be added after import with explicit provenance and delivery evidence.",
         "archive": {
             "format": archive.format,
             "sha256": archive_sha256,

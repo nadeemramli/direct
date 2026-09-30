@@ -15,6 +15,8 @@
     IssueLinkKind,
     Goal,
     Milestone,
+    ReleaseRecord,
+    ReleaseEvidence,
   } from "./api";
   let data = $state<Snapshot>({
     workspace_id: "",
@@ -28,6 +30,9 @@
     theoria_documents: [],
     method_findings: [],
     git_traces: [],
+    releases: [],
+    release_progress: [],
+    release_evidence: [],
     issue_links: [],
     issues: [],
     cursor: 0,
@@ -54,6 +59,13 @@
           .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name))
       : [],
   );
+  let selectedProjectReleases = $derived(
+    selectedProject
+      ? data.releases.filter((release) =>
+          release.project_ids.includes(selectedProject.id),
+        )
+      : [],
+  );
   let availableProjects = $derived(
     data.projects
       .filter((p) => product === "all" || p.product_id === product)
@@ -78,7 +90,7 @@
   let busy = $state(false);
   let tab = $state("brief");
   let modal = $state<
-    "issue" | "product" | "project" | "goal" | "milestone" | "edit" | "submit" | null
+    "issue" | "product" | "project" | "goal" | "milestone" | "release" | "edit" | "submit" | null
   >(null);
   let projectDraft = $state({
     id: "",
@@ -106,6 +118,19 @@
     name: "",
     description: "",
     sort_order: 0,
+    version: 0,
+  });
+  let releaseDraft = $state({
+    id: "",
+    product: "DIR",
+    name: "",
+    version_label: "",
+    status: "planned",
+    target_ref: "refs/heads/main",
+    preview_url: "",
+    notes: "",
+    project_ids: [] as string[],
+    issue_keys: [] as string[],
     version: 0,
   });
   let draft = $state({
@@ -219,7 +244,14 @@
                 : view === "done"
                   ? ["done", "legacy_completed"].includes(i.status)
                   : i.status === view)) &&
-          `${i.key} ${i.title} ${i.body}`
+          `${i.key} ${i.title} ${i.body} ${data.releases
+            .filter(
+              (release) =>
+                release.issue_keys.includes(i.key) ||
+                (!!i.project_id && release.project_ids.includes(i.project_id)),
+            )
+            .map((release) => `${release.name} ${release.version_label}`)
+            .join(" ")}`
             .toLowerCase()
             .includes(search.toLowerCase()),
       )
@@ -228,6 +260,17 @@
           ? issueCode(a.key) - issueCode(b.key) || a.key.localeCompare(b.key)
           : b.updated_at - a.updated_at || a.key.localeCompare(b.key),
       ),
+  );
+  let visibleReleases = $derived(
+    data.releases
+      .filter(
+        (release) =>
+          (product === "all" || release.product_id === product) &&
+          `${release.name} ${release.version_label} ${release.notes} ${release.target_ref}`
+            .toLowerCase()
+            .includes(search.toLowerCase()),
+      )
+      .sort((a, b) => b.updated_at - a.updated_at || a.name.localeCompare(b.name)),
   );
   let groupedVisible = $derived(
     [
@@ -271,6 +314,20 @@
   function shortSha(sha: string) {
     return sha.slice(0, 12);
   }
+  function releaseEvidenceSummary(item: ReleaseEvidence) {
+    if (item.git_trace_id) {
+      const trace = data.git_traces?.find((candidate) => candidate.id === item.git_trace_id);
+      if (trace)
+        return `${shortSha(trace.commit_sha)} · ${trace.repository} · ${
+          trace.kind === "push"
+            ? `${trace.remote} ${trace.remote_ref}`
+            : trace.branch
+        }`;
+    }
+    if (item.verification_id)
+      return `${item.issue_key} · verification ${item.verification_id}`;
+    return `${item.deployment_ref || "deployment"} · ${shortSha(item.commit_sha || "")} · ${item.target_ref || "unknown ref"}`;
+  }
   function issueCode(key: string) {
     const value = Number(key.split("-").at(-1));
     return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
@@ -311,6 +368,9 @@
     return data.milestone_progress.find(
       (progress) => progress.milestone_id === id,
     );
+  }
+  function releaseProgress(id: string) {
+    return data.release_progress.find((progress) => progress.release_id === id);
   }
   function guidanceState(
     document: TheoriaDocument | undefined,
@@ -709,6 +769,82 @@
               name: milestoneDraft.name,
               description: milestoneDraft.description,
               sort_order: milestoneDraft.sort_order,
+            },
+        true,
+      );
+      await refresh();
+      modal = null;
+    } catch (e) {
+      error = String(e).replace(/^Error: /, "");
+    } finally {
+      busy = false;
+    }
+  }
+  function editRelease(release?: ReleaseRecord) {
+    const productKey = release
+      ? data.products.find((product) => product.id === release.product_id)?.key
+      : data.products.find((candidate) => candidate.id === product)?.key ||
+        data.products[0]?.key;
+    releaseDraft = release
+      ? {
+          id: release.id,
+          product: productKey || "DIR",
+          name: release.name,
+          version_label: release.version_label,
+          status: release.status,
+          target_ref: release.target_ref,
+          preview_url: release.preview_url || "",
+          notes: release.notes,
+          project_ids: [...release.project_ids],
+          issue_keys: [...release.issue_keys],
+          version: release.version,
+        }
+      : {
+          id: "",
+          product: productKey || "DIR",
+          name: "",
+          version_label: "",
+          status: "planned",
+          target_ref: "refs/heads/main",
+          preview_url: "",
+          notes: "",
+          project_ids: selectedProject ? [selectedProject.id] : [],
+          issue_keys: current ? [current.key] : [],
+          version: 0,
+        };
+    modal = "release";
+  }
+  async function saveRelease(event: SubmitEvent) {
+    event.preventDefault();
+    if (busy) return;
+    busy = true;
+    error = "";
+    try {
+      await api<ReleaseRecord>(
+        releaseDraft.id
+          ? {
+              op: "update_release",
+              id: releaseDraft.id,
+              expected_version: releaseDraft.version,
+              name: releaseDraft.name,
+              version_label: releaseDraft.version_label,
+              status: releaseDraft.status,
+              target_ref: releaseDraft.target_ref,
+              preview_url: releaseDraft.preview_url.trim() || null,
+              notes: releaseDraft.notes,
+              project_ids: releaseDraft.project_ids,
+              issue_keys: releaseDraft.issue_keys,
+            }
+          : {
+              op: "create_release",
+              product: releaseDraft.product,
+              name: releaseDraft.name,
+              version_label: releaseDraft.version_label,
+              target_ref: releaseDraft.target_ref,
+              preview_url: releaseDraft.preview_url.trim() || null,
+              notes: releaseDraft.notes,
+              project_ids: releaseDraft.project_ids,
+              issue_keys: releaseDraft.issue_keys,
             },
         true,
       );
@@ -1149,6 +1285,11 @@
             disabled={!connected || busy}
             onclick={() => editGoal()}>＋ New goal</button
           >
+          <button
+            class="text-button"
+            disabled={!connected || busy}
+            onclick={() => editRelease()}>＋ New release</button
+          >
           {#if selectedProject}<button
               class="text-button"
               disabled={!connected || busy}
@@ -1173,6 +1314,18 @@
               ></label
             >{/if}
         </div>
+        {#if visibleReleases.length}<section class="release-strip" aria-label="Releases">
+            <div class="section-label">RELEASES <span>{visibleReleases.length}</span></div>
+            <div class="release-strip-items">
+              {#each visibleReleases as release}
+                {@const progress = releaseProgress(release.id)}
+                <button class="release-chip" onclick={() => editRelease(release)}>
+                  <span><b>{release.version_label}</b> · {release.name}</span>
+                  <small>{release.status} · {progress?.completed || 0} done · {progress?.pending_verification || 0} verify · {progress?.failed_verification || 0} failed</small>
+                </button>
+              {/each}
+            </div>
+          </section>{/if}
         {#if selectedProject}
           {@const progress = projectProgress(selectedProject.id)}
           {@const legacyCompleted = progress.legacy_completed || 0}
@@ -1218,6 +1371,17 @@
                 <button class="text-button add-planning" onclick={() => editMilestone()}
                   >＋ Add milestone</button
                 >
+              </div>
+              <div>
+                <span>RELEASES</span>
+                {#each selectedProjectReleases as release}
+                  {@const progress = releaseProgress(release.id)}
+                  <button class="planning-link" onclick={() => editRelease(release)}
+                    ><b>{release.version_label} · {release.name}</b><small
+                      >{release.status} · {progress?.completion_percent || 0}% · {progress?.pending_verification || 0} verify · {progress?.failed_verification || 0} failed</small
+                    ></button
+                  >
+                {:else}<small>No releases link this project yet.</small>{/each}
               </div>
             </div>
           </div>
@@ -1493,6 +1657,28 @@
                     >Review the result <span>→</span></button
                   >{/if}
               </div>
+              {#if context?.releases.length}<div class="section-label">
+                  RELEASES <span>{context.releases.length}</span>
+                </div>
+                {#each context.releases as release}
+                  {@const progress = context.release_progress.find((item) => item.release_id === release.id)}
+                  {@const evidence = context.release_evidence.filter((item) => item.release_id === release.id)}
+                  <article class="info-card">
+                    <span class="card-symbol">◆</span>
+                    <div>
+                      <b>{release.version_label} · {release.name}</b>
+                      <p>
+                        {release.status} · target <code>{release.target_ref}</code> ·
+                        {progress?.completed || 0}/{(progress?.total || 0) - (progress?.canceled || 0) - (progress?.legacy_completed || 0)} verified done ·
+                        {progress?.pending_verification || 0} pending · {progress?.failed_verification || 0} failed verification
+                      </p>
+                      <small>{evidence.length} evidence record{evidence.length === 1 ? "" : "s"}</small>
+                      {#if release.preview_url}<p><a href={release.preview_url} target="_blank" rel="noreferrer">Open recorded preview</a></p>{/if}
+                      <button class="text-button" onclick={() => editRelease(release)}>Edit release</button>
+                    </div>
+                  </article>
+                {/each}
+              {/if}
               {#if context?.product.repo_windows || context?.product.vault_windows}<div
                   class="section-label"
                 >
@@ -1917,6 +2103,10 @@
             ? milestoneDraft.id
               ? "Edit milestone"
               : "New milestone"
+          : modal === "release"
+            ? releaseDraft.id
+              ? "Edit release"
+              : "New release"
         : modal === "product"
           ? "New product"
           : modal === "submit"
@@ -1944,6 +2134,10 @@
                   ? milestoneDraft.id
                     ? "Shape the milestone"
                     : "Add a project phase"
+                : modal === "release"
+                  ? releaseDraft.id
+                    ? "Shape the release"
+                    : "Define a delivery boundary"
               : modal === "product"
                 ? "A space for your product"
                 : modal === "submit"
@@ -2086,6 +2280,53 @@
               >{milestoneDraft.id ? "Save milestone" : "Create milestone"}</button
             >
           </div>
+        </form>
+      {:else if modal === "release"}<form onsubmit={saveRelease}>
+          <label class="field"
+            >Product<select bind:value={releaseDraft.product} disabled={!!releaseDraft.id}>
+              {#each data.products as p}<option value={p.key}>{p.name}</option>{/each}
+            </select></label
+          >
+          <div class="form-grid">
+            <label class="field">Release name<input required maxlength="160" bind:value={releaseDraft.name} placeholder="Autumn pilot" /></label>
+            <label class="field">Version<input required maxlength="80" bind:value={releaseDraft.version_label} placeholder="v0.2.0" /></label>
+          </div>
+          <label class="field">Target branch or ref<input required maxlength="512" bind:value={releaseDraft.target_ref} placeholder="refs/heads/main" /></label>
+          <label class="field">Planned notes<textarea rows="3" bind:value={releaseDraft.notes} placeholder="Scope, risks, and rollout intent"></textarea></label>
+          <label class="field">Preview URL (optional)<input type="url" bind:value={releaseDraft.preview_url} placeholder="https://preview.example.com" /></label>
+          {#if releaseDraft.id}<label class="field">Lifecycle status<select bind:value={releaseDraft.status}>
+              <option value="planned">Planned</option>
+              <option value="active">Active</option>
+              <option value="preview">Preview (evidence-controlled)</option>
+              <option value="production">Production (evidence-controlled)</option>
+              <option value="retired">Retired</option>
+              <option value="canceled">Canceled</option>
+            </select></label>{/if}
+          <p class="hint">Preview and production status can only be reached by recording exact deployment evidence. A push or merge alone never promotes a release.</p>
+          <div class="field">
+            <span>Linked projects</span>
+            <div class="project-checklist">
+              {#each data.projects.filter((project) => project.product_id === data.products.find((candidate) => candidate.key === releaseDraft.product)?.id) as project}
+                <label><input type="checkbox" value={project.id} bind:group={releaseDraft.project_ids} /> {project.name}</label>
+              {:else}<small>No projects in this product yet.</small>{/each}
+            </div>
+          </div>
+          <div class="field">
+            <span>Additional linked issues</span>
+            <div class="project-checklist">
+              {#each data.issues.filter((issue) => !issue.parent && issue.product_id === data.products.find((candidate) => candidate.key === releaseDraft.product)?.id) as issue}
+                <label><input type="checkbox" value={issue.key} bind:group={releaseDraft.issue_keys} /> {issue.key} · {issue.title}</label>
+              {:else}<small>No real issues in this product yet.</small>{/each}
+            </div>
+          </div>
+          {#if releaseDraft.id}
+            {@const evidence = data.release_evidence.filter((item) => item.release_id === releaseDraft.id)}
+            <div class="section-label">RECORDED EVIDENCE <span>{evidence.length}</span></div>
+            {#each evidence as item}<div class="activity">
+                <span class="activity-dot"></span><div><b>{item.kind.replaceAll("_", " ")}</b><small>{releaseEvidenceSummary(item)} · {date(item.recorded_at)}{item.approver ? ` · approved by ${item.approver}` : ""}</small>{#if item.url}<a href={item.url} target="_blank" rel="noreferrer">Open deployment</a>{/if}</div>
+              </div>{:else}<p class="muted">No commit, push, check, or deployment evidence has been recorded.</p>{/each}
+          {/if}
+          <div class="modal-footer"><button class="primary" disabled={busy}>{releaseDraft.id ? "Save release" : "Create release"}</button></div>
         </form>
       {:else if modal === "product"}<form onsubmit={createProduct}>
           <div class="form-grid">

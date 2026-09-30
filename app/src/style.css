@@ -163,10 +163,38 @@
 .project-planning-links {
   grid-column: 1 / -1;
   display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
   gap: 16px;
   padding-top: 10px;
   border-top: 1px solid #293532;
+}
+.release-strip {
+  margin: 0 28px 18px;
+  padding: 12px;
+  border: 1px solid #293532;
+  border-radius: 8px;
+  background: #171d1b;
+}
+.release-strip-items {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+}
+.release-chip {
+  min-width: 230px;
+  display: grid;
+  gap: 4px;
+  padding: 9px 10px;
+  border-radius: 6px;
+  background: #1c2220;
+  text-align: left;
+}
+.release-chip:hover {
+  background: #222b27;
+}
+.release-chip small {
+  color: #71817b;
+  font-size: 9px;
 }
 .project-planning-links > div {
   display: grid;

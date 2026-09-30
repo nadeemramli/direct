@@ -289,6 +289,94 @@ pub struct GitTrace {
     pub recorded_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseStatus {
+    #[default]
+    Planned,
+    Active,
+    Preview,
+    Production,
+    Retired,
+    Canceled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseRecord {
+    pub id: String,
+    pub product_id: String,
+    pub name: String,
+    pub version_label: String,
+    pub status: ReleaseStatus,
+    pub target_ref: String,
+    #[serde(default)]
+    pub preview_url: Option<String>,
+    #[serde(default)]
+    pub notes: String,
+    #[serde(default)]
+    pub project_ids: Vec<String>,
+    #[serde(default)]
+    pub issue_keys: Vec<String>,
+    #[serde(default)]
+    pub external_source: Option<String>,
+    #[serde(default)]
+    pub external_id: Option<String>,
+    #[serde(default)]
+    pub external_url: Option<String>,
+    pub version: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseEvidenceKind {
+    Commit,
+    Push,
+    Check,
+    PreviewDeployment,
+    ProductionDeployment,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseEvidence {
+    pub id: String,
+    pub release_id: String,
+    pub kind: ReleaseEvidenceKind,
+    #[serde(default)]
+    pub issue_key: Option<String>,
+    #[serde(default)]
+    pub git_trace_id: Option<String>,
+    #[serde(default)]
+    pub verification_id: Option<String>,
+    #[serde(default)]
+    pub deployment_ref: Option<String>,
+    #[serde(default)]
+    pub commit_sha: Option<String>,
+    #[serde(default)]
+    pub target_ref: Option<String>,
+    #[serde(default)]
+    pub url: Option<String>,
+    #[serde(default)]
+    pub approver: Option<String>,
+    pub recorded_by: String,
+    pub recorded_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ReleaseProgress {
+    pub release_id: String,
+    pub total: u64,
+    pub backlog: u64,
+    pub active: u64,
+    pub pending_verification: u64,
+    pub failed_verification: u64,
+    pub completed: u64,
+    pub legacy_completed: u64,
+    pub canceled: u64,
+    pub completion_percent: u8,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Issue {
     pub id: String,
@@ -581,6 +669,55 @@ pub enum Command {
         #[serde(default)]
         remote_ref: Option<String>,
     },
+    CreateRelease {
+        product: String,
+        name: String,
+        version_label: String,
+        target_ref: String,
+        #[serde(default)]
+        preview_url: Option<String>,
+        #[serde(default)]
+        notes: String,
+        #[serde(default)]
+        project_ids: Vec<String>,
+        #[serde(default)]
+        issue_keys: Vec<String>,
+        #[serde(default)]
+        external_source: Option<String>,
+        #[serde(default)]
+        external_id: Option<String>,
+    },
+    UpdateRelease {
+        id: String,
+        expected_version: u64,
+        name: String,
+        version_label: String,
+        status: ReleaseStatus,
+        target_ref: String,
+        #[serde(default)]
+        preview_url: Option<String>,
+        #[serde(default)]
+        notes: String,
+        project_ids: Vec<String>,
+        issue_keys: Vec<String>,
+    },
+    RecordReleaseEvidence {
+        release_id: String,
+        expected_version: u64,
+        kind: ReleaseEvidenceKind,
+        #[serde(default)]
+        git_trace_id: Option<String>,
+        #[serde(default)]
+        verification_id: Option<String>,
+        #[serde(default)]
+        deployment_ref: Option<String>,
+        #[serde(default)]
+        commit_sha: Option<String>,
+        #[serde(default)]
+        target_ref: Option<String>,
+        #[serde(default)]
+        url: Option<String>,
+    },
     CreateProduct {
         key: String,
         name: String,
@@ -697,6 +834,10 @@ pub struct Archive {
     pub method_findings: Vec<MethodFinding>,
     #[serde(default)]
     pub git_traces: Vec<GitTrace>,
+    #[serde(default)]
+    pub releases: Vec<ReleaseRecord>,
+    #[serde(default)]
+    pub release_evidence: Vec<ReleaseEvidence>,
     #[serde(default)]
     pub issue_links: Vec<IssueLink>,
     pub issues: Vec<Issue>,
