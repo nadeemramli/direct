@@ -304,7 +304,10 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
                 PlanningScope::Inbox
             };
         }
-        expected.format = 5;
+    }
+    if expected.format < 6 {
+        // Older archives carry no labels; missing lists already default to empty.
+        expected.format = 6;
     }
     fs::create_dir(restore_dir)
         .context("Create the recovery workspace beneath an existing parent")?;
@@ -337,6 +340,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             "verification_runs": true,
             "git_evidence": true,
             "theoria_records": true,
+            "labels": true,
             "events_and_request_replays": true
         },
         "source_format": source_format,
@@ -346,6 +350,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
         "records": {
             "products": archive.products.len(),
             "projects": archive.projects.len(),
+            "labels": archive.labels.len(),
             "issues": archive.issues.len(),
             "comments": archive.comments.len(),
             "verification_runs": archive.verifications.len(),
@@ -358,7 +363,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
         "attachments": {
             "supported": false,
             "count": 0,
-            "note": "Archive format 5 has no attachment record type"
+            "note": "Archive format 6 has no attachment record type"
         }
     }))
 }
@@ -944,15 +949,22 @@ mod tests {
     fn recovery_check_normalizes_supported_older_formats() {
         let temp = TempDir::new().unwrap();
         let store = Store::open(&temp.path().join("source.db")).unwrap();
-        let mut archive = store.export().unwrap();
-        archive.format = 3;
-        let source = temp.path().join("format-3.json");
-        fs::write(&source, serde_json::to_vec_pretty(&archive).unwrap()).unwrap();
+        for format in [3u32, 5] {
+            let mut archive = store.export().unwrap();
+            archive.format = format;
+            let source = temp.path().join(format!("format-{format}.json"));
+            fs::write(&source, serde_json::to_vec_pretty(&archive).unwrap()).unwrap();
 
-        let report = recovery_check(&source, &temp.path().join("restored-v5")).unwrap();
-        assert_eq!(report["source_format"], 3);
-        assert_eq!(report["restored_format"], 5);
-        assert_eq!(report["compatibility_upgrade_applied"], true);
-        assert_eq!(report["semantic_archive_match"], true);
+            let report = recovery_check(
+                &source,
+                &temp.path().join(format!("restored-from-{format}")),
+            )
+            .unwrap();
+            assert_eq!(report["source_format"], format);
+            assert_eq!(report["restored_format"], 6);
+            assert_eq!(report["records"]["labels"], 0);
+            assert_eq!(report["compatibility_upgrade_applied"], true);
+            assert_eq!(report["semantic_archive_match"], true);
+        }
     }
 }
