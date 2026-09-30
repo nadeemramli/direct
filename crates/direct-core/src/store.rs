@@ -42,6 +42,34 @@ pub fn now() -> i64 {
 fn id() -> String {
     Uuid::new_v4().to_string()
 }
+fn validate_e2e(evidence: &E2eEvidence, build_ref: &str) -> Result<()> {
+    if evidence.outcome != Outcome::Passed {
+        return Err(err(
+            "invalid",
+            "End-to-end checks must pass before submission",
+        ));
+    }
+    if evidence.build_ref != build_ref || evidence.delivered_build_ref != build_ref {
+        return Err(err(
+            "invalid",
+            "Tested, delivered, and submitted builds must match exactly",
+        ));
+    }
+    for (value, name) in [
+        (&evidence.build_ref, "E2E build"),
+        (&evidence.environment, "E2E environment"),
+        (&evidence.entrypoint, "E2E entrypoint"),
+        (
+            &evidence.scenarios,
+            "acceptance scenarios and observed results",
+        ),
+        (&evidence.delivery_check, "delivered-build check"),
+    ] {
+        required(value, name)?;
+        limited(value, name, 20_000)?;
+    }
+    Ok(())
+}
 fn required(value: &str, field: &str) -> Result<()> {
     if value.trim().is_empty() {
         return Err(err("invalid", format!("{field} is required")));
@@ -107,6 +135,101 @@ fn validate_optional_provenance(source: Option<&str>, external_id: Option<&str>)
         limited(external_id, "external ID", 512)?;
     }
     Ok(())
+}
+fn valid_color(value: &str) -> bool {
+    value.is_empty()
+        || (value.len() == 7
+            && value.starts_with('#')
+            && value[1..].bytes().all(|c| c.is_ascii_hexdigit()))
+}
+fn normalized_label_name(value: &str) -> String {
+    value.trim().to_lowercase()
+}
+/// A label definition after validation, with its name, aliases and origins trimmed.
+struct LabelFields {
+    name: String,
+    aliases: Vec<String>,
+    products: Vec<LabelProductRule>,
+    linear_origins: Vec<LinearLabelOrigin>,
+}
+fn validate_label_fields(
+    name: &str,
+    description: &str,
+    color: &str,
+    aliases: &[String],
+    products: &[LabelProductRule],
+    linear_origins: &[LinearLabelOrigin],
+) -> Result<LabelFields> {
+    required(name, "label name")?;
+    let name = name.trim().to_string();
+    if name.len() > 80 {
+        return Err(err("invalid", "Label name must be at most 80 bytes"));
+    }
+    limited(description, "label description", 1_000)?;
+    if !valid_color(color) {
+        return Err(err("invalid", "Label color must be #rrggbb or empty"));
+    }
+    if aliases.len() > 20 {
+        return Err(err("invalid", "Provide at most 20 label aliases"));
+    }
+    let mut seen = HashSet::new();
+    seen.insert(normalized_label_name(&name));
+    let mut trimmed_aliases = Vec::with_capacity(aliases.len());
+    for alias in aliases {
+        required(alias, "label alias")?;
+        let alias = alias.trim().to_string();
+        if alias.len() > 80 {
+            return Err(err("invalid", "Label aliases must be at most 80 bytes"));
+        }
+        if !seen.insert(normalized_label_name(&alias)) {
+            return Err(err(
+                "invalid",
+                "Label aliases must differ from each other and from the canonical name",
+            ));
+        }
+        trimmed_aliases.push(alias);
+    }
+    if products.len() > 50 {
+        return Err(err("invalid", "Provide at most 50 label product rules"));
+    }
+    let mut product_ids = HashSet::new();
+    for rule in products {
+        required(&rule.product_id, "label product")?;
+        if !product_ids.insert(rule.product_id.clone()) {
+            return Err(err("invalid", "Each product may appear once per label"));
+        }
+    }
+    if linear_origins.len() > 50 {
+        return Err(err("invalid", "Provide at most 50 Linear label origins"));
+    }
+    let mut origin_ids = HashSet::new();
+    let mut trimmed_origins = Vec::with_capacity(linear_origins.len());
+    for origin in linear_origins {
+        required(&origin.id, "Linear label ID")?;
+        let id = origin.id.trim().to_string();
+        limited(&id, "Linear label ID", 120)?;
+        limited(&origin.name, "Linear label name", 200)?;
+        if !origin_ids.insert(id.clone()) {
+            return Err(err("invalid", "Each Linear label ID may appear once"));
+        }
+        trimmed_origins.push(LinearLabelOrigin {
+            id,
+            name: origin.name.trim().to_string(),
+        });
+    }
+    Ok(LabelFields {
+        name,
+        aliases: trimmed_aliases,
+        products: products.to_vec(),
+        linear_origins: trimmed_origins,
+    })
+}
+fn label_applies(label: &Label, product_id: &str) -> bool {
+    label.products.is_empty()
+        || label
+            .products
+            .iter()
+            .any(|rule| rule.product_id == product_id)
 }
 fn stable_id(value: &str) -> bool {
     !value.is_empty()
@@ -241,7 +364,7 @@ impl Store {
         if let Some(schema) = schema.as_deref() {
             if !matches!(
                 schema,
-                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10"
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11"
             ) {
                 return Err(err("unsupported", "Unsupported database schema"));
             }
@@ -275,7 +398,8 @@ impl Store {
              CREATE TABLE IF NOT EXISTS releases (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS release_evidence (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS release_workflows (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-             UPDATE meta SET value='10' WHERE key='schema';",
+             CREATE TABLE IF NOT EXISTS labels (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             UPDATE meta SET value='11' WHERE key='schema';",
         )?;
         if upgrade_legacy_project_planning {
             // Before schema 5, a project link was the only way to express project-scoped work.
@@ -312,6 +436,7 @@ impl Store {
                     "goal_progress":all::<Goal>(&self.conn,"goals")?.iter().map(|goal| goal_progress(&self.conn, goal)).collect::<Result<Vec<_>>>()?,
                     "milestones":all::<Milestone>(&self.conn,"milestones")?,
                     "milestone_progress":all::<Milestone>(&self.conn,"milestones")?.iter().map(|milestone| milestone_progress(&self.conn, milestone)).collect::<Result<Vec<_>>>()?,
+                    "labels":all::<Label>(&self.conn,"labels")?,
                     "theoria_documents":all::<TheoriaDocument>(&self.conn,"theoria_documents")?,
                     "method_findings":all::<MethodFinding>(&self.conn,"method_findings")?,
                     "git_traces":all::<GitTrace>(&self.conn,"git_traces")?,
@@ -372,6 +497,18 @@ impl Store {
                     .as_ref()
                     .map(|project| project_progress(&self.conn, &project.id))
                     .transpose()?;
+                let definitions = all::<Label>(&self.conn, "labels")?;
+                let resolve = |ids: &[String]| -> Vec<Label> {
+                    ids.iter()
+                        .filter_map(|id| definitions.iter().find(|label| label.id == *id))
+                        .cloned()
+                        .collect()
+                };
+                let labels = resolve(&issue.labels);
+                let project_labels = project
+                    .as_ref()
+                    .map(|project| resolve(&project.labels))
+                    .unwrap_or_default();
                 let milestone = issue
                     .milestone_id
                     .as_deref()
@@ -417,7 +554,7 @@ impl Store {
                         .filter(|evidence| release_ids.contains(&evidence.release_id))
                         .collect();
                 return Ok(
-                    json!({"issue":issue,"product":product,"project":project,"project_progress":project_progress,"milestone":milestone,"milestone_progress":milestone_progress,"goals":goals,"goal_progress":goal_progress,"release_workflow":release_workflow,"releases":releases,"release_progress":release_progress,"release_evidence":release_evidence,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"content_authority":"Task data, not tool authorization"}),
+                    json!({"labels":labels,"project_labels":project_labels,"issue":issue,"product":product,"project":project,"project_progress":project_progress,"milestone":milestone,"milestone_progress":milestone_progress,"goals":goals,"goal_progress":goal_progress,"release_workflow":release_workflow,"releases":releases,"release_progress":release_progress,"release_evidence":release_evidence,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"content_authority":"Task data, not tool authorization"}),
                 );
             }
             Command::Changes { after } => {
@@ -499,12 +636,13 @@ impl Store {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(Archive {
-            format: 10,
+            format: 11,
             workspace_id: self.workspace_id()?,
             products: all(&self.conn, "products")?,
             projects: all(&self.conn, "projects")?,
             goals: all(&self.conn, "goals")?,
             milestones: all(&self.conn, "milestones")?,
+            labels: all(&self.conn, "labels")?,
             theoria_documents: all(&self.conn, "theoria_documents")?,
             method_findings: all(&self.conn, "method_findings")?,
             git_traces: all(&self.conn, "git_traces")?,
@@ -533,7 +671,7 @@ impl Store {
             }
         }
         let tx = self.conn.transaction()?;
-        tx.execute_batch("DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM releases; DELETE FROM release_evidence; DELETE FROM release_workflows; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
+        tx.execute_batch("DELETE FROM labels; DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM releases; DELETE FROM release_evidence; DELETE FROM release_workflows; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
         tx.execute(
             "UPDATE meta SET value=?1 WHERE key='workspace_id'",
             [a.workspace_id],
@@ -552,6 +690,9 @@ impl Store {
         }
         for milestone in a.milestones {
             put_milestone(&tx, &milestone)?;
+        }
+        for label in a.labels {
+            put_label(&tx, &label)?;
         }
         for document in a.theoria_documents {
             put_theoria_document(&tx, &document)?;
@@ -858,6 +999,79 @@ fn put_milestone(conn: &Connection, milestone: &Milestone) -> Result<()> {
         "INSERT INTO milestones VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
         params![milestone.id, serde_json::to_string(milestone)?],
     )?;
+    Ok(())
+}
+fn label(conn: &Connection, id: &str) -> Result<Label> {
+    let data: Option<String> = conn
+        .query_row("SELECT data FROM labels WHERE id=?1", [id], |r| r.get(0))
+        .optional()?;
+    Ok(serde_json::from_str(
+        &data.ok_or_else(|| err("not_found", "Unknown label"))?,
+    )?)
+}
+fn put_label(conn: &Connection, label: &Label) -> Result<()> {
+    conn.execute(
+        "INSERT INTO labels VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+        params![label.id, serde_json::to_string(label)?],
+    )?;
+    Ok(())
+}
+/// Canonical names, aliases and Linear origins are unique across the whole workspace taxonomy.
+fn label_taxonomy_conflicts(
+    existing: &[Label],
+    name: &str,
+    aliases: &[String],
+    linear_origins: &[LinearLabelOrigin],
+    except: Option<&str>,
+) -> Result<()> {
+    let mut terms: Vec<String> = vec![normalized_label_name(name)];
+    terms.extend(aliases.iter().map(|alias| normalized_label_name(alias)));
+    for other in existing
+        .iter()
+        .filter(|other| Some(other.id.as_str()) != except)
+    {
+        if terms.contains(&normalized_label_name(&other.name)) {
+            return Err(err(
+                "conflict",
+                format!(
+                    "Label name or alias collides with the canonical label “{}”",
+                    other.name
+                ),
+            ));
+        }
+        if other
+            .aliases
+            .iter()
+            .any(|alias| terms.contains(&normalized_label_name(alias)))
+        {
+            return Err(err(
+                "conflict",
+                format!(
+                    "Label name or alias collides with an alias of “{}”",
+                    other.name
+                ),
+            ));
+        }
+        if other.linear_origins.iter().any(|origin| {
+            linear_origins
+                .iter()
+                .any(|candidate| candidate.id == origin.id)
+        }) {
+            return Err(err(
+                "conflict",
+                format!("Linear label ID is already mapped to “{}”", other.name),
+            ));
+        }
+    }
+    Ok(())
+}
+fn check_label_products(conn: &Connection, products: &[LabelProductRule]) -> Result<()> {
+    let known = all::<Product>(conn, "products")?;
+    for rule in products {
+        if !known.iter().any(|product| product.id == rule.product_id) {
+            return Err(err("not_found", "Unknown product in label rule"));
+        }
+    }
     Ok(())
 }
 fn theoria_document(conn: &Connection, id: &str) -> Result<TheoriaDocument> {
@@ -1304,6 +1518,7 @@ fn new_issue(
         milestone_id: None,
         planning_scope,
         theoria_refs: vec![],
+        labels: vec![],
         title: title.trim().into(),
         body: body.into(),
         acceptance: String::new(),
@@ -1356,6 +1571,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 external_source: None,
                 external_id: None,
                 external_url: None,
+                labels: vec![],
                 version: 1,
                 created_at: at,
                 updated_at: at,
@@ -1705,6 +1921,196 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             }
             tx.execute("DELETE FROM issue_links WHERE id=?1", [link_id])?;
             save(tx, i, actor, "issue_link_deleted", at)
+        }
+        Command::CreateLabel {
+            name,
+            description,
+            color,
+            aliases,
+            products,
+            linear_origins,
+        } => {
+            human(role)?;
+            let fields =
+                validate_label_fields(name, description, color, aliases, products, linear_origins)?;
+            check_label_products(tx, &fields.products)?;
+            let existing = all::<Label>(tx, "labels")?;
+            label_taxonomy_conflicts(
+                &existing,
+                &fields.name,
+                &fields.aliases,
+                &fields.linear_origins,
+                None,
+            )?;
+            let label = Label {
+                id: id(),
+                name: fields.name,
+                description: description.clone(),
+                color: color.to_lowercase(),
+                aliases: fields.aliases,
+                products: fields.products,
+                linear_origins: fields.linear_origins,
+                version: 1,
+                created_at: at,
+                updated_at: at,
+            };
+            put_label(tx, &label)?;
+            emit(tx, actor, "label_created", &label.id, at)?;
+            Ok(json!(label))
+        }
+        Command::UpdateLabel {
+            id,
+            expected_version,
+            name,
+            description,
+            color,
+            aliases,
+            products,
+            linear_origins,
+        } => {
+            human(role)?;
+            let mut label = label(tx, id)?;
+            if label.version != *expected_version {
+                return Err(err(
+                    "conflict",
+                    "Label changed; reopen its editor before retrying",
+                ));
+            }
+            let fields =
+                validate_label_fields(name, description, color, aliases, products, linear_origins)?;
+            check_label_products(tx, &fields.products)?;
+            let existing = all::<Label>(tx, "labels")?;
+            label_taxonomy_conflicts(
+                &existing,
+                &fields.name,
+                &fields.aliases,
+                &fields.linear_origins,
+                Some(id),
+            )?;
+            // Narrowing applicability must not orphan existing assignments; detach first.
+            if !fields.products.is_empty() {
+                let allowed: HashSet<&str> = fields
+                    .products
+                    .iter()
+                    .map(|rule| rule.product_id.as_str())
+                    .collect();
+                let issue_conflict = all::<Issue>(tx, "issues")?.into_iter().find(|issue| {
+                    issue.labels.contains(id) && !allowed.contains(issue.product_id.as_str())
+                });
+                if let Some(issue) = issue_conflict {
+                    return Err(err(
+                        "invalid",
+                        format!("Label is attached to {} outside the selected products; detach it first", issue.key),
+                    ));
+                }
+                let project_conflict =
+                    all::<Project>(tx, "projects")?.into_iter().find(|project| {
+                        project.labels.contains(id)
+                            && !allowed.contains(project.product_id.as_str())
+                    });
+                if let Some(project) = project_conflict {
+                    return Err(err(
+                        "invalid",
+                        format!("Label is attached to project “{}” outside the selected products; detach it first", project.name),
+                    ));
+                }
+            }
+            label.name = fields.name;
+            label.description = description.clone();
+            label.color = color.to_lowercase();
+            label.aliases = fields.aliases;
+            label.products = fields.products;
+            label.linear_origins = fields.linear_origins;
+            label.version += 1;
+            label.updated_at = at;
+            put_label(tx, &label)?;
+            emit(tx, actor, "label_updated", id, at)?;
+            Ok(json!(label))
+        }
+        Command::AttachIssueLabel {
+            key,
+            expected_version,
+            label_id,
+        }
+        | Command::DetachIssueLabel {
+            key,
+            expected_version,
+            label_id,
+        } => {
+            let attach = matches!(cmd, Command::AttachIssueLabel { .. });
+            let mut i = version(tx, key, *expected_version)?;
+            if role == Role::Agent {
+                if matches!(
+                    i.status,
+                    Status::Verify | Status::Done | Status::LegacyCompleted | Status::Canceled
+                ) {
+                    human(role)?;
+                }
+                if i.status == Status::Doing {
+                    held(&i, actor, at)?;
+                }
+            }
+            let label = label(tx, label_id)?;
+            let event = if attach {
+                if !label_applies(&label, &i.product_id) {
+                    return Err(err("invalid", "Label does not apply to this product"));
+                }
+                if i.labels.contains(label_id) {
+                    return Err(err("conflict", "Label is already attached"));
+                }
+                i.labels.push(label.id);
+                "issue_label_attached"
+            } else {
+                if !i.labels.contains(label_id) {
+                    return Err(err("conflict", "Label is not attached"));
+                }
+                i.labels.retain(|id| id != label_id);
+                "issue_label_detached"
+            };
+            // Labels are filtering metadata: readiness, priority, ownership and evidence stay as they are.
+            save(tx, i, actor, event, at)
+        }
+        Command::AttachProjectLabel {
+            id,
+            expected_version,
+            label_id,
+        }
+        | Command::DetachProjectLabel {
+            id,
+            expected_version,
+            label_id,
+        } => {
+            human(role)?;
+            let attach = matches!(cmd, Command::AttachProjectLabel { .. });
+            let mut p = project(tx, id)?;
+            if p.version != *expected_version {
+                return Err(err(
+                    "conflict",
+                    "Project changed; reopen its editor before retrying",
+                ));
+            }
+            let label = label(tx, label_id)?;
+            let event = if attach {
+                if !label_applies(&label, &p.product_id) {
+                    return Err(err("invalid", "Label does not apply to this product"));
+                }
+                if p.labels.contains(label_id) {
+                    return Err(err("conflict", "Label is already attached"));
+                }
+                p.labels.push(label.id);
+                "project_label_attached"
+            } else {
+                if !p.labels.contains(label_id) {
+                    return Err(err("conflict", "Label is not attached"));
+                }
+                p.labels.retain(|id| id != label_id);
+                "project_label_detached"
+            };
+            p.version += 1;
+            p.updated_at = at;
+            put_project(tx, &p)?;
+            emit(tx, actor, event, id, at)?;
+            Ok(json!(p))
         }
         Command::SyncTheoria {
             product,
@@ -2662,6 +3068,17 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             i.acceptance = acceptance.clone();
             i.owner = owner.clone();
             i.priority = priority.clone();
+            // Product defaults attach the shared definition; they never copy it per product.
+            i.labels = all::<Label>(tx, "labels")?
+                .into_iter()
+                .filter(|label| {
+                    label
+                        .products
+                        .iter()
+                        .any(|rule| rule.product_id == p.id && rule.default_for_new_issues)
+                })
+                .map(|label| label.id)
+                .collect();
             put_issue(tx, &i)?;
             emit(tx, actor, "issue_created", &i.key, at)?;
             Ok(json!(i))
@@ -2868,6 +3285,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             delivery_ref,
             summary,
             checks,
+            e2e,
             limitations,
             preconditions,
             steps,
@@ -2877,6 +3295,13 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             if i.status != Status::Doing {
                 return Err(err("invalid", "Work must be Doing before submission"));
             }
+            let evidence = e2e.as_ref().ok_or_else(|| {
+                err(
+                    "invalid",
+                    "End-to-end and delivered-build evidence is required before owner verification",
+                )
+            })?;
+            validate_e2e(evidence, build_ref)?;
             for (v, n) in [
                 (build_ref, "tested build"),
                 (delivery_ref, "delivery reference"),
@@ -2922,6 +3347,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 delivery_ref: delivery_ref.clone(),
                 summary: summary.clone(),
                 checks: checks.clone(),
+                e2e: e2e.clone(),
                 limitations: limitations.clone(),
                 preconditions: preconditions.clone(),
                 steps: steps.clone(),
@@ -3073,7 +3499,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
 }
 
 pub fn validate_archive(a: &Archive) -> Result<()> {
-    if !matches!(a.format, 1..=10) {
+    if !matches!(a.format, 1..=11) {
         return Err(err("unsupported", "Unsupported archive format"));
     }
     Uuid::parse_str(&a.workspace_id).map_err(|_| err("invalid", "Invalid workspace identity"))?;
@@ -3264,10 +3690,72 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             "Release workflow data requires archive format 10",
         ));
     }
+    if a.format < 11
+        && (!a.labels.is_empty()
+            || a.issues.iter().any(|issue| !issue.labels.is_empty())
+            || a.projects.iter().any(|project| !project.labels.is_empty()))
+    {
+        return Err(err("invalid", "Label data requires archive format 11"));
+    }
+    let mut label_ids = HashSet::new();
+    for (index, label) in a.labels.iter().enumerate() {
+        let fields = validate_label_fields(
+            &label.name,
+            &label.description,
+            &label.color,
+            &label.aliases,
+            &label.products,
+            &label.linear_origins,
+        )?;
+        if Uuid::parse_str(&label.id).is_err()
+            || !label_ids.insert(label.id.clone())
+            || label.version == 0
+            || fields.name != label.name
+            || fields.aliases != label.aliases
+            || fields.linear_origins != label.linear_origins
+            || fields
+                .products
+                .iter()
+                .any(|rule| !product_ids.contains(&rule.product_id))
+        {
+            return Err(err("invalid", "Invalid or duplicate label"));
+        }
+        label_taxonomy_conflicts(
+            &a.labels[..index],
+            &label.name,
+            &label.aliases,
+            &label.linear_origins,
+            None,
+        )?;
+    }
+    for i in &a.issues {
+        let mut attached = HashSet::new();
+        for id in &i.labels {
+            let label = a
+                .labels
+                .iter()
+                .find(|label| label.id == *id)
+                .ok_or_else(|| err("invalid", "Unresolved label reference"))?;
+            if !attached.insert(id.clone()) || !label_applies(label, &i.product_id) {
+                return Err(err("invalid", "Invalid label assignment"));
+            }
+        }
+    }
     let mut project_ids = HashSet::new();
     let mut project_names = HashSet::new();
     let mut project_sources = HashSet::new();
     for p in &a.projects {
+        let mut attached = HashSet::new();
+        for id in &p.labels {
+            let label = a
+                .labels
+                .iter()
+                .find(|label| label.id == *id)
+                .ok_or_else(|| err("invalid", "Unresolved label reference"))?;
+            if !attached.insert(id.clone()) || !label_applies(label, &p.product_id) {
+                return Err(err("invalid", "Invalid label assignment"));
+            }
+        }
         required(&p.id, "project ID")?;
         validate_project_fields(&p.name, &p.priority, p.sort_order)?;
         validate_optional_provenance(p.external_source.as_deref(), p.external_id.as_deref())?;
@@ -3512,6 +4000,14 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             )
         {
             return Err(err("invalid", "Invalid, duplicate, or cyclic issue link"));
+        }
+    }
+    for verification in &a.verifications {
+        if let Some(evidence) = &verification.e2e {
+            if a.format < 11 {
+                return Err(err("invalid", "E2E evidence requires archive format 11"));
+            }
+            validate_e2e(evidence, &verification.build_ref)?;
         }
     }
     let run_ids: HashSet<_> = a.verifications.iter().map(|v| v.id.clone()).collect();

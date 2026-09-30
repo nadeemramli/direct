@@ -78,6 +78,19 @@ pub struct StepInput {
 
 #[derive(Debug, Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+pub struct E2eParams {
+    pub build_ref: String,
+    pub environment: String,
+    pub entrypoint: String,
+    pub scenarios: String,
+    /// Must be passed; pending, failed and canceled checks block submission.
+    pub outcome: String,
+    pub delivered_build_ref: String,
+    pub delivery_check: String,
+}
+
+#[derive(Debug, Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 pub struct SubmitParams {
     /// Issue key, for example DIR-10.
     pub key: String,
@@ -93,6 +106,7 @@ pub struct SubmitParams {
     pub summary: String,
     /// The checks actually run and their observed results.
     pub checks: String,
+    pub e2e: E2eParams,
     /// What remains unverified.
     #[serde(default)]
     pub limitations: Option<String>,
@@ -364,6 +378,20 @@ impl DirectMcp {
                 delivery_ref: params.delivery_ref,
                 summary: params.summary,
                 checks: params.checks,
+                e2e: Some(direct_core::E2eEvidence {
+                    build_ref: params.e2e.build_ref,
+                    environment: params.e2e.environment,
+                    entrypoint: params.e2e.entrypoint,
+                    scenarios: params.e2e.scenarios,
+                    outcome: match params.e2e.outcome.as_str() {
+                        "passed" => direct_core::Outcome::Passed,
+                        "failed" => direct_core::Outcome::Failed,
+                        "canceled" => direct_core::Outcome::Canceled,
+                        _ => direct_core::Outcome::Pending,
+                    },
+                    delivered_build_ref: params.e2e.delivered_build_ref,
+                    delivery_check: params.e2e.delivery_check,
+                }),
                 limitations: params.limitations.unwrap_or_default(),
                 preconditions: params.preconditions.unwrap_or_default(),
                 steps: params

@@ -135,7 +135,7 @@ fn production_requires_distinct_git_preview_and_owner_verified_work() {
 
     let submitted = send(
         &mut store,
-        json!({"op":"submit","key":key,"expected_version":6,"build_ref":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","delivery_ref":"origin/codex/release","summary":"Release work","checks":"passed","steps":[{"instruction":"Verify","expected":"Works"}]}),
+        json!({"op":"submit","key":key,"expected_version":6,"build_ref":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","e2e":{"build_ref":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","environment":"isolated Windows fixture","entrypoint":"fixture client","scenarios":"Exercise the full fixture workflow; expected and observed state transitions match","outcome":"passed","delivered_build_ref":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","delivery_check":"Fixture service and client use the tested build"},"delivery_ref":"origin/codex/release","summary":"Release work","checks":"passed","steps":[{"instruction":"Verify","expected":"Works"}]}),
         Role::Agent,
         113,
     )
@@ -187,7 +187,7 @@ fn production_requires_distinct_git_preview_and_owner_verified_work() {
     assert_eq!(context["release_evidence"].as_array().unwrap().len(), 7);
 
     let archive = store.export().unwrap();
-    assert_eq!(archive.format, 10);
+    assert_eq!(archive.format, 11);
     validate_archive(&archive).unwrap();
     let before = serde_json::to_value(&archive).unwrap();
     let mut restored = Store::open(&dir.path().join("restored")).unwrap();
@@ -278,7 +278,7 @@ fn release_progress_keeps_pending_and_failed_verification_separate() {
     let release_id = release["id"].as_str().unwrap();
     let submitted = send(
         &mut store,
-        json!({"op":"submit","key":key,"expected_version":4,"build_ref":"build-1","delivery_ref":"preview-1","summary":"Candidate","checks":"automated checks passed","steps":[{"instruction":"Exercise flow","expected":"Works"}]}),
+        json!({"op":"submit","key":key,"expected_version":4,"build_ref":"build-1","e2e":{"build_ref":"build-1","environment":"isolated Windows fixture","entrypoint":"fixture client","scenarios":"Exercise the full fixture workflow; expected and observed state transitions match","outcome":"passed","delivered_build_ref":"build-1","delivery_check":"Fixture service and client use the tested build"},"delivery_ref":"preview-1","summary":"Candidate","checks":"automated checks passed","steps":[{"instruction":"Exercise flow","expected":"Works"}]}),
         Role::Agent,
         305,
     )

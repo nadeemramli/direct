@@ -89,6 +89,16 @@ enum Cli {
         summary: String,
         #[arg(long)]
         checks: String,
+        #[arg(long)]
+        e2e_environment: String,
+        #[arg(long)]
+        e2e_entrypoint: String,
+        #[arg(long)]
+        e2e_scenarios: String,
+        #[arg(long)]
+        delivered_build_ref: String,
+        #[arg(long)]
+        delivery_check: String,
         #[arg(long, default_value = "")]
         limitations: String,
         #[arg(long, default_value = "")]
@@ -322,8 +332,8 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             };
         }
     }
-    if expected.format < 10 {
-        expected.format = 10;
+    if expected.format < 11 {
+        expected.format = 11;
     }
     fs::create_dir(restore_dir)
         .context("Create the recovery workspace beneath an existing parent")?;
@@ -360,6 +370,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             "issue_links": true,
             "goals_and_milestones": true,
             "theoria_records": true,
+            "labels": true,
             "events_and_request_replays": true
         },
         "source_format": source_format,
@@ -371,6 +382,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             "projects": archive.projects.len(),
             "goals": archive.goals.len(),
             "milestones": archive.milestones.len(),
+            "labels": archive.labels.len(),
             "issues": archive.issues.len(),
             "comments": archive.comments.len(),
             "verification_runs": archive.verifications.len(),
@@ -387,7 +399,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             "attachments": {
                 "supported": false,
                 "count": 0,
-                "note": "Archive format 10 has no attachment record type"
+                "note": "Archive format 11 has no attachment record type"
         }
     }))
 }
@@ -427,6 +439,11 @@ fn workflow_request(actor: &str, command: &Cli) -> Result<Option<Request>> {
             delivery_ref,
             summary,
             checks,
+            e2e_environment,
+            e2e_entrypoint,
+            e2e_scenarios,
+            delivered_build_ref,
+            delivery_check,
             limitations,
             preconditions,
             step,
@@ -440,6 +457,15 @@ fn workflow_request(actor: &str, command: &Cli) -> Result<Option<Request>> {
                 delivery_ref: delivery_ref.clone(),
                 summary: summary.clone(),
                 checks: checks.clone(),
+                e2e: Some(direct_core::E2eEvidence {
+                    build_ref: build_ref.clone(),
+                    environment: e2e_environment.clone(),
+                    entrypoint: e2e_entrypoint.clone(),
+                    scenarios: e2e_scenarios.clone(),
+                    outcome: direct_core::Outcome::Passed,
+                    delivered_build_ref: delivered_build_ref.clone(),
+                    delivery_check: delivery_check.clone(),
+                }),
                 limitations: limitations.clone(),
                 preconditions: preconditions.clone(),
                 steps: step
@@ -867,6 +893,16 @@ mod tests {
             "codex/dir5-agent-handoffs",
             "--summary",
             "Added native workflow commands",
+            "--e2e-environment",
+            "isolated Windows fixture",
+            "--e2e-entrypoint",
+            "fixture CLI",
+            "--e2e-scenarios",
+            "Claim, renew and submit through CLI; persisted context matches",
+            "--delivered-build-ref",
+            "commit:0123456789abcdef0123456789abcdef01234567",
+            "--delivery-check",
+            "Fixture client and service launched from this build",
             "--checks",
             "cargo test passed",
             "--limitations",
@@ -994,15 +1030,22 @@ mod tests {
     fn recovery_check_normalizes_supported_older_formats() {
         let temp = TempDir::new().unwrap();
         let store = Store::open(&temp.path().join("source.db")).unwrap();
-        let mut archive = store.export().unwrap();
-        archive.format = 3;
-        let source = temp.path().join("format-3.json");
-        fs::write(&source, serde_json::to_vec_pretty(&archive).unwrap()).unwrap();
+        for format in [3u32, 5] {
+            let mut archive = store.export().unwrap();
+            archive.format = format;
+            let source = temp.path().join(format!("format-{format}.json"));
+            fs::write(&source, serde_json::to_vec_pretty(&archive).unwrap()).unwrap();
 
-        let report = recovery_check(&source, &temp.path().join("restored-v5")).unwrap();
-        assert_eq!(report["source_format"], 3);
-        assert_eq!(report["restored_format"], 10);
-        assert_eq!(report["compatibility_upgrade_applied"], true);
-        assert_eq!(report["semantic_archive_match"], true);
+            let report = recovery_check(
+                &source,
+                &temp.path().join(format!("restored-from-{format}")),
+            )
+            .unwrap();
+            assert_eq!(report["source_format"], format);
+            assert_eq!(report["restored_format"], 11);
+            assert_eq!(report["records"]["labels"], 0);
+            assert_eq!(report["compatibility_upgrade_applied"], true);
+            assert_eq!(report["semantic_archive_match"], true);
+        }
     }
 }

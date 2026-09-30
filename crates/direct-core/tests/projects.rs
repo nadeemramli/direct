@@ -140,7 +140,7 @@ fn grouping_respects_claims_and_carries_verification_children() {
         "claim_required"
     );
     send(&mut s, assignment, Role::Agent).unwrap();
-    let submitted = send(&mut s, json!({"op":"submit","key":key,"expected_version":5,"build_ref":"abc","delivery_ref":"branch","summary":"Done","checks":"Passed","steps":[{"instruction":"Try it","expected":"Works"}]}), Role::Agent).unwrap();
+    let submitted = send(&mut s, json!({"op":"submit","key":key,"expected_version":5,"build_ref":"abc","e2e":{"build_ref":"abc","environment":"isolated Windows fixture","entrypoint":"fixture client","scenarios":"Exercise the full fixture workflow; expected and observed state transitions match","outcome":"passed","delivered_build_ref":"abc","delivery_check":"Fixture service and client use the tested build"},"delivery_ref":"branch","summary":"Done","checks":"Passed","steps":[{"instruction":"Try it","expected":"Works"}]}), Role::Agent).unwrap();
     let archive = s.export().unwrap();
     validate_archive(&archive).unwrap();
     assert!(archive
@@ -226,7 +226,7 @@ fn project_first_intake_metadata_and_verified_progress_are_enforced() {
     );
     let submitted = send(
         &mut s,
-        json!({"op":"submit","key":key,"expected_version":4,"build_ref":"commit:abc","delivery_ref":"branch","summary":"Done","checks":"Passed","steps":[{"instruction":"Open it","expected":"It works"}]}),
+        json!({"op":"submit","key":key,"expected_version":4,"build_ref":"commit:abc","e2e":{"build_ref":"commit:abc","environment":"isolated Windows fixture","entrypoint":"fixture client","scenarios":"Exercise the full fixture workflow; expected and observed state transitions match","outcome":"passed","delivered_build_ref":"commit:abc","delivery_check":"Fixture service and client use the tested build"},"delivery_ref":"branch","summary":"Done","checks":"Passed","steps":[{"instruction":"Open it","expected":"It works"}]}),
         Role::Agent,
     )
     .unwrap();
@@ -338,7 +338,7 @@ fn legacy_database_and_archive_upgrade_without_losing_identity_or_replays() {
         conn.query_row("SELECT value FROM meta WHERE key='schema'", [], |r| r
             .get::<_, String>(0))
             .unwrap(),
-        "10"
+        "11"
     );
     let mut restored = Store::open(&dir.path().join("restore-v1")).unwrap();
     restored

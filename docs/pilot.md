@@ -28,8 +28,8 @@ Read live status and acceptance criteria in Direct. `scripts/seed-pilot.ps1` per
 ## Working loop
 
 1. Owner authorizes a bounded task and readiness is recorded.
-2. Agent reads context, claims, implements, and records actual checks.
-3. Agent submits a specific build and manual steps. The item appears in Needs me.
+2. Agent reads context, claims, implements, and proves the complete acceptance flows with observed end-to-end evidence.
+3. Agent integrates and installs the tested build, checks it at the owner's real entrypoint, then submits matching tested/delivered build evidence and manual confirmation steps. See [the E2E delivery contract](e2e-delivery.md). Cloud-only or uninstalled work stays with the agent.
 4. Owner tests and passes or fails it. Failed work is fixed and resubmitted as a new run; cancellation is never success.
 
 Count only real parent issues with owner-recorded passing outcomes toward the ten-delivery pilot. Verification children and synthetic tests do not add to the count. Record failures when they happen; do not manufacture failures to satisfy a metric.

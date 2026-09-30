@@ -154,7 +154,7 @@ fn commit_and_successful_push_are_claimed_idempotent_and_visible() {
 
     let submitted = send(
         &mut store,
-        json!({"op":"submit","key":key,"expected_version":6,"build_ref":"commit:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","delivery_ref":"origin/codex/git-trace","summary":"Git trace implemented","checks":"passed","steps":[{"instruction":"Open Activity","expected":"Commit and push appear"}]}),
+        json!({"op":"submit","key":key,"expected_version":6,"build_ref":"commit:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","e2e":{"build_ref":"commit:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","environment":"isolated Windows fixture","entrypoint":"fixture client","scenarios":"Exercise the full fixture workflow; expected and observed state transitions match","outcome":"passed","delivered_build_ref":"commit:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","delivery_check":"Fixture service and client use the tested build"},"delivery_ref":"origin/codex/git-trace","summary":"Git trace implemented","checks":"passed","steps":[{"instruction":"Open Activity","expected":"Commit and push appear"}]}),
         Role::Agent,
         110,
     )
@@ -177,7 +177,7 @@ fn commit_and_successful_push_are_claimed_idempotent_and_visible() {
     );
 
     let archive = store.export().unwrap();
-    assert_eq!(archive.format, 10);
+    assert_eq!(archive.format, 11);
     assert_eq!(archive.git_traces.len(), 2);
     validate_archive(&archive).unwrap();
     let before = serde_json::to_value(&archive).unwrap();

@@ -23,7 +23,7 @@ fn prepared(store: &mut Store) -> Value {
     .unwrap()
 }
 fn submission(key: &str, version: u64) -> Value {
-    json!({"op":"submit","request_id":"handoff-1","key":key,"expected_version":version,"build_ref":"commit:abc123","delivery_ref":"main:abc123","summary":"Live updates implemented","checks":"4 checks passed","steps":[{"instruction":"Create an issue from WSL","expected":"It appears without reload"}]})
+    json!({"op":"submit","request_id":"handoff-1","key":key,"expected_version":version,"build_ref":"commit:abc123","e2e":{"build_ref":"commit:abc123","environment":"isolated Windows fixture","entrypoint":"fixture client","scenarios":"Exercise the full fixture workflow; expected and observed state transitions match","outcome":"passed","delivered_build_ref":"commit:abc123","delivery_check":"Fixture service and client use the tested build"},"delivery_ref":"main:abc123","summary":"Live updates implemented","checks":"4 checks passed","steps":[{"instruction":"Create an issue from WSL","expected":"It appears without reload"}]})
 }
 
 #[test]
@@ -66,6 +66,8 @@ fn human_verification_and_cancellation_cannot_be_bypassed() {
     let mut new = submission(key, 7);
     new["request_id"] = json!("handoff-2");
     new["build_ref"] = json!("commit:def456");
+    new["e2e"]["build_ref"] = new["build_ref"].clone();
+    new["e2e"]["delivered_build_ref"] = new["build_ref"].clone();
     let new_run = send(&mut s, new, Role::Agent, 108).unwrap();
     let mut pass2 = pass;
     pass2["expected_version"] = json!(8);

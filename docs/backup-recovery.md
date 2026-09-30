@@ -46,7 +46,7 @@ Choose a retained archive and a new directory that does not exist:
 
 The command verifies the checksum when its sibling `.sha256` file is present, validates the archive, restores it into the new isolated workspace, re-exports the restored store, and requires the complete semantic archive to match. Older supported formats are compared after Direct's documented compatibility normalization, and the report identifies any format upgrade. Its JSON report includes the workspace identity and counts for products, goals, projects, milestones, releases, release evidence, release workflows, issues, issue links, comments, verification runs, Git evidence, Theoria documents/findings, events, and replay records. A current-format archive should also reproduce byte for byte; an older archive may differ because its restored export uses the current format.
 
-Direct archive format 10 has no attachment record type, so the report explicitly marks attachments unsupported rather than claiming they were tested. When attachments are added later, both the archive schema and this check must be extended before recovery can be claimed for them.
+Direct archive format 11 has no attachment record type, so the report explicitly marks attachments unsupported rather than claiming they were tested. When attachments are added later, both the archive schema and this check must be extended before recovery can be claimed for them.
 
 The recovery directory is intentionally left in place for inspection. It is an isolated Direct workspace; do not point the live service at it during a drill. Remove it only after the evidence has been reviewed and any needed report has been retained.
 

@@ -32,6 +32,7 @@ export interface Issue {
   milestone_id?: string | null;
   planning_scope?: PlanningScope;
   theoria_refs: TheoriaReference[];
+  labels?: string[];
   title: string;
   body: string;
   acceptance: string;
@@ -79,6 +80,26 @@ export interface IssueLink {
 export interface IssueLinkContext extends IssueLink {
   direction: "incoming" | "outgoing";
   issue: Issue;
+}
+export interface LabelProductRule {
+  product_id: string;
+  default_for_new_issues: boolean;
+}
+export interface LinearLabelOrigin {
+  id: string;
+  name: string;
+}
+export interface Label {
+  id: string;
+  name: string;
+  description: string;
+  color: string;
+  aliases: string[];
+  products: LabelProductRule[];
+  linear_origins: LinearLabelOrigin[];
+  version: number;
+  created_at: number;
+  updated_at: number;
 }
 export interface TheoriaReference {
   document_id: string;
@@ -215,6 +236,15 @@ export interface ReleaseProgress {
   completion_percent: number;
 }
 export interface Verification {
+  e2e?: {
+    build_ref: string;
+    delivered_build_ref: string;
+    environment: string;
+    entrypoint: string;
+    scenarios: string;
+    outcome: Outcome;
+    delivery_check: string;
+  } | null;
   id: string;
   issue_key: string;
   build_ref: string;
@@ -242,6 +272,8 @@ export interface Context {
   goals: Goal[];
   goal_progress: GoalProgress[];
   issue_links: IssueLinkContext[];
+  labels?: Label[];
+  project_labels?: Label[];
   comments: { id: string; actor: string; body: string; at: number }[];
   more_comments: boolean;
   verifications: Verification[];
@@ -262,6 +294,7 @@ export interface Snapshot {
   goal_progress: GoalProgress[];
   milestones: Milestone[];
   milestone_progress: MilestoneProgress[];
+  labels?: Label[];
   theoria_documents: TheoriaDocument[];
   method_findings: MethodFinding[];
   git_traces?: GitTrace[];
@@ -284,6 +317,7 @@ export interface Project {
   external_source?: string | null;
   external_id?: string | null;
   external_url?: string | null;
+  labels?: string[];
   version: number;
   created_at: number;
   updated_at: number;

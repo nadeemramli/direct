@@ -139,7 +139,7 @@ fn issue_links_are_inspectable_cycle_safe_and_round_trip() {
     let snapshot = send(&mut store, json!({"op":"snapshot"}), Role::Agent).unwrap();
     assert_eq!(snapshot["issue_links"].as_array().unwrap().len(), 4);
     let before = store.export().unwrap();
-    assert_eq!(before.format, 10);
+    assert_eq!(before.format, 11);
     validate_archive(&before).unwrap();
     let mut restored = Store::open(&dir.path().join("restored")).unwrap();
     restored.restore(before.clone()).unwrap();
@@ -228,7 +228,7 @@ fn direct_verification_runs_remain_distinct_from_imported_legacy_links() {
     .unwrap();
     let submitted = send(
         &mut store,
-        json!({"op":"submit","key":key,"expected_version":4,"build_ref":"build","delivery_ref":"branch","summary":"Done","checks":"Passed","steps":[{"instruction":"Try it","expected":"Works"}]}),
+        json!({"op":"submit","key":key,"expected_version":4,"build_ref":"build","e2e":{"build_ref":"build","environment":"isolated Windows fixture","entrypoint":"fixture client","scenarios":"Exercise the full fixture workflow; expected and observed state transitions match","outcome":"passed","delivered_build_ref":"build","delivery_check":"Fixture service and client use the tested build"},"delivery_ref":"branch","summary":"Done","checks":"Passed","steps":[{"instruction":"Try it","expected":"Works"}]}),
         Role::Agent,
     )
     .unwrap();

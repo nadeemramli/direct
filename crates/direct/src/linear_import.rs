@@ -229,12 +229,13 @@ pub fn dry_run(source: &Path, project_id: &str, output: &Path) -> Result<Value> 
         })
         .sum();
     let archive = Archive {
-        format: 10,
+        format: 11,
         workspace_id: project_id.to_owned(),
         products: vec![product],
         projects: vec![project],
         goals,
         milestones,
+        labels: vec![],
         theoria_documents: vec![],
         method_findings: vec![],
         git_traces: vec![],
@@ -458,6 +459,7 @@ fn import_project(
         }
     };
     Ok(Project {
+        labels: vec![],
         id: required_string(value, "id")?,
         product_id: product_id.into(),
         name: required_string(value, "name")?,
@@ -575,6 +577,7 @@ fn import_issue(
         history,
     };
     Ok(Issue {
+        labels: vec![],
         id: required_string(value, "id")?,
         key: required_string(value, "identifier")?,
         product_id: product.id.clone(),

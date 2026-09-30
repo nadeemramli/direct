@@ -89,7 +89,7 @@ fn goals_milestones_progress_context_and_restore_follow_real_outcomes() {
     .unwrap();
     let submitted = send(
         &mut store,
-        json!({"op":"submit","key":key,"expected_version":5,"build_ref":"build","delivery_ref":"branch","summary":"Done","checks":"Passed","steps":[{"instruction":"Try it","expected":"Works"}]}),
+        json!({"op":"submit","key":key,"expected_version":5,"build_ref":"build","e2e":{"build_ref":"build","environment":"isolated Windows fixture","entrypoint":"fixture client","scenarios":"Exercise the full fixture workflow; expected and observed state transitions match","outcome":"passed","delivered_build_ref":"build","delivery_check":"Fixture service and client use the tested build"},"delivery_ref":"branch","summary":"Done","checks":"Passed","steps":[{"instruction":"Try it","expected":"Works"}]}),
         Role::Agent,
         109,
     )
@@ -146,7 +146,7 @@ fn goals_milestones_progress_context_and_restore_follow_real_outcomes() {
     assert_eq!(context["goal_progress"][0]["completed"], 1);
 
     let archive = store.export().unwrap();
-    assert_eq!(archive.format, 10);
+    assert_eq!(archive.format, 11);
     assert_eq!(
         archive.goals[0].external_id.as_deref(),
         Some("initiative-123")
@@ -278,6 +278,7 @@ fn planning_hierarchy_rejects_cross_scope_duplicates_and_untyped_cycles() {
         milestone_id: Some(milestone["id"].as_str().unwrap().into()),
         planning_scope: PlanningScope::Project,
         theoria_refs: vec![],
+        labels: vec![],
         title: "Broken".into(),
         body: String::new(),
         acceptance: String::new(),

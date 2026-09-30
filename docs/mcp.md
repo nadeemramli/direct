@@ -87,3 +87,5 @@ cargo test -p direct-mcp
 ```
 
 The tests start an isolated Direct service in a temporary directory and drive the real `direct-mcp` binary over stdio: initialization and tool discovery, context reads, claim/renew/submit with exact retries, rejected replays and stale versions, cross-actor rejection, absent owner-only tools, token-leak scans, and service survival after the MCP process exits. They never touch the owner's workspace.
+
+`direct_submit` now requires an `e2e` object with `build_ref`, `delivered_build_ref`, `environment`, `entrypoint`, `scenarios`, `outcome` (`passed`), and `delivery_check`. Both build references must match the submitted build. Follow [E2E delivery](e2e-delivery.md); a cloud-only result is a handoff to an integration agent, not a request for owner verification.

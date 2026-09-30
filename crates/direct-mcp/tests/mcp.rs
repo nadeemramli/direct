@@ -271,7 +271,7 @@ fn claim_exact_retry_renew_and_submit_flow_through_the_agent_contract() {
 
         let submit_args = json!({
             "key":"DIR-1","expected_version":5,"request_id":"mcp-submit-1",
-            "build_ref":"commit:0123456789abcdef0123456789abcdef01234567",
+            "build_ref":"commit:0123456789abcdef0123456789abcdef01234567","e2e":{"build_ref":"commit:0123456789abcdef0123456789abcdef01234567","environment":"isolated Windows fixture","entrypoint":"fixture client","scenarios":"Exercise the full fixture workflow; expected and observed state transitions match","outcome":"passed","delivered_build_ref":"commit:0123456789abcdef0123456789abcdef01234567","delivery_check":"Fixture service and client use the tested build"},
             "delivery_ref":"claude/dir10-local-mcp",
             "summary":"Added the local MCP path",
             "checks":"cargo test -p direct-mcp passed",
@@ -368,7 +368,7 @@ fn changed_payloads_stale_versions_and_other_actors_are_rejected() {
             "direct_submit",
             json!({
                 "key":"DIR-1","expected_version":4,"request_id":"other-submit-1",
-                "build_ref":"commit:0123456789abcdef0123456789abcdef01234567",
+                "build_ref":"commit:0123456789abcdef0123456789abcdef01234567","e2e":{"build_ref":"commit:0123456789abcdef0123456789abcdef01234567","environment":"isolated Windows fixture","entrypoint":"fixture client","scenarios":"Exercise the full fixture workflow; expected and observed state transitions match","outcome":"passed","delivered_build_ref":"commit:0123456789abcdef0123456789abcdef01234567","delivery_check":"Fixture service and client use the tested build"},
                 "delivery_ref":"branch","summary":"s","checks":"c",
                 "steps":[{"instruction":"i","expected":"e"}]
             }),
@@ -451,7 +451,7 @@ fn owner_only_operations_cannot_be_invoked_and_submission_cannot_self_approve() 
             "direct_submit",
             json!({
                 "key":"DIR-1","expected_version":4,"request_id":"mcp-submit-1",
-                "build_ref":"commit:0123456789abcdef0123456789abcdef01234567",
+                "build_ref":"commit:0123456789abcdef0123456789abcdef01234567","e2e":{"build_ref":"commit:0123456789abcdef0123456789abcdef01234567","environment":"isolated Windows fixture","entrypoint":"fixture client","scenarios":"Exercise the full fixture workflow; expected and observed state transitions match","outcome":"passed","delivered_build_ref":"commit:0123456789abcdef0123456789abcdef01234567","delivery_check":"Fixture service and client use the tested build"},
                 "delivery_ref":"branch","summary":"s","checks":"c",
                 "steps":[{"instruction":"i","expected":"e"}]
             }),
