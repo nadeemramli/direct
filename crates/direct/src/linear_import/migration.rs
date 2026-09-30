@@ -145,6 +145,7 @@ pub fn prepare(
         issue_links: archive.issue_links.clone(),
         reused_products: plan.reused_products.clone(),
         reused_labels: plan.reused_labels.clone(),
+        reused_label_origins: plan.reused_label_origins.clone(),
         bundle: retained.bundle,
         files,
         records,

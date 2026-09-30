@@ -364,6 +364,52 @@ fn prepared_migration_merges_into_existing_workspace_with_native_retained_access
         .is_err());
 
     // Refusals leave the workspace byte-identical.
+    // Reused-label drift after preparation: removing the Linear origin from the
+    // mapped label must make preview refuse; a rename that keeps it still works.
+    const FEATURE_ORIGIN: &str = "20000000-0000-4000-8000-000000000004";
+    let feature_label = |client: &Client| {
+        export(client)
+            .labels
+            .into_iter()
+            .find(|label| {
+                label.name.starts_with("Feature")
+                    && label.aliases.is_empty()
+                    && !label.name.contains('(')
+            })
+            .unwrap()
+    };
+    let label = feature_label(&client);
+    call(
+        &client,
+        json!({"op": "update_label", "id": label.id, "expected_version": label.version, "name": "Feature",
+            "description": "", "color": "", "aliases": [], "products": [], "linear_origins": []}),
+        Role::Human,
+    );
+    let drifted = export(&client);
+    let error = client
+        .migration(artifact.clone(), None, Role::Human)
+        .unwrap_err()
+        .to_string();
+    assert!(error.contains("no longer records Linear label"), "{error}");
+    assert_eq!(
+        serde_json::to_value(export(&client)).unwrap(),
+        serde_json::to_value(&drifted).unwrap(),
+        "a refused preview changes nothing"
+    );
+    call(
+        &client,
+        json!({"op": "update_label", "id": label.id, "expected_version": label.version + 1, "name": "Feature renamed",
+            "description": "", "color": "", "aliases": [], "products": [],
+            "linear_origins": [{"id": FEATURE_ORIGIN, "name": "Feature <b>"}]}),
+        Role::Human,
+    );
+    assert_eq!(
+        client
+            .migration(artifact.clone(), None, Role::Human)
+            .unwrap()["status"],
+        "ready_to_apply",
+        "a display rename that keeps the Linear origin still maps"
+    );
     let before = export(&client);
     let check_unchanged = |label: &str| {
         let now = export(&client);
@@ -540,8 +586,17 @@ fn prepared_migration_merges_into_existing_workspace_with_native_retained_access
     let feature = after
         .labels
         .iter()
-        .find(|label| label.name == "Feature")
+        .find(|label| {
+            label
+                .linear_origins
+                .iter()
+                .any(|origin| origin.id == FEATURE_ORIGIN)
+        })
         .unwrap();
+    assert_eq!(
+        feature.name, "Feature renamed",
+        "the owner's label fields are not overwritten"
+    );
     assert!(
         eng1.labels.contains(&feature.id),
         "existing label matched by Linear origin is reused"
@@ -831,5 +886,185 @@ fn prepared_migration_merges_into_existing_workspace_with_native_retained_access
         serde_json::to_value(export(&client)).unwrap(),
         serde_json::to_value(&current).unwrap()
     );
+
+    // Owner deletion of an imported issue keeps retained references durable:
+    // the key stays reserved by history and export/backup/recovery still validate.
+    let deletable = current
+        .issues
+        .iter()
+        .find(|issue| issue.id == "iss-ops-3")
+        .unwrap()
+        .clone();
+    let linked = call(
+        &client,
+        json!({"op": "search_sources", "issue_key": deletable.key}),
+        Role::Human,
+    );
+    assert!(linked["total"].as_u64().unwrap() >= 1);
+    call(
+        &client,
+        json!({"op": "delete_issue", "key": deletable.key, "expected_version": deletable.version}),
+        Role::Human,
+    );
+    let after_delete = backup(&workspace, &exports);
+    let recovered = succeeded(direct(
+        &workspace,
+        &[
+            "recovery-check",
+            after_delete.to_str().unwrap(),
+            temp.path().join("recovered-after-delete").to_str().unwrap(),
+        ],
+    ));
+    assert_eq!(recovered["byte_for_byte_archive_match"], true);
+    let still_linked = call(
+        &client,
+        json!({"op": "search_sources", "issue_key": deletable.key}),
+        Role::Human,
+    );
+    assert_eq!(
+        still_linked["total"], linked["total"],
+        "the retained original stays readable"
+    );
+    let original = call(
+        &client,
+        json!({"op": "source_record", "id": still_linked["records"][0]["id"]}),
+        Role::Human,
+    );
+    assert!(original["content"].as_str().unwrap().contains("iss-ops-3"));
+    drop(service);
+}
+
+/// Declares a huge upload but sends no body; the service must answer from the
+/// request head alone.
+fn declared_upload(port: u16, path: &str, headers: &[(&str, String)]) -> u16 {
+    use std::io::{Read, Write};
+    let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+    stream
+        .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+        .unwrap();
+    let mut head = format!(
+        "POST {path} HTTP/1.1\r\nContent-Type: application/octet-stream\r\nContent-Length: 900000000\r\n"
+    );
+    for (name, value) in headers {
+        head.push_str(&format!("{name}: {value}\r\n"));
+    }
+    head.push_str("\r\n");
+    stream.write_all(head.as_bytes()).unwrap();
+    let mut response = [0u8; 64];
+    let read = stream
+        .read(&mut response)
+        .expect("the service answered before the declared body was sent");
+    let status = String::from_utf8_lossy(&response[..read]);
+    status.split_whitespace().nth(1).unwrap().parse().unwrap()
+}
+
+#[test]
+fn migration_uploads_are_authorized_before_the_body_is_read() {
+    let temp = tempfile::tempdir().unwrap();
+    let workspace = temp.path().join("workspace");
+    let _service = serve(&workspace);
+    let client = Client::new(&workspace).unwrap();
+    let port = client.endpoint.port;
+    let host = format!("127.0.0.1:{port}");
+    let owner = format!("Bearer {}", client.endpoint.owner_token);
+    let agent = format!("Bearer {}", client.endpoint.agent_token);
+    for path in [
+        "/api/migration/preview",
+        "/api/migration/apply?expected_cursor=0&artifact_sha256=x",
+    ] {
+        assert_eq!(
+            declared_upload(port, path, &[("Host", host.clone())]),
+            401,
+            "{path} anonymous"
+        );
+        assert_eq!(
+            declared_upload(
+                port,
+                path,
+                &[("Host", host.clone()), ("Authorization", agent.clone())]
+            ),
+            403,
+            "{path} agent"
+        );
+        assert_eq!(
+            declared_upload(
+                port,
+                path,
+                &[
+                    ("Host", host.clone()),
+                    ("Authorization", owner.clone()),
+                    ("Origin", "http://evil.example".into())
+                ]
+            ),
+            401,
+            "{path} hostile origin"
+        );
+        assert_eq!(
+            declared_upload(
+                port,
+                path,
+                &[
+                    ("Host", "evil.example".into()),
+                    ("Authorization", owner.clone())
+                ]
+            ),
+            401,
+            "{path} hostile host"
+        );
+    }
+    // An owner with a declared body over the explicit limit is refused too.
+    let oversized = {
+        use std::io::{Read, Write};
+        let mut stream = std::net::TcpStream::connect(("127.0.0.1", port)).unwrap();
+        stream
+            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+            .unwrap();
+        let length = direct_core::MAX_MIGRATION_ARTIFACT_BYTES + 1;
+        stream
+            .write_all(
+                format!("POST /api/migration/preview HTTP/1.1\r\nHost: {host}\r\nAuthorization: {owner}\r\nContent-Length: {length}\r\n\r\n").as_bytes(),
+            )
+            .unwrap();
+        let mut response = [0u8; 64];
+        let read = stream.read(&mut response).unwrap();
+        String::from_utf8_lossy(&response[..read])
+            .split_whitespace()
+            .nth(1)
+            .unwrap()
+            .parse::<u16>()
+            .unwrap()
+    };
+    assert_eq!(oversized, 413);
+}
+
+/// Fixture for the browser E2E (`scripts/e2e/linear-sources.browser.mjs`):
+/// writes a synthetic capture, a seeded non-empty workspace (service stopped)
+/// and a prepared artifact under $DIRECT_BROWSER_FIXTURE.
+#[test]
+#[ignore]
+fn browser_fixture() {
+    let Ok(root) = std::env::var("DIRECT_BROWSER_FIXTURE") else {
+        return;
+    };
+    let root = PathBuf::from(root);
+    fs::create_dir_all(&root).unwrap();
+    let source = root.join("capture");
+    fixture().write(&source);
+    let workspace = root.join("workspace");
+    let service = serve(&workspace);
+    let client = Client::new(&workspace).unwrap();
+    let (eng_product, ops_product) = seed(&client);
+    let target = backup(&workspace, &root.join("exports"));
+    let maps = vec![
+        format!("{ENG_TEAM}={eng_product}"),
+        format!("{OPS_TEAM}={ops_product}"),
+    ];
+    succeeded(prepare(
+        &workspace,
+        &source,
+        &target,
+        &root.join("prepared"),
+        &maps,
+    ));
     drop(service);
 }

@@ -60,6 +60,10 @@ pub struct MigrationArtifact {
     /// Existing labels whose Linear origin matched an imported assignment.
     #[serde(default)]
     pub reused_labels: Vec<String>,
+    /// Linear label ID → existing Direct label ID chosen at preparation. Each
+    /// pairing is re-verified against the live label before preview and apply.
+    #[serde(default)]
+    pub reused_label_origins: BTreeMap<String, String>,
     pub bundle: SourceBundle,
     pub files: Vec<ArtifactFile>,
     pub records: Vec<SourceRecord>,
@@ -365,6 +369,32 @@ fn check<'a>(conn: &Connection, bytes: &'a [u8]) -> Result<Checked<'a>> {
             || artifact.labels.iter().any(|l| l.id == *id)
         {
             conflicts.push(format!("reused label {id} is not an existing label"));
+        }
+        if !artifact
+            .reused_label_origins
+            .values()
+            .any(|mapped| mapped == id)
+        {
+            conflicts.push(format!(
+                "reused label {id} has no recorded Linear origin mapping"
+            ));
+        }
+    }
+    for (origin, id) in &artifact.reused_label_origins {
+        match current.labels.iter().find(|l| l.id == *id) {
+            Some(label) if label.linear_origins.iter().any(|o| o.id == *origin) => {}
+            Some(label) => conflicts.push(format!(
+                "existing label {:?} no longer records Linear label {origin}; prepare the migration again from a fresh export",
+                label.name
+            )),
+            None => conflicts.push(format!(
+                "existing label {id} mapped for Linear label {origin} no longer exists; prepare the migration again"
+            )),
+        }
+        if !artifact.reused_labels.contains(id) {
+            conflicts.push(format!(
+                "label mapping for Linear label {origin} names an unlisted label"
+            ));
         }
     }
     let imported_keys: HashSet<&str> = artifact.issues.iter().map(|i| i.key.as_str()).collect();
@@ -694,6 +724,7 @@ pub(crate) fn rollback(
     }
     for id in &entities.issues {
         tx.execute("DELETE FROM issues WHERE id=?1", [id])?;
+        tx.execute("DELETE FROM issue_histories WHERE issue_id=?1", [id])?;
     }
     for id in &entities.labels {
         tx.execute("DELETE FROM labels WHERE id=?1", [id])?;

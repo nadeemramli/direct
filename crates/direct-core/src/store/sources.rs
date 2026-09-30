@@ -72,7 +72,15 @@ pub(crate) fn validate_source_metadata(a: &Archive) -> Result<()> {
     {
         return Err(err("invalid", "Retained sources require archive format 12"));
     }
-    let issue_keys: HashSet<&str> = a.issues.iter().map(|issue| issue.key.as_str()).collect();
+    // A retained record may keep linking a key whose issue was later deleted:
+    // deleted keys stay reserved by activity history and are never reassigned,
+    // so the reference remains unambiguous and the original stays readable.
+    let issue_keys: HashSet<&str> = a
+        .issues
+        .iter()
+        .map(|issue| issue.key.as_str())
+        .chain(a.events.iter().map(|event| event.entity.as_str()))
+        .collect();
     let mut bundles: HashMap<&str, &SourceBundle> = HashMap::new();
     let mut manifests = HashSet::new();
     for bundle in &a.source_bundles {

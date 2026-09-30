@@ -727,7 +727,7 @@ fn link_directory(target: &Path, link: &Path) {
     #[cfg(windows)]
     {
         // Junctions are available without symlink privileges on Windows.
-        let result = direct::hidden(Process::new("powershell.exe")
+        let result = direct::hidden(std::process::Command::new("powershell.exe")
             .args(["-NoProfile", "-NonInteractive", "-Command",
                 "$ErrorActionPreference = 'Stop'; New-Item -ItemType Junction -Path $env:DIRECT_TEST_LINK -Target $env:DIRECT_TEST_TARGET | Out-Null"])
             .env("DIRECT_TEST_LINK", link)

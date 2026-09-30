@@ -126,6 +126,8 @@ pub(super) struct Plan {
     pub issue_keys: HashMap<String, String>,
     pub reused_products: Vec<String>,
     pub reused_labels: Vec<String>,
+    /// Linear label ID → existing Direct label ID reused for it.
+    pub reused_label_origins: BTreeMap<String, String>,
 }
 
 /// Bounded summary stored with a retained bundle in Direct.
@@ -2309,6 +2311,12 @@ impl<'a> Builder<'a> {
             issue_keys: self.issue_keys,
             reused_products: self.reused_products.into_iter().collect(),
             reused_labels: self.reused_labels.into_iter().collect(),
+            reused_label_origins: self
+                .label_map
+                .iter()
+                .filter(|(_, (_, scope))| matches!(scope, LabelScope::Products(_)))
+                .map(|(origin, (id, _))| (origin.clone(), id.clone()))
+                .collect(),
         })
     }
 }

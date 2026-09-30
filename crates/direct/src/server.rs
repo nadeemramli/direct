@@ -2,8 +2,9 @@ use crate::{protect_dir, Endpoint};
 use anyhow::{Context, Result};
 use axum::{
     body::Bytes,
-    extract::{DefaultBodyLimit, Query, State},
+    extract::{DefaultBodyLimit, Query, Request as HttpRequest, State},
     http::{header, HeaderMap, HeaderValue, StatusCode},
+    middleware::{self, Next},
     response::{IntoResponse, Response},
     routing::post,
     Json, Router,
@@ -180,6 +181,26 @@ fn owner(app: &App, headers: &HeaderMap) -> Option<Response> {
             "Open Direct locally or use the local CLI",
         )),
     }
+}
+/// Reject non-owners (and foreign Host/Origin) from request parts alone, before
+/// any of a potentially large upload body is read or buffered.
+async fn require_owner(State(app): State<App>, request: HttpRequest, next: Next) -> Response {
+    if let Some(response) = owner(&app, request.headers()) {
+        return response;
+    }
+    let declared = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.parse::<u64>().ok());
+    if declared.is_some_and(|length| length > direct_core::MAX_MIGRATION_ARTIFACT_BYTES as u64) {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            Json(json!({"code":"invalid","message":"Migration artifact exceeds the upload limit"})),
+        )
+            .into_response();
+    }
+    next.run(request).await
 }
 /// Owner only: validate an uploaded migration artifact against this workspace.
 async fn migration_preview(State(app): State<App>, headers: HeaderMap, body: Bytes) -> Response {
@@ -361,8 +382,8 @@ pub async fn serve(dir: &Path, port: u16, assets: &Path) -> Result<()> {
     let migration_limit = DefaultBodyLimit::max(direct_core::MAX_MIGRATION_ARTIFACT_BYTES);
     let router=Router::new().route("/api/command",post(command)).route("/api/launch",post(launch)).route("/api/session",post(session))
       .route("/api/source-file",post(source_file))
-      .route("/api/migration/preview",post(migration_preview).layer(migration_limit))
-      .route("/api/migration/apply",post(migration_apply).layer(migration_limit))
+      .route("/api/migration/preview",post(migration_preview).layer(migration_limit).layer(middleware::from_fn_with_state(app.clone(), require_owner)))
+      .route("/api/migration/apply",post(migration_apply).layer(migration_limit).layer(middleware::from_fn_with_state(app.clone(), require_owner)))
       .fallback_service(ServeDir::new(assets)).layer(DefaultBodyLimit::max(1024*1024))
       .layer(SetResponseHeaderLayer::overriding(axum::http::header::CACHE_CONTROL,axum::http::HeaderValue::from_static("no-store")))
       .layer(SetResponseHeaderLayer::overriding(axum::http::header::CONTENT_SECURITY_POLICY,axum::http::HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'")))

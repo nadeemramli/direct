@@ -78,7 +78,7 @@ The canonical audit and product notes remain in the Direct Obsidian folder:
 - [Scope and build plan](<C:/Users/Nadeem/Desktop/Obsidian/build-blog/build-vault/5. Idea Vault/1. Internal Application/Direct - Linear-free alternative/03 - Direct Scope and Build Plan.md>)
 - [Live Linear audit — 28 September](<C:/Users/Nadeem/Desktop/Obsidian/build-blog/build-vault/5. Idea Vault/1. Internal Application/Direct - Linear-free alternative/04 - Live Linear Audit.md>)
 - [Linear migration source capture](docs/linear-migration-source.md)
-- [Linear import dry-run](docs/linear-import.md)
+- [Linear import and cutover](docs/linear-import.md)
 
 These are local links for this workspace.
 
