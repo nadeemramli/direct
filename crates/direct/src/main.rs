@@ -155,6 +155,12 @@ enum Cli {
         title: String,
         #[arg(long, default_value = "")]
         body: String,
+        #[arg(long, default_value = "")]
+        acceptance: String,
+        #[arg(long, default_value = "")]
+        owner: String,
+        #[arg(long, default_value = "medium")]
+        priority: String,
         #[arg(long, default_value = "inbox")]
         planning_scope: String,
         #[arg(long)]
@@ -683,6 +689,9 @@ fn run() -> Result<()> {
                     product,
                     title,
                     body,
+                    acceptance,
+                    owner,
+                    priority,
                     planning_scope,
                     project_id,
                 } => {
@@ -698,6 +707,9 @@ fn run() -> Result<()> {
                             product,
                             title,
                             body,
+                            acceptance,
+                            owner,
+                            priority,
                             planning_scope,
                             project_id,
                         },

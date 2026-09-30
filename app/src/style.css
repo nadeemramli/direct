@@ -1337,6 +1337,17 @@ summary {
 .form-grid .field {
   min-width: 0;
 }
+.draft-assist {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin: -2px 0 14px;
+}
+.draft-assist small {
+  color: #7d8b92;
+  font-size: 10px;
+  line-height: 1.5;
+}
 .modal-footer {
   border-top: 1px solid #343f3d;
   padding-top: 19px;

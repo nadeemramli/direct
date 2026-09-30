@@ -803,6 +803,12 @@ pub enum Command {
         #[serde(default)]
         body: String,
         #[serde(default)]
+        acceptance: String,
+        #[serde(default)]
+        owner: String,
+        #[serde(default = "default_project_priority")]
+        priority: String,
+        #[serde(default)]
         planning_scope: PlanningScope,
         #[serde(default)]
         project_id: Option<String>,
@@ -817,6 +823,10 @@ pub enum Command {
         priority: String,
         #[serde(default)]
         planning_scope: Option<PlanningScope>,
+    },
+    DeleteIssue {
+        key: String,
+        expected_version: u64,
     },
     Ready {
         key: String,

@@ -1276,13 +1276,26 @@ fn new_issue(
     at: i64,
 ) -> Result<Issue> {
     let existing = all::<Issue>(conn, "issues")?;
-    let next = existing
+    let current_max = existing
         .iter()
         .filter(|i| i.product_id == p.id)
         .filter_map(|i| i.key.rsplit('-').next()?.parse::<u64>().ok())
         .max()
-        .unwrap_or(0)
-        + 1;
+        .unwrap_or(0);
+    // Deleted issues remain represented by their event history. Include those keys so
+    // a destructive cleanup can never cause a previously issued identifier to be reused.
+    let historical_max = events(conn, 0)?
+        .iter()
+        .filter_map(|event| {
+            event
+                .entity
+                .strip_prefix(&format!("{}-", p.key))?
+                .parse::<u64>()
+                .ok()
+        })
+        .max()
+        .unwrap_or(0);
+    let next = current_max.max(historical_max) + 1;
     Ok(Issue {
         id: id(),
         key: format!("{}-{next}", p.key),
@@ -2617,10 +2630,16 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             product,
             title,
             body,
+            acceptance,
+            owner,
+            priority,
             planning_scope,
             project_id,
         } => {
             required(title, "title")?;
+            if !valid_priority(priority) {
+                return Err(err("invalid", "Unknown priority"));
+            }
             let p = all::<Product>(tx, "products")?
                 .into_iter()
                 .find(|p| p.key == *product)
@@ -2631,7 +2650,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                     return Err(err("invalid", "Project must belong to the issue's product"));
                 }
             }
-            let i = new_issue(
+            let mut i = new_issue(
                 tx,
                 &p,
                 title,
@@ -2640,6 +2659,9 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 project_id.clone(),
                 at,
             )?;
+            i.acceptance = acceptance.clone();
+            i.owner = owner.clone();
+            i.priority = priority.clone();
             put_issue(tx, &i)?;
             emit(tx, actor, "issue_created", &i.key, at)?;
             Ok(json!(i))
@@ -2692,6 +2714,64 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 return Err(err("invalid", "Active project work must have a project"));
             }
             save(tx, i, actor, "issue_updated", at)
+        }
+        Command::DeleteIssue {
+            key,
+            expected_version,
+        } => {
+            human(role)?;
+            let i = version(tx, key, *expected_version)?;
+            if !matches!(i.status, Status::Backlog | Status::Ready) {
+                return Err(err(
+                    "invalid",
+                    "Only unstarted Backlog or Ready issues can be deleted",
+                ));
+            }
+            if i.claim.as_ref().is_some_and(|claim| claim.expires_at > at) {
+                return Err(err(
+                    "conflict",
+                    "Release the active claim before deleting this issue",
+                ));
+            }
+            let has_dependencies = i.verification_key.is_some()
+                || i.current_run.is_some()
+                || all::<Issue>(tx, "issues")?
+                    .iter()
+                    .any(|candidate| candidate.parent.as_deref() == Some(key))
+                || all::<Comment>(tx, "comments")?
+                    .iter()
+                    .any(|comment| comment.issue_key == *key)
+                || all::<Verification>(tx, "verifications")?
+                    .iter()
+                    .any(|verification| verification.issue_key == *key)
+                || all::<MethodFinding>(tx, "method_findings")?
+                    .iter()
+                    .any(|finding| finding.issue_key == *key)
+                || all::<GitTrace>(tx, "git_traces")?
+                    .iter()
+                    .any(|trace| trace.issue_key == *key)
+                || all::<IssueLink>(tx, "issue_links")?
+                    .iter()
+                    .any(|link| link.source_key == *key || link.target_key == *key)
+                || all::<ReleaseRecord>(tx, "releases")?
+                    .iter()
+                    .any(|release| release.issue_keys.contains(key))
+                || all::<ReleaseEvidence>(tx, "release_evidence")?
+                    .iter()
+                    .any(|evidence| evidence.issue_key.as_ref() == Some(key));
+            if has_dependencies {
+                return Err(err(
+                    "conflict",
+                    "Remove issue links and release references first; submitted work and recorded evidence cannot be deleted",
+                ));
+            }
+            tx.execute("DELETE FROM issues WHERE id=?1", [&i.id])?;
+            emit(tx, actor, "issue_deleted", key, at)?;
+            Ok(json!({
+                "deleted_key": i.key,
+                "deleted_id": i.id,
+                "deleted_at": at,
+            }))
         }
         Command::Ready {
             key,

@@ -38,6 +38,8 @@ Unavailable sources keep any prior cache but are visibly marked unavailable. A c
 
 Only the owner interface can make work Ready, approve a test, or reopen a submitted/completed item. The agent CLI can capture, refine, claim, comment, release, and submit work. Submission records build/delivery references, automated checks, limitations, preconditions, and manual steps. A linked verification issue is reused across retests; each submission creates a distinct immutable-history run.
 
+Issue deletion is an owner-only cleanup for unstarted Backlog or Ready records. Direct rejects deletion when a claim, relationship, release reference, comment, submission, Git trace, or method finding exists, so deletion cannot erase delivery evidence or orphan another record. The row is removed, an `issue_deleted` activity event remains, and future issue allocation consults activity history so the key is never reused.
+
 Reviews must identify the current run as well as the issue version. All steps must pass before Done. A failure needs a failing step and reason. Cancellation needs a reason and never counts as passing. Reopening preserves prior evidence.
 
 ## Local access

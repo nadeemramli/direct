@@ -30,7 +30,7 @@ The routine agent handoff does not require editing JSON: inspect the assigned is
 
 ## Scope
 
-Included: product spaces with repository/vault paths, projects, goals, milestones, product-scoped releases with exact delivery evidence, issue relationships and grouping, issue capture and filtering, acceptance criteria, ownership and priority, expiring claims, comments, change history, build-specific verification, retesting, reopening, automatic updates, JSON export/restore, a bounded Linear dry-run importer, and Theoria guidance references with source fingerprints and structured method findings.
+Included: product spaces with repository/vault paths, projects, goals, milestones, product-scoped releases with exact delivery evidence, issue relationships and grouping, issue capture with complete briefs and exact-key lookup, safe owner-only cleanup of unstarted issues, acceptance criteria, ownership and priority, expiring claims, comments, change history, build-specific verification, retesting, reopening, automatic updates, JSON export/restore, a bounded Linear dry-run importer, and Theoria guidance references with source fingerprints and structured method findings.
 
 Still to build: MCP, full-workspace/final-delta Linear cutover, a signed installer, and multi-device collaboration. The desktop executable compiles; the browser interface has completed the full Windows/WSL smoke test. Native desktop rendering still needs an interactive acceptance check. This is a single-owner foundation, not yet the complete Linear replacement.
 

@@ -91,7 +91,7 @@
   let busy = $state(false);
   let tab = $state("brief");
   let modal = $state<
-    "issue" | "product" | "project" | "goal" | "milestone" | "release" | "workflow" | "edit" | "submit" | null
+    "issue" | "product" | "project" | "goal" | "milestone" | "release" | "workflow" | "edit" | "delete" | "submit" | null
   >(null);
   let projectDraft = $state({
     id: "",
@@ -216,6 +216,17 @@
     canceled: "⊘",
   };
   let parents = $derived(data.issues.filter((i) => !i.parent));
+  let ownerOptions = $derived(
+    data.issues.some((issue) => issue.owner.trim())
+      ? [...new Set(data.issues.map((issue) => issue.owner.trim()).filter(Boolean))].sort(
+          (a, b) => a.localeCompare(b),
+        )
+      : ["Owner"],
+  );
+  let normalizedSearch = $derived(search.trim().toUpperCase());
+  let exactSearchKey = $derived(
+    parents.find((issue) => issue.key.toUpperCase() === normalizedSearch)?.key || "",
+  );
   let current = $derived(data.issues.find((i) => i.key === selected));
   let activeRun = $derived(
     context?.verifications.find((v) => v.id === current?.current_run),
@@ -243,7 +254,9 @@
     parents
       .filter(
         (i) =>
-          (product === "all" || i.product_id === product) &&
+          (exactSearchKey
+            ? i.key === exactSearchKey
+            : (product === "all" || i.product_id === product) &&
           (projectFilter === "all" ||
             (projectFilter === "none"
               ? !i.project_id
@@ -255,7 +268,7 @@
                 ? ["ready", "doing"].includes(i.status)
                 : view === "done"
                   ? ["done", "legacy_completed"].includes(i.status)
-                  : i.status === view)) &&
+                  : i.status === view))) &&
           `${i.key} ${i.title} ${i.body} ${data.releases
             .filter(
               (release) =>
@@ -560,7 +573,7 @@
       title: "",
       body: "",
       acceptance: "",
-      owner: "",
+      owner: ownerOptions[0] || "",
       priority: "medium",
       product: selectedProduct?.key || "DIR",
       planning_scope: "project",
@@ -579,6 +592,9 @@
             product: draft.product,
             title: draft.title,
             body: draft.body,
+            acceptance: draft.acceptance,
+            owner: draft.owner,
+            priority: draft.priority,
             planning_scope: draft.planning_scope,
             project_id: draft.project_id || null,
           })
@@ -596,6 +612,53 @@
     if (result) {
       modal = null;
       await choose(result.key);
+    }
+  }
+  function draftBriefFromTitle() {
+    const subject = draft.title.trim().replace(/[.!?]+$/, "");
+    if (!subject) return;
+    if (!draft.body.trim()) {
+      draft.body = `Problem\n${subject}.\n\nExpected outcome\nThe affected workflow handles this clearly and reliably for the user.`;
+    }
+    if (!draft.acceptance.trim()) {
+      draft.acceptance = `- ${subject} is addressed in the user-facing workflow.\n- Relevant edge cases and failure feedback are covered.\n- Automated checks pass and the human owner can verify the result.`;
+    }
+  }
+  function makeReady(i: Issue) {
+    const missing = [
+      !i.body.trim() && "problem & expected outcome",
+      !i.acceptance.trim() && "acceptance criteria",
+      !i.owner.trim() && "human owner",
+    ].filter(Boolean);
+    if (missing.length) {
+      edit(i);
+      error = `Complete ${missing.join(", ")} before making this issue Ready.`;
+      return;
+    }
+    return act({ op: "ready", key: i.key, expected_version: i.version });
+  }
+  async function deleteIssue(event: SubmitEvent) {
+    event.preventDefault();
+    if (!current || busy) return;
+    busy = true;
+    error = "";
+    try {
+      await api(
+        {
+          op: "delete_issue",
+          key: current.key,
+          expected_version: current.version,
+        },
+        true,
+      );
+      selected = "";
+      context = null;
+      modal = null;
+      await refresh();
+    } catch (e) {
+      error = String(e).replace(/^Error: /, "");
+    } finally {
+      busy = false;
     }
   }
   async function createProduct(event: SubmitEvent) {
@@ -1328,6 +1391,12 @@
               aria-label="Search issues"
               bind:value={search}
               placeholder="Search issues…"
+              onkeydown={(event) => {
+                if (event.key === "Enter" && exactSearchKey) {
+                  event.preventDefault();
+                  choose(exactSearchKey);
+                }
+              }}
             /><kbd>⌕</kbd></label
           ><button class="secondary" onclick={newIssue} disabled={!connected}
             >＋ Issue</button
@@ -1678,12 +1747,7 @@
                     disabled={busy ||
                       (current.planning_scope === "project" &&
                         !current.project_id)}
-                    onclick={() =>
-                      act({
-                        op: "ready",
-                        key: current.key,
-                        expected_version: current.version,
-                      })}>Make ready <span>→</span></button
+                    onclick={() => makeReady(current)}>Make ready <span>→</span></button
                   >
                   <p class="hint">
                     {current.planning_scope === "project" && !current.project_id
@@ -1731,6 +1795,14 @@
                     class="primary"
                     onclick={() => (tab = "verify")}
                     >Review the result <span>→</span></button
+                  >{/if}
+                {#if ["backlog", "ready"].includes(current.status) && !current.claim}<button
+                    class="danger-button"
+                    disabled={busy}
+                    onclick={() => {
+                      error = "";
+                      modal = "delete";
+                    }}>Delete issue</button
                   >{/if}
               </div>
               {#if context?.releases.length}<div class="section-label">
@@ -2189,6 +2261,8 @@
           ? "New product"
           : modal === "submit"
             ? "Submit for verification"
+            : modal === "delete"
+              ? "Delete issue"
             : modal === "edit"
               ? "Edit issue"
               : "New issue"}
@@ -2222,6 +2296,8 @@
                 ? "A space for your product"
                 : modal === "submit"
                   ? "Hand it back with evidence"
+                  : modal === "delete"
+                    ? "Delete this issue?"
                   : modal === "edit"
                     ? "Shape the work"
                     : "Capture an issue"}
@@ -2234,7 +2310,23 @@
         >
       </div>
       {#if error}<div class="error" role="alert">{error}</div>{/if}
-      {#if modal === "project"}<form onsubmit={saveProject}>
+      {#if modal === "delete"}<form onsubmit={deleteIssue}>
+          <div class="info-card warning">
+            <span class="card-symbol">!</span>
+            <div>
+              <b>{current?.key} · {current?.title}</b>
+              <p>
+                This permanently removes an unstarted issue. Direct refuses deletion when the issue has a claim, links, release references, submissions, or recorded evidence. Its key remains reserved in activity history.
+              </p>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="secondary" onclick={() => (modal = null)}
+              >Keep issue</button
+            ><button class="danger-button" disabled={busy}>Delete {current?.key}</button>
+          </div>
+        </form>
+      {:else if modal === "project"}<form onsubmit={saveProject}>
           <label class="field"
             >Product<select
               bind:value={projectDraft.product}
@@ -2570,25 +2662,38 @@
               bind:value={draft.title}
               placeholder="What needs to change?"
             /></label
+          ><div class="draft-assist">
+            <button
+              type="button"
+              class="secondary"
+              disabled={!draft.title.trim()}
+              onclick={draftBriefFromTitle}>✦ Draft from title</button
+            ><small>Private local starter—review it before saving. No issue data leaves Direct.</small>
+          </div
           ><label class="field"
             >Problem & expected outcome<textarea
               rows="4"
+              required={modal === "edit"}
               bind:value={draft.body}
               placeholder="Give the next person or agent enough context to start."
             ></textarea></label
-          >{#if modal === "edit"}<label class="field"
+          ><label class="field"
               >Acceptance criteria<textarea
                 rows="3"
+                required={modal === "edit"}
                 bind:value={draft.acceptance}
                 placeholder="How will we know this is complete?"
               ></textarea></label
             >
             <div class="form-grid">
               <label class="field"
-                >Human owner<input
-                  bind:value={draft.owner}
-                  placeholder="Who will review the result?"
-                /></label
+                >Human owner<select required={modal === "edit"} bind:value={draft.owner}
+                  ><option value="" disabled>Choose a reviewer</option>{#each ownerOptions as owner}<option
+                      value={owner}>{owner}</option
+                    >{/each}{#if draft.owner && !ownerOptions.includes(draft.owner)}<option
+                      value={draft.owner}>{draft.owner}</option
+                    >{/if}</select
+                ></label
               ><label class="field"
                 >Priority<select bind:value={draft.priority}
                   ><option value="low">Low</option><option value="medium"
@@ -2599,6 +2704,7 @@
                 ></label
               >
             </div>
+          {#if modal === "edit"}
             <p class="hint">
               Editing Ready work returns it to Backlog for a fresh readiness
               decision.
