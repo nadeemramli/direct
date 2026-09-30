@@ -316,8 +316,8 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             };
         }
     }
-    if expected.format < 9 {
-        expected.format = 9;
+    if expected.format < 10 {
+        expected.format = 10;
     }
     fs::create_dir(restore_dir)
         .context("Create the recovery workspace beneath an existing parent")?;
@@ -350,6 +350,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             "verification_runs": true,
             "git_evidence": true,
             "releases_and_evidence": true,
+            "release_workflows": true,
             "issue_links": true,
             "goals_and_milestones": true,
             "theoria_records": true,
@@ -370,6 +371,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             "git_evidence": archive.git_traces.len(),
             "releases": archive.releases.len(),
             "release_evidence": archive.release_evidence.len(),
+            "release_workflows": archive.release_workflows.len(),
             "issue_links": archive.issue_links.len(),
             "theoria_documents": archive.theoria_documents.len(),
             "theoria_findings": archive.method_findings.len(),
@@ -379,7 +381,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             "attachments": {
                 "supported": false,
                 "count": 0,
-                "note": "Archive format 9 has no attachment record type"
+                "note": "Archive format 10 has no attachment record type"
         }
     }))
 }
@@ -987,7 +989,7 @@ mod tests {
 
         let report = recovery_check(&source, &temp.path().join("restored-v5")).unwrap();
         assert_eq!(report["source_format"], 3);
-        assert_eq!(report["restored_format"], 9);
+        assert_eq!(report["restored_format"], 10);
         assert_eq!(report["compatibility_upgrade_applied"], true);
         assert_eq!(report["semantic_archive_match"], true);
     }

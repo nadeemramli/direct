@@ -83,7 +83,7 @@ fn production_requires_distinct_git_preview_and_owner_verified_work() {
 
     let preview_without_trace = send(
         &mut store,
-        json!({"op":"record_release_evidence","release_id":release_id,"expected_version":1,"kind":"preview_deployment","deployment_ref":"preview-1","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","target_ref":"refs/heads/main","url":"https://preview.example.test"}),
+        json!({"op":"record_release_evidence","release_id":release_id,"expected_version":1,"kind":"preview_deployment","deployment_ref":"preview-1","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","target_ref":"refs/heads/main","environment":"preview","url":"https://preview.example.test"}),
         Role::Human,
         108,
     )
@@ -106,9 +106,18 @@ fn production_requires_distinct_git_preview_and_owner_verified_work() {
     )
     .unwrap();
     assert_eq!(push_evidence["release"]["status"], "planned");
+    let failed_preview = send(
+        &mut store,
+        json!({"op":"record_release_evidence","release_id":release_id,"expected_version":3,"kind":"preview_deployment","deployment_ref":"preview-failed","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","target_ref":"refs/heads/main","environment":"preview","url":"https://preview.example.test","outcome":"failed","note":"Provider rejected the deployment"}),
+        Role::Human,
+        111,
+    )
+    .unwrap();
+    assert_eq!(failed_preview["release"]["status"], "planned");
+    assert_eq!(failed_preview["evidence"]["outcome"], "failed");
     let preview = send(
         &mut store,
-        json!({"op":"record_release_evidence","release_id":release_id,"expected_version":3,"kind":"preview_deployment","deployment_ref":"preview-1","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","target_ref":"refs/heads/main","url":"https://preview.example.test"}),
+        json!({"op":"record_release_evidence","release_id":release_id,"expected_version":4,"kind":"preview_deployment","deployment_ref":"preview-1","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","target_ref":"refs/heads/main","environment":"preview","url":"https://preview.example.test"}),
         Role::Human,
         111,
     )
@@ -117,7 +126,7 @@ fn production_requires_distinct_git_preview_and_owner_verified_work() {
 
     let premature_production = send(
         &mut store,
-        json!({"op":"record_release_evidence","release_id":release_id,"expected_version":4,"kind":"production_deployment","deployment_ref":"production-1","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","target_ref":"refs/heads/main","url":"https://direct.example.test"}),
+        json!({"op":"record_release_evidence","release_id":release_id,"expected_version":5,"kind":"production_deployment","deployment_ref":"production-1","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","target_ref":"refs/heads/main","environment":"production","url":"https://direct.example.test"}),
         Role::Human,
         112,
     )
@@ -141,36 +150,44 @@ fn production_requires_distinct_git_preview_and_owner_verified_work() {
     .unwrap();
     send(
         &mut store,
-        json!({"op":"record_release_evidence","release_id":release_id,"expected_version":4,"kind":"check","verification_id":run_id}),
+        json!({"op":"record_release_evidence","release_id":release_id,"expected_version":5,"kind":"check","verification_id":run_id}),
         Role::Human,
         115,
     )
     .unwrap();
     let production = send(
         &mut store,
-        json!({"op":"record_release_evidence","release_id":release_id,"expected_version":5,"kind":"production_deployment","deployment_ref":"production-1","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","target_ref":"refs/heads/main","url":"https://direct.example.test"}),
+        json!({"op":"record_release_evidence","release_id":release_id,"expected_version":6,"kind":"production_deployment","deployment_ref":"production-1","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","target_ref":"refs/heads/main","environment":"production","url":"https://direct.example.test"}),
         Role::Human,
         116,
     )
     .unwrap();
     assert_eq!(production["release"]["status"], "production");
     assert_eq!(production["evidence"]["approver"], "owner");
+    let rollback = send(
+        &mut store,
+        json!({"op":"record_release_evidence","release_id":release_id,"expected_version":7,"kind":"rollback","deployment_ref":"rollback-1","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","source_ref":"refs/tags/v0.2.0","target_ref":"refs/heads/main","environment":"production","outcome":"passed","note":"Restored prior production ref"}),
+        Role::Human,
+        117,
+    )
+    .unwrap();
+    assert_eq!(rollback["release"]["status"], "production");
 
     let context = send(
         &mut store,
         json!({"op":"context","key":key}),
         Role::Agent,
-        117,
+        118,
     )
     .unwrap();
     assert_eq!(context["releases"].as_array().unwrap().len(), 1);
     assert_eq!(context["release_progress"][0]["completed"], 1);
     assert_eq!(context["release_progress"][0]["pending_verification"], 0);
     assert_eq!(context["release_progress"][0]["failed_verification"], 0);
-    assert_eq!(context["release_evidence"].as_array().unwrap().len(), 5);
+    assert_eq!(context["release_evidence"].as_array().unwrap().len(), 7);
 
     let archive = store.export().unwrap();
-    assert_eq!(archive.format, 9);
+    assert_eq!(archive.format, 10);
     validate_archive(&archive).unwrap();
     let before = serde_json::to_value(&archive).unwrap();
     let mut restored = Store::open(&dir.path().join("restored")).unwrap();
@@ -295,4 +312,58 @@ fn release_progress_keeps_pending_and_failed_verification_separate() {
     assert_eq!(progress["failed_verification"], 1);
     assert_eq!(progress["active"], 0);
     assert_eq!(progress["completed"], 0);
+}
+
+#[test]
+fn product_workflow_controls_refs_and_prevents_ambiguous_branch_ownership() {
+    let dir = TempDir::new().unwrap();
+    let mut store = Store::open(&dir.path().join("db")).unwrap();
+    let workflow = send(
+        &mut store,
+        json!({"op":"set_release_workflow_config","product":"DIR","branch_strategy":"one_branch_per_release","production_ref":"refs/heads/production","release_branch_pattern":"refs/heads/release/{version}","preview_environment":"staging","preview_url_template":"https://preview.example.test/{version}","promotion_policy":"verified_owner_approval"}),
+        Role::Human,
+        400,
+    )
+    .unwrap();
+    assert_eq!(workflow["version"], 1);
+
+    let wrong_branch = send(
+        &mut store,
+        json!({"op":"create_release","product":"DIR","name":"Wrong","version_label":"v1","target_ref":"refs/heads/production","release_branch":"refs/heads/release/not-v1"}),
+        Role::Human,
+        401,
+    )
+    .unwrap_err();
+    assert_eq!(wrong_branch.code, "invalid");
+    send(
+        &mut store,
+        json!({"op":"create_release","product":"DIR","name":"Release one","version_label":"v1","target_ref":"refs/heads/production","release_branch":"refs/heads/release/v1"}),
+        Role::Human,
+        402,
+    )
+    .unwrap();
+
+    send(
+        &mut store,
+        json!({"op":"set_release_workflow_config","product":"DIR","expected_version":1,"branch_strategy":"external","production_ref":"refs/heads/production","release_branch_pattern":"","preview_environment":"staging","preview_url_template":"","promotion_policy":"external_manual"}),
+        Role::Human,
+        403,
+    )
+    .unwrap();
+    let conflict = send(
+        &mut store,
+        json!({"op":"create_release","product":"DIR","name":"Release two","version_label":"v2","target_ref":"refs/heads/production","release_branch":"refs/heads/release/v1"}),
+        Role::Human,
+        404,
+    )
+    .unwrap_err();
+    assert_eq!(conflict.code, "conflict");
+
+    let snapshot = send(&mut store, json!({"op":"snapshot"}), Role::Agent, 405).unwrap();
+    assert_eq!(snapshot["release_workflows"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        snapshot["release_workflows"][0]["promotion_policy"],
+        "external_manual"
+    );
+    validate_archive(&store.export().unwrap()).unwrap();
 }

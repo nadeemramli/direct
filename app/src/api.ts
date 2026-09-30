@@ -150,7 +150,8 @@ export type ReleaseEvidenceKind =
   | "push"
   | "check"
   | "preview_deployment"
-  | "production_deployment";
+  | "production_deployment"
+  | "rollback";
 export interface ReleaseRecord {
   id: string;
   product_id: string;
@@ -158,6 +159,7 @@ export interface ReleaseRecord {
   version_label: string;
   status: ReleaseStatus;
   target_ref: string;
+  release_branch: string | null;
   preview_url: string | null;
   notes: string;
   project_ids: string[];
@@ -179,10 +181,26 @@ export interface ReleaseEvidence {
   deployment_ref: string | null;
   commit_sha: string | null;
   target_ref: string | null;
+  source_ref: string | null;
+  environment: string | null;
   url: string | null;
   approver: string | null;
+  outcome: Outcome;
+  note: string;
   recorded_by: string;
   recorded_at: number;
+}
+export interface ReleaseWorkflowConfig {
+  product_id: string;
+  branch_strategy: "one_branch_per_release" | "external";
+  production_ref: string;
+  release_branch_pattern: string;
+  preview_environment: string;
+  preview_url_template: string;
+  promotion_policy: "verified_owner_approval" | "external_manual";
+  version: number;
+  created_at: number;
+  updated_at: number;
 }
 export interface ReleaseProgress {
   release_id: string;
@@ -232,6 +250,7 @@ export interface Context {
   releases: ReleaseRecord[];
   release_progress: ReleaseProgress[];
   release_evidence: ReleaseEvidence[];
+  release_workflow: ReleaseWorkflowConfig | null;
   history: { seq: number; kind: string; actor: string; at: number }[];
 }
 export interface Snapshot {
@@ -249,6 +268,7 @@ export interface Snapshot {
   releases: ReleaseRecord[];
   release_progress: ReleaseProgress[];
   release_evidence: ReleaseEvidence[];
+  release_workflows: ReleaseWorkflowConfig[];
   issue_links: IssueLink[];
   issues: Issue[];
   cursor: number;

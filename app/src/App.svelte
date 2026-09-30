@@ -33,6 +33,7 @@
     releases: [],
     release_progress: [],
     release_evidence: [],
+    release_workflows: [],
     issue_links: [],
     issues: [],
     cursor: 0,
@@ -90,7 +91,7 @@
   let busy = $state(false);
   let tab = $state("brief");
   let modal = $state<
-    "issue" | "product" | "project" | "goal" | "milestone" | "release" | "edit" | "submit" | null
+    "issue" | "product" | "project" | "goal" | "milestone" | "release" | "workflow" | "edit" | "submit" | null
   >(null);
   let projectDraft = $state({
     id: "",
@@ -127,11 +128,22 @@
     version_label: "",
     status: "planned",
     target_ref: "refs/heads/main",
+    release_branch: "",
     preview_url: "",
     notes: "",
     project_ids: [] as string[],
     issue_keys: [] as string[],
     version: 0,
+  });
+  let workflowDraft = $state({
+    product: "DIR",
+    expected_version: null as number | null,
+    branch_strategy: "one_branch_per_release",
+    production_ref: "refs/heads/main",
+    release_branch_pattern: "refs/heads/release/{version}",
+    preview_environment: "preview",
+    preview_url_template: "",
+    promotion_policy: "verified_owner_approval",
   });
   let draft = $state({
     title: "",
@@ -326,7 +338,7 @@
     }
     if (item.verification_id)
       return `${item.issue_key} · verification ${item.verification_id}`;
-    return `${item.deployment_ref || "deployment"} · ${shortSha(item.commit_sha || "")} · ${item.target_ref || "unknown ref"}`;
+    return `${item.outcome} · ${item.environment || "environment unknown"} · ${item.deployment_ref || "deployment"} · ${shortSha(item.commit_sha || "")} · ${item.source_ref ? `${item.source_ref} → ` : ""}${item.target_ref || "unknown ref"}${item.note ? ` · ${item.note}` : ""}`;
   }
   function issueCode(key: string) {
     const value = Number(key.split("-").at(-1));
@@ -371,6 +383,10 @@
   }
   function releaseProgress(id: string) {
     return data.release_progress.find((progress) => progress.release_id === id);
+  }
+  function workflowForProductKey(key: string) {
+    const product = data.products.find((candidate) => candidate.key === key);
+    return data.release_workflows.find((workflow) => workflow.product_id === product?.id);
   }
   function guidanceState(
     document: TheoriaDocument | undefined,
@@ -785,6 +801,7 @@
       ? data.products.find((product) => product.id === release.product_id)?.key
       : data.products.find((candidate) => candidate.id === product)?.key ||
         data.products[0]?.key;
+    const workflow = workflowForProductKey(productKey || "DIR");
     releaseDraft = release
       ? {
           id: release.id,
@@ -793,6 +810,7 @@
           version_label: release.version_label,
           status: release.status,
           target_ref: release.target_ref,
+          release_branch: release.release_branch || "",
           preview_url: release.preview_url || "",
           notes: release.notes,
           project_ids: [...release.project_ids],
@@ -805,7 +823,8 @@
           name: "",
           version_label: "",
           status: "planned",
-          target_ref: "refs/heads/main",
+          target_ref: workflow?.production_ref || "refs/heads/main",
+          release_branch: "",
           preview_url: "",
           notes: "",
           project_ids: selectedProject ? [selectedProject.id] : [],
@@ -830,6 +849,7 @@
               version_label: releaseDraft.version_label,
               status: releaseDraft.status,
               target_ref: releaseDraft.target_ref,
+              release_branch: releaseDraft.release_branch.trim() || null,
               preview_url: releaseDraft.preview_url.trim() || null,
               notes: releaseDraft.notes,
               project_ids: releaseDraft.project_ids,
@@ -841,11 +861,62 @@
               name: releaseDraft.name,
               version_label: releaseDraft.version_label,
               target_ref: releaseDraft.target_ref,
+              release_branch: releaseDraft.release_branch.trim() || null,
               preview_url: releaseDraft.preview_url.trim() || null,
               notes: releaseDraft.notes,
               project_ids: releaseDraft.project_ids,
               issue_keys: releaseDraft.issue_keys,
             },
+        true,
+      );
+      await refresh();
+      modal = null;
+    } catch (e) {
+      error = String(e).replace(/^Error: /, "");
+    } finally {
+      busy = false;
+    }
+  }
+  function editWorkflow() {
+    const productKey =
+      data.products.find((candidate) => candidate.id === product)?.key ||
+      data.products[0]?.key ||
+      "DIR";
+    const workflow = workflowForProductKey(productKey);
+    workflowDraft = workflow
+      ? {
+          product: productKey,
+          expected_version: workflow.version,
+          branch_strategy: workflow.branch_strategy,
+          production_ref: workflow.production_ref,
+          release_branch_pattern: workflow.release_branch_pattern,
+          preview_environment: workflow.preview_environment,
+          preview_url_template: workflow.preview_url_template,
+          promotion_policy: workflow.promotion_policy,
+        }
+      : {
+          product: productKey,
+          expected_version: null,
+          branch_strategy: "one_branch_per_release",
+          production_ref: "refs/heads/main",
+          release_branch_pattern: "refs/heads/release/{version}",
+          preview_environment: "preview",
+          preview_url_template: "",
+          promotion_policy: "verified_owner_approval",
+        };
+    modal = "workflow";
+  }
+  async function saveWorkflow(event: SubmitEvent) {
+    event.preventDefault();
+    if (busy) return;
+    busy = true;
+    error = "";
+    try {
+      await api(
+        {
+          op: "set_release_workflow_config",
+          ...workflowDraft,
+        },
         true,
       );
       await refresh();
@@ -1289,6 +1360,11 @@
             class="text-button"
             disabled={!connected || busy}
             onclick={() => editRelease()}>＋ New release</button
+          >
+          <button
+            class="text-button"
+            disabled={!connected || busy}
+            onclick={() => editWorkflow()}>Release setup</button
           >
           {#if selectedProject}<button
               class="text-button"
@@ -2107,6 +2183,8 @@
             ? releaseDraft.id
               ? "Edit release"
               : "New release"
+          : modal === "workflow"
+            ? "Release workflow setup"
         : modal === "product"
           ? "New product"
           : modal === "submit"
@@ -2138,6 +2216,8 @@
                   ? releaseDraft.id
                     ? "Shape the release"
                     : "Define a delivery boundary"
+                : modal === "workflow"
+                  ? "Configure release delivery"
               : modal === "product"
                 ? "A space for your product"
                 : modal === "submit"
@@ -2289,9 +2369,16 @@
           >
           <div class="form-grid">
             <label class="field">Release name<input required maxlength="160" bind:value={releaseDraft.name} placeholder="Autumn pilot" /></label>
-            <label class="field">Version<input required maxlength="80" bind:value={releaseDraft.version_label} placeholder="v0.2.0" /></label>
+            <label class="field">Version<input required maxlength="80" bind:value={releaseDraft.version_label} oninput={() => {
+              if (!releaseDraft.id) {
+                const workflow = workflowForProductKey(releaseDraft.product);
+                if (workflow?.branch_strategy === "one_branch_per_release")
+                  releaseDraft.release_branch = workflow.release_branch_pattern.replace("{version}", releaseDraft.version_label);
+              }
+            }} placeholder="v0.2.0" /></label>
           </div>
           <label class="field">Target branch or ref<input required maxlength="512" bind:value={releaseDraft.target_ref} placeholder="refs/heads/main" /></label>
+          <label class="field">Release branch<input maxlength="512" bind:value={releaseDraft.release_branch} placeholder={workflowForProductKey(releaseDraft.product)?.release_branch_pattern || "Optional for external strategy"} /></label>
           <label class="field">Planned notes<textarea rows="3" bind:value={releaseDraft.notes} placeholder="Scope, risks, and rollout intent"></textarea></label>
           <label class="field">Preview URL (optional)<input type="url" bind:value={releaseDraft.preview_url} placeholder="https://preview.example.com" /></label>
           {#if releaseDraft.id}<label class="field">Lifecycle status<select bind:value={releaseDraft.status}>
@@ -2327,6 +2414,29 @@
               </div>{:else}<p class="muted">No commit, push, check, or deployment evidence has been recorded.</p>{/each}
           {/if}
           <div class="modal-footer"><button class="primary" disabled={busy}>{releaseDraft.id ? "Save release" : "Create release"}</button></div>
+        </form>
+      {:else if modal === "workflow"}<form onsubmit={saveWorkflow}>
+          <label class="field">Product<select bind:value={workflowDraft.product} disabled={workflowDraft.expected_version !== null}>
+              {#each data.products as p}<option value={p.key}>{p.name}</option>{/each}
+            </select></label>
+          <label class="field">Branch strategy<select bind:value={workflowDraft.branch_strategy}>
+              <option value="one_branch_per_release">One branch per release</option>
+              <option value="external">External / repository-specific strategy</option>
+            </select></label>
+          <div class="form-grid">
+            <label class="field">Production branch or ref<input required bind:value={workflowDraft.production_ref} /></label>
+            <label class="field">Release branch convention<input required={workflowDraft.branch_strategy === "one_branch_per_release"} bind:value={workflowDraft.release_branch_pattern} placeholder={"refs/heads/release/{version}"} /></label>
+          </div>
+          <div class="form-grid">
+            <label class="field">Preview environment<input required bind:value={workflowDraft.preview_environment} placeholder="preview" /></label>
+            <label class="field">Preview URL template<input bind:value={workflowDraft.preview_url_template} placeholder={"https://preview.example.com/{version}"} /></label>
+          </div>
+          <label class="field">Promotion policy<select bind:value={workflowDraft.promotion_policy}>
+              <option value="verified_owner_approval">Verified work + explicit owner approval</option>
+              <option value="external_manual">External/manual repository promotion</option>
+            </select></label>
+          <p class="hint">External strategy opts out of one-branch-per-release. Direct still records attempts and evidence only after external commands finish; it never runs Git or deployment commands itself.</p>
+          <div class="modal-footer"><button class="primary" disabled={busy}>Save release workflow</button></div>
         </form>
       {:else if modal === "product"}<form onsubmit={createProduct}>
           <div class="form-grid">

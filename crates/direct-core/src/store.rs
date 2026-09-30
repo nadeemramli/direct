@@ -178,6 +178,35 @@ fn validate_release_fields(
     }
     Ok(())
 }
+fn validate_release_workflow_fields(
+    strategy: &ReleaseBranchStrategy,
+    production_ref: &str,
+    pattern: &str,
+    preview_environment: &str,
+    preview_url_template: &str,
+) -> Result<()> {
+    required(production_ref, "production ref")?;
+    required(preview_environment, "preview environment")?;
+    limited(production_ref, "production ref", 512)?;
+    limited(preview_environment, "preview environment", 120)?;
+    limited(pattern, "release branch pattern", 512)?;
+    limited(preview_url_template, "preview URL template", 2_000)?;
+    if *strategy == ReleaseBranchStrategy::OneBranchPerRelease
+        && (!pattern.contains("{version}") || pattern.matches("{version}").count() != 1)
+    {
+        return Err(err(
+            "invalid",
+            "One-branch-per-release patterns require exactly one {version} placeholder",
+        ));
+    }
+    if !preview_url_template.is_empty() && preview_url_template.matches("{version}").count() > 1 {
+        return Err(err(
+            "invalid",
+            "Preview URL template has repeated {version}",
+        ));
+    }
+    Ok(())
+}
 fn human(role: Role) -> Result<()> {
     if role != Role::Human {
         Err(err("forbidden", "This operation requires human review"))
@@ -210,7 +239,10 @@ impl Store {
             .as_deref()
             .is_some_and(|schema| matches!(schema, "1" | "2" | "3" | "4"));
         if let Some(schema) = schema.as_deref() {
-            if !matches!(schema, "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9") {
+            if !matches!(
+                schema,
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10"
+            ) {
                 return Err(err("unsupported", "Unsupported database schema"));
             }
         } else {
@@ -242,7 +274,8 @@ impl Store {
              CREATE TABLE IF NOT EXISTS milestones (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS releases (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS release_evidence (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-             UPDATE meta SET value='9' WHERE key='schema';",
+             CREATE TABLE IF NOT EXISTS release_workflows (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             UPDATE meta SET value='10' WHERE key='schema';",
         )?;
         if upgrade_legacy_project_planning {
             // Before schema 5, a project link was the only way to express project-scoped work.
@@ -285,6 +318,7 @@ impl Store {
                     "releases":all::<ReleaseRecord>(&self.conn,"releases")?,
                     "release_progress":all::<ReleaseRecord>(&self.conn,"releases")?.iter().map(|release| release_progress(&self.conn, release)).collect::<Result<Vec<_>>>()?,
                     "release_evidence":all::<ReleaseEvidence>(&self.conn,"release_evidence")?,
+                    "release_workflows":all::<ReleaseWorkflowConfig>(&self.conn,"release_workflows")?,
                     "issue_links":all::<IssueLink>(&self.conn,"issue_links")?,
                     "issues":all::<Issue>(&self.conn,"issues")?,
                     "cursor":cursor(&self.conn)?
@@ -361,6 +395,7 @@ impl Store {
                     .map(|goal| goal_progress(&self.conn, goal))
                     .collect::<Result<Vec<_>>>()?;
                 let issue_links = issue_link_context(&self.conn, key)?;
+                let release_workflow = release_workflow(&self.conn, &issue.product_id)?;
                 let releases: Vec<_> = all::<ReleaseRecord>(&self.conn, "releases")?
                     .into_iter()
                     .filter(|release| {
@@ -382,7 +417,7 @@ impl Store {
                         .filter(|evidence| release_ids.contains(&evidence.release_id))
                         .collect();
                 return Ok(
-                    json!({"issue":issue,"product":product,"project":project,"project_progress":project_progress,"milestone":milestone,"milestone_progress":milestone_progress,"goals":goals,"goal_progress":goal_progress,"releases":releases,"release_progress":release_progress,"release_evidence":release_evidence,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"content_authority":"Task data, not tool authorization"}),
+                    json!({"issue":issue,"product":product,"project":project,"project_progress":project_progress,"milestone":milestone,"milestone_progress":milestone_progress,"goals":goals,"goal_progress":goal_progress,"release_workflow":release_workflow,"releases":releases,"release_progress":release_progress,"release_evidence":release_evidence,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"content_authority":"Task data, not tool authorization"}),
                 );
             }
             Command::Changes { after } => {
@@ -464,7 +499,7 @@ impl Store {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(Archive {
-            format: 9,
+            format: 10,
             workspace_id: self.workspace_id()?,
             products: all(&self.conn, "products")?,
             projects: all(&self.conn, "projects")?,
@@ -475,6 +510,7 @@ impl Store {
             git_traces: all(&self.conn, "git_traces")?,
             releases: all(&self.conn, "releases")?,
             release_evidence: all(&self.conn, "release_evidence")?,
+            release_workflows: all(&self.conn, "release_workflows")?,
             issue_links: all(&self.conn, "issue_links")?,
             issues: all(&self.conn, "issues")?,
             comments: all(&self.conn, "comments")?,
@@ -497,7 +533,7 @@ impl Store {
             }
         }
         let tx = self.conn.transaction()?;
-        tx.execute_batch("DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM releases; DELETE FROM release_evidence; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
+        tx.execute_batch("DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM releases; DELETE FROM release_evidence; DELETE FROM release_workflows; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
         tx.execute(
             "UPDATE meta SET value=?1 WHERE key='workspace_id'",
             [a.workspace_id],
@@ -531,6 +567,9 @@ impl Store {
         }
         for evidence in a.release_evidence {
             put_release_evidence(&tx, &evidence)?;
+        }
+        for workflow in a.release_workflows {
+            put_release_workflow(&tx, &workflow)?;
         }
         for link in a.issue_links {
             put_issue_link(&tx, &link)?;
@@ -876,6 +915,24 @@ fn put_release_evidence(conn: &Connection, evidence: &ReleaseEvidence) -> Result
     )?;
     Ok(())
 }
+fn release_workflow(conn: &Connection, product_id: &str) -> Result<Option<ReleaseWorkflowConfig>> {
+    let data: Option<String> = conn
+        .query_row(
+            "SELECT data FROM release_workflows WHERE id=?1",
+            [product_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    data.map(|value| serde_json::from_str(&value).map_err(Into::into))
+        .transpose()
+}
+fn put_release_workflow(conn: &Connection, workflow: &ReleaseWorkflowConfig) -> Result<()> {
+    conn.execute(
+        "INSERT INTO release_workflows VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+        params![workflow.product_id, serde_json::to_string(workflow)?],
+    )?;
+    Ok(())
+}
 fn put_issue_link(conn: &Connection, link: &IssueLink) -> Result<()> {
     conn.execute(
         "INSERT INTO issue_links VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
@@ -1096,6 +1153,58 @@ fn validate_release_links(
             return Err(err(
                 "invalid",
                 "Release issues must be unique real issues in the release product",
+            ));
+        }
+    }
+    Ok(())
+}
+fn validate_release_branch(
+    conn: &Connection,
+    product_id: &str,
+    release_id: Option<&str>,
+    version_label: &str,
+    target_ref: &str,
+    release_branch: Option<&str>,
+) -> Result<()> {
+    let branch = release_branch
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    if let Some(workflow) = release_workflow(conn, product_id)? {
+        if target_ref.trim() != workflow.production_ref {
+            return Err(err(
+                "invalid",
+                "Release target ref must match the product production ref",
+            ));
+        }
+        if workflow.branch_strategy == ReleaseBranchStrategy::OneBranchPerRelease {
+            let expected = workflow
+                .release_branch_pattern
+                .replace("{version}", version_label.trim());
+            if branch != Some(expected.as_str()) {
+                return Err(err(
+                    "invalid",
+                    format!("Release branch must follow the product convention: {expected}"),
+                ));
+            }
+        }
+    }
+    if let Some(branch) = branch {
+        limited(branch, "release branch", 512)?;
+        if all::<ReleaseRecord>(conn, "releases")?
+            .iter()
+            .any(|release| {
+                release.product_id == product_id
+                    && Some(release.id.as_str()) != release_id
+                    && release.release_branch.as_deref() == Some(branch)
+                    && !matches!(
+                        release.status,
+                        ReleaseStatus::Retired | ReleaseStatus::Canceled
+                    )
+            })
+        {
+            return Err(err(
+                "conflict",
+                "An active release already owns this release branch",
             ));
         }
     }
@@ -1881,11 +1990,86 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             };
             save(tx, i, actor, event, at)
         }
+        Command::SetReleaseWorkflowConfig {
+            product,
+            expected_version,
+            branch_strategy,
+            production_ref,
+            release_branch_pattern,
+            preview_environment,
+            preview_url_template,
+            promotion_policy,
+        } => {
+            human(role)?;
+            validate_release_workflow_fields(
+                branch_strategy,
+                production_ref,
+                release_branch_pattern,
+                preview_environment,
+                preview_url_template,
+            )?;
+            let product = all::<Product>(tx, "products")?
+                .into_iter()
+                .find(|candidate| candidate.key == *product)
+                .ok_or_else(|| err("not_found", "Unknown product"))?;
+            let prior = release_workflow(tx, &product.id)?;
+            match (&prior, expected_version) {
+                (Some(prior), Some(expected)) if prior.version == *expected => {}
+                (None, None) => {}
+                (Some(_), None) => {
+                    return Err(err(
+                        "conflict",
+                        "Existing workflow requires expected_version",
+                    ))
+                }
+                _ => {
+                    return Err(err(
+                        "conflict",
+                        "Release workflow version changed; refresh and retry",
+                    ))
+                }
+            }
+            let workflow = ReleaseWorkflowConfig {
+                product_id: product.id.clone(),
+                branch_strategy: branch_strategy.clone(),
+                production_ref: production_ref.trim().into(),
+                release_branch_pattern: release_branch_pattern.trim().into(),
+                preview_environment: preview_environment.trim().into(),
+                preview_url_template: preview_url_template.trim().into(),
+                promotion_policy: promotion_policy.clone(),
+                version: prior.as_ref().map_or(1, |prior| prior.version + 1),
+                created_at: prior.as_ref().map_or(at, |prior| prior.created_at),
+                updated_at: at,
+            };
+            put_release_workflow(tx, &workflow)?;
+            for release in all::<ReleaseRecord>(tx, "releases")?
+                .iter()
+                .filter(|release| {
+                    release.product_id == product.id
+                        && !matches!(
+                            release.status,
+                            ReleaseStatus::Retired | ReleaseStatus::Canceled
+                        )
+                })
+            {
+                validate_release_branch(
+                    tx,
+                    &product.id,
+                    Some(&release.id),
+                    &release.version_label,
+                    &release.target_ref,
+                    release.release_branch.as_deref(),
+                )?;
+            }
+            emit(tx, actor, "release_workflow_configured", &product.key, at)?;
+            Ok(json!(workflow))
+        }
         Command::CreateRelease {
             product,
             name,
             version_label,
             target_ref,
+            release_branch,
             preview_url,
             notes,
             project_ids,
@@ -1908,6 +2092,14 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 .ok_or_else(|| err("not_found", "Unknown product"))?;
             release_name(tx, &product.id, version_label, None)?;
             validate_release_links(tx, &product.id, project_ids, issue_keys)?;
+            validate_release_branch(
+                tx,
+                &product.id,
+                None,
+                version_label,
+                target_ref,
+                release_branch.as_deref(),
+            )?;
             let release = ReleaseRecord {
                 id: id(),
                 product_id: product.id,
@@ -1915,6 +2107,11 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 version_label: version_label.trim().into(),
                 status: ReleaseStatus::Planned,
                 target_ref: target_ref.trim().into(),
+                release_branch: release_branch
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(str::to_string),
                 preview_url: preview_url
                     .as_deref()
                     .map(str::trim)
@@ -1941,6 +2138,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             version_label,
             status,
             target_ref,
+            release_branch,
             preview_url,
             notes,
             project_ids,
@@ -1963,11 +2161,24 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             )?;
             release_name(tx, &release.product_id, version_label, Some(id))?;
             validate_release_links(tx, &release.product_id, project_ids, issue_keys)?;
+            validate_release_branch(
+                tx,
+                &release.product_id,
+                Some(id),
+                version_label,
+                target_ref,
+                release_branch.as_deref(),
+            )?;
             if matches!(
                 release.status,
                 ReleaseStatus::Preview | ReleaseStatus::Production
             ) && (release.version_label != version_label.trim()
                 || release.target_ref != target_ref.trim()
+                || release.release_branch.as_deref()
+                    != release_branch
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|value| !value.is_empty())
                 || release.project_ids != *project_ids
                 || release.issue_keys != *issue_keys)
             {
@@ -2003,6 +2214,11 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             release.version_label = version_label.trim().into();
             release.status = status.clone();
             release.target_ref = target_ref.trim().into();
+            release.release_branch = release_branch
+                .as_deref()
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .map(str::to_string);
             release.preview_url = preview_url
                 .as_deref()
                 .map(str::trim)
@@ -2026,7 +2242,11 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             deployment_ref,
             commit_sha,
             target_ref,
+            source_ref,
+            environment,
             url,
+            outcome,
+            note,
         } => {
             human(role)?;
             let mut release = release(tx, release_id)?;
@@ -2057,10 +2277,18 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             let mut normalized_deployment = None;
             let mut normalized_commit = None;
             let mut normalized_target = None;
+            let mut normalized_source = None;
+            let mut normalized_environment = None;
             let mut normalized_url = None;
             let mut approver = None;
             match kind {
                 ReleaseEvidenceKind::Commit | ReleaseEvidenceKind::Push => {
+                    if *outcome != Outcome::Passed {
+                        return Err(err(
+                            "invalid",
+                            "Git evidence records only successful commands",
+                        ));
+                    }
                     let trace_id = git_trace_id.as_deref().ok_or_else(|| {
                         err("invalid", "Git release evidence requires a Git trace")
                     })?;
@@ -2068,6 +2296,8 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                         || deployment_ref.is_some()
                         || commit_sha.is_some()
                         || target_ref.is_some()
+                        || source_ref.is_some()
+                        || environment.is_some()
                         || url.is_some()
                     {
                         return Err(err(
@@ -2090,10 +2320,45 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                             "Git evidence must match its kind and a real issue in this release",
                         ));
                     }
+                    if release
+                        .release_branch
+                        .as_deref()
+                        .is_some_and(|branch| branch != trace.branch)
+                    {
+                        return Err(err(
+                            "invalid",
+                            "Git evidence branch must match the release-owned branch",
+                        ));
+                    }
+                    let traces = all::<GitTrace>(tx, "git_traces")?;
+                    let releases = all::<ReleaseRecord>(tx, "releases")?;
+                    if existing.iter().any(|evidence| {
+                        evidence.release_id != *release_id
+                            && evidence.git_trace_id.as_deref().is_some_and(|id| {
+                                traces.iter().any(|prior| {
+                                    prior.id == id && prior.commit_sha == trace.commit_sha
+                                })
+                            })
+                            && releases.iter().any(|other| {
+                                other.id == evidence.release_id
+                                    && !matches!(
+                                        other.status,
+                                        ReleaseStatus::Retired | ReleaseStatus::Canceled
+                                    )
+                            })
+                    }) {
+                        return Err(err(
+                            "conflict",
+                            "This commit is already owned by another active release",
+                        ));
+                    }
                     issue_key = Some(trace.issue_key);
                     normalized_trace = Some(trace.id);
                 }
                 ReleaseEvidenceKind::Check => {
+                    if *outcome != Outcome::Passed {
+                        return Err(err("invalid", "Check evidence must be owner-passed"));
+                    }
                     let verification_id = verification_id.as_deref().ok_or_else(|| {
                         err("invalid", "Check evidence requires a verification run")
                     })?;
@@ -2101,6 +2366,8 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                         || deployment_ref.is_some()
                         || commit_sha.is_some()
                         || target_ref.is_some()
+                        || source_ref.is_some()
+                        || environment.is_some()
                         || url.is_some()
                     {
                         return Err(err(
@@ -2128,7 +2395,8 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                     normalized_verification = Some(verification.id);
                 }
                 ReleaseEvidenceKind::PreviewDeployment
-                | ReleaseEvidenceKind::ProductionDeployment => {
+                | ReleaseEvidenceKind::ProductionDeployment
+                | ReleaseEvidenceKind::Rollback => {
                     if git_trace_id.is_some() || verification_id.is_some() {
                         return Err(err(
                             "invalid",
@@ -2154,18 +2422,52 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                             "Deployment evidence requires the deployed target ref",
                         )
                     })?;
-                    let deployment_url = url.as_deref().ok_or_else(|| {
-                        err("invalid", "Deployment evidence requires its exact URL")
+                    let deployed_environment = environment.as_deref().ok_or_else(|| {
+                        err("invalid", "Deployment evidence requires its environment")
                     })?;
+                    let deployment_url = url.as_deref();
                     required(deployment, "deployment reference")?;
-                    required(deployment_url, "deployment URL")?;
+                    required(deployed_environment, "deployment environment")?;
                     limited(deployment, "deployment reference", 512)?;
-                    limited(deployment_url, "deployment URL", 2_000)?;
-                    if !valid_commit_sha(&commit) || deployed_ref != release.target_ref {
+                    if let Some(url) = deployment_url {
+                        required(url, "deployment URL")?;
+                        limited(url, "deployment URL", 2_000)?;
+                    }
+                    let expected_ref = if *kind == ReleaseEvidenceKind::PreviewDeployment {
+                        release
+                            .release_branch
+                            .as_deref()
+                            .unwrap_or(&release.target_ref)
+                    } else {
+                        &release.target_ref
+                    };
+                    if !valid_commit_sha(&commit)
+                        || (*kind != ReleaseEvidenceKind::Rollback && deployed_ref != expected_ref)
+                    {
                         return Err(err(
                             "invalid",
                             "Deployment must identify a full commit SHA and the release target ref",
                         ));
+                    }
+                    if *kind == ReleaseEvidenceKind::Rollback
+                        && source_ref
+                            .as_deref()
+                            .is_none_or(|value| value.trim().is_empty())
+                    {
+                        return Err(err("invalid", "Rollback evidence requires the prior ref"));
+                    }
+                    if *outcome != Outcome::Passed && note.trim().is_empty() {
+                        return Err(err("invalid", "Failed or canceled attempts require a note"));
+                    }
+                    if let Some(workflow) = release_workflow(tx, &release.product_id)? {
+                        if *kind == ReleaseEvidenceKind::PreviewDeployment
+                            && deployed_environment != workflow.preview_environment
+                        {
+                            return Err(err(
+                                "invalid",
+                                "Preview environment must match the product workflow",
+                            ));
+                        }
                     }
                     let traces = all::<GitTrace>(tx, "git_traces")?;
                     let has_linked_trace = existing.iter().any(|evidence| {
@@ -2186,10 +2488,13 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                             "Deployment commit must first be attached as release Git evidence",
                         ));
                     }
-                    if *kind == ReleaseEvidenceKind::ProductionDeployment {
+                    if *outcome == Outcome::Passed
+                        && *kind == ReleaseEvidenceKind::ProductionDeployment
+                    {
                         let has_push = existing.iter().any(|evidence| {
                             evidence.release_id == *release_id
                                 && evidence.kind == ReleaseEvidenceKind::Push
+                                && evidence.outcome == Outcome::Passed
                                 && evidence.git_trace_id.as_ref().is_some_and(|trace_id| {
                                     traces.iter().any(|trace| {
                                         trace.id == *trace_id && trace.commit_sha == commit
@@ -2199,6 +2504,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                         let has_preview = existing.iter().any(|evidence| {
                             evidence.release_id == *release_id
                                 && evidence.kind == ReleaseEvidenceKind::PreviewDeployment
+                                && evidence.outcome == Outcome::Passed
                                 && evidence.commit_sha.as_deref() == Some(commit.as_str())
                         });
                         let issues = all::<Issue>(tx, "issues")?;
@@ -2215,14 +2521,18 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                         }
                         approver = Some(actor.to_string());
                         release.status = ReleaseStatus::Production;
-                    } else {
+                    } else if *outcome == Outcome::Passed
+                        && *kind == ReleaseEvidenceKind::PreviewDeployment
+                    {
                         release.status = ReleaseStatus::Preview;
-                        release.preview_url = Some(deployment_url.trim().into());
+                        release.preview_url = deployment_url.map(|url| url.trim().into());
                     }
                     normalized_deployment = Some(deployment.trim().into());
                     normalized_commit = Some(commit);
                     normalized_target = Some(deployed_ref.trim().into());
-                    normalized_url = Some(deployment_url.trim().into());
+                    normalized_source = source_ref.as_deref().map(str::trim).map(str::to_string);
+                    normalized_environment = Some(deployed_environment.trim().into());
+                    normalized_url = deployment_url.map(|url| url.trim().into());
                 }
             }
             let evidence = ReleaseEvidence {
@@ -2235,8 +2545,12 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 deployment_ref: normalized_deployment,
                 commit_sha: normalized_commit,
                 target_ref: normalized_target,
+                source_ref: normalized_source,
+                environment: normalized_environment,
                 url: normalized_url,
                 approver,
+                outcome: outcome.clone(),
+                note: note.clone(),
                 recorded_by: actor.into(),
                 recorded_at: at,
             };
@@ -2259,6 +2573,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 ReleaseEvidenceKind::Check => "release_check_recorded",
                 ReleaseEvidenceKind::PreviewDeployment => "release_preview_recorded",
                 ReleaseEvidenceKind::ProductionDeployment => "release_production_recorded",
+                ReleaseEvidenceKind::Rollback => "release_rollback_recorded",
             };
             emit(tx, actor, event, release_id, at)?;
             Ok(json!({"release": release, "evidence": evidence}))
@@ -2678,7 +2993,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
 }
 
 pub fn validate_archive(a: &Archive) -> Result<()> {
-    if !matches!(a.format, 1..=9) {
+    if !matches!(a.format, 1..=10) {
         return Err(err("unsupported", "Unsupported archive format"));
     }
     Uuid::parse_str(&a.workspace_id).map_err(|_| err("invalid", "Invalid workspace identity"))?;
@@ -2863,6 +3178,12 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
     if a.format < 9 && (!a.releases.is_empty() || !a.release_evidence.is_empty()) {
         return Err(err("invalid", "Release data requires archive format 9"));
     }
+    if a.format < 10 && !a.release_workflows.is_empty() {
+        return Err(err(
+            "invalid",
+            "Release workflow data requires archive format 10",
+        ));
+    }
     let mut project_ids = HashSet::new();
     let mut project_names = HashSet::new();
     let mut project_sources = HashSet::new();
@@ -2941,9 +3262,26 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             return Err(err("invalid", "Invalid or duplicate milestone"));
         }
     }
+    let mut workflow_products = HashSet::new();
+    for workflow in &a.release_workflows {
+        validate_release_workflow_fields(
+            &workflow.branch_strategy,
+            &workflow.production_ref,
+            &workflow.release_branch_pattern,
+            &workflow.preview_environment,
+            &workflow.preview_url_template,
+        )?;
+        if workflow.version == 0
+            || !product_ids.contains(&workflow.product_id)
+            || !workflow_products.insert(workflow.product_id.clone())
+        {
+            return Err(err("invalid", "Invalid or duplicate release workflow"));
+        }
+    }
     let mut release_ids = HashSet::new();
     let mut release_versions = HashSet::new();
     let mut release_sources = HashSet::new();
+    let mut active_release_branches = HashSet::new();
     for release in &a.releases {
         validate_release_fields(
             &release.name,
@@ -2973,6 +3311,14 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
                 .external_url
                 .as_deref()
                 .is_some_and(|url| url.trim().is_empty())
+            || release.release_branch.as_deref().is_some_and(|branch| {
+                branch.trim().is_empty()
+                    || (!matches!(
+                        release.status,
+                        ReleaseStatus::Retired | ReleaseStatus::Canceled
+                    ) && !active_release_branches
+                        .insert((release.product_id.clone(), branch.to_string())))
+            })
             || release.project_ids.iter().any(|id| {
                 !linked_projects.insert(id)
                     || !a.projects.iter().any(|project| {
@@ -2992,6 +3338,24 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
                 "invalid",
                 "Invalid, duplicate, or cross-product release",
             ));
+        }
+        if let Some(workflow) = a
+            .release_workflows
+            .iter()
+            .find(|workflow| workflow.product_id == release.product_id)
+        {
+            let expected_branch = workflow
+                .release_branch_pattern
+                .replace("{version}", &release.version_label);
+            if release.target_ref != workflow.production_ref
+                || (workflow.branch_strategy == ReleaseBranchStrategy::OneBranchPerRelease
+                    && release.release_branch.as_deref() != Some(expected_branch.as_str()))
+            {
+                return Err(err(
+                    "invalid",
+                    "Release disagrees with its product workflow",
+                ));
+            }
         }
     }
     for i in &a.issues {
@@ -3182,6 +3546,7 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
         .collect();
     let mut evidence_ids = HashSet::new();
     let mut logical_evidence = HashSet::new();
+    let mut active_commit_owners: HashMap<String, String> = HashMap::new();
     for evidence in &a.release_evidence {
         let release = a
             .releases
@@ -3198,8 +3563,11 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
                     && evidence.deployment_ref.is_none()
                     && evidence.commit_sha.is_none()
                     && evidence.target_ref.is_none()
+                    && evidence.source_ref.is_none()
+                    && evidence.environment.is_none()
                     && evidence.url.is_none()
                     && evidence.approver.is_none()
+                    && evidence.outcome == Outcome::Passed
                     && evidence.git_trace_id.as_deref().is_some_and(|id| {
                         traces.get(id).is_some_and(|trace| {
                             evidence.issue_key.as_deref() == Some(trace.issue_key.as_str())
@@ -3208,6 +3576,10 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
                                     && trace.kind == GitTraceKind::Commit)
                                     || (evidence.kind == ReleaseEvidenceKind::Push
                                         && trace.kind == GitTraceKind::Push))
+                                && release
+                                    .release_branch
+                                    .as_deref()
+                                    .is_none_or(|branch| branch == trace.branch)
                         })
                     })
             }
@@ -3216,8 +3588,11 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
                     && evidence.deployment_ref.is_none()
                     && evidence.commit_sha.is_none()
                     && evidence.target_ref.is_none()
+                    && evidence.source_ref.is_none()
+                    && evidence.environment.is_none()
                     && evidence.url.is_none()
                     && evidence.approver.is_none()
+                    && evidence.outcome == Outcome::Passed
                     && evidence.verification_id.as_deref().is_some_and(|id| {
                         runs.get(id).is_some_and(|run| {
                             evidence.issue_key.as_deref() == Some(run.issue_key.as_str())
@@ -3231,7 +3606,17 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
                         })
                     })
             }
-            ReleaseEvidenceKind::PreviewDeployment | ReleaseEvidenceKind::ProductionDeployment => {
+            ReleaseEvidenceKind::PreviewDeployment
+            | ReleaseEvidenceKind::ProductionDeployment
+            | ReleaseEvidenceKind::Rollback => {
+                let expected_ref = if evidence.kind == ReleaseEvidenceKind::PreviewDeployment {
+                    release
+                        .release_branch
+                        .as_deref()
+                        .unwrap_or(&release.target_ref)
+                } else {
+                    &release.target_ref
+                };
                 evidence.issue_key.is_none()
                     && evidence.git_trace_id.is_none()
                     && evidence.verification_id.is_none()
@@ -3240,16 +3625,35 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
                         .as_deref()
                         .is_some_and(|value| !value.trim().is_empty())
                     && evidence.commit_sha.as_deref().is_some_and(valid_commit_sha)
-                    && evidence.target_ref.as_deref() == Some(release.target_ref.as_str())
+                    && (evidence.kind == ReleaseEvidenceKind::Rollback
+                        || evidence.target_ref.as_deref() == Some(expected_ref))
+                    && (a.format < 10
+                        || evidence
+                            .environment
+                            .as_deref()
+                            .is_some_and(|value| !value.trim().is_empty()))
                     && evidence
                         .url
                         .as_deref()
-                        .is_some_and(|value| !value.trim().is_empty())
+                        .is_none_or(|value| !value.trim().is_empty())
+                    && (evidence.kind != ReleaseEvidenceKind::Rollback
+                        || evidence
+                            .source_ref
+                            .as_deref()
+                            .is_some_and(|value| !value.trim().is_empty()))
+                    && (evidence.kind == ReleaseEvidenceKind::Rollback
+                        || evidence.source_ref.is_none())
                     && (evidence.kind != ReleaseEvidenceKind::ProductionDeployment
+                        || evidence.outcome != Outcome::Passed
                         || evidence
                             .approver
                             .as_deref()
                             .is_some_and(|value| !value.trim().is_empty()))
+                    && (evidence.kind == ReleaseEvidenceKind::ProductionDeployment
+                        && evidence.outcome == Outcome::Passed
+                        || evidence.approver.is_none())
+                    && (evidence.outcome == Outcome::Passed || !evidence.note.trim().is_empty())
+                    && (evidence.outcome != Outcome::Pending)
                     && (evidence.kind != ReleaseEvidenceKind::PreviewDeployment
                         || evidence.approver.is_none())
             }
@@ -3270,6 +3674,21 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
         {
             return Err(err("invalid", "Invalid or duplicate release evidence"));
         }
+        if !matches!(
+            release.status,
+            ReleaseStatus::Retired | ReleaseStatus::Canceled
+        ) && evidence.git_trace_id.as_deref().is_some_and(|id| {
+            traces.get(id).is_some_and(|trace| {
+                active_commit_owners
+                    .insert(trace.commit_sha.clone(), release.id.clone())
+                    .is_some_and(|owner| owner != release.id)
+            })
+        }) {
+            return Err(err(
+                "invalid",
+                "A commit belongs to more than one active release",
+            ));
+        }
     }
     for release in &a.releases {
         let evidence: Vec<_> = a
@@ -3278,9 +3697,10 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             .filter(|evidence| evidence.release_id == release.id)
             .collect();
         if release.status == ReleaseStatus::Preview
-            && !evidence
-                .iter()
-                .any(|evidence| evidence.kind == ReleaseEvidenceKind::PreviewDeployment)
+            && !evidence.iter().any(|evidence| {
+                evidence.kind == ReleaseEvidenceKind::PreviewDeployment
+                    && evidence.outcome == Outcome::Passed
+            })
         {
             return Err(err(
                 "invalid",
@@ -3291,7 +3711,10 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             let production = evidence
                 .iter()
                 .rev()
-                .find(|evidence| evidence.kind == ReleaseEvidenceKind::ProductionDeployment)
+                .find(|evidence| {
+                    evidence.kind == ReleaseEvidenceKind::ProductionDeployment
+                        && evidence.outcome == Outcome::Passed
+                })
                 .ok_or_else(|| {
                     err(
                         "invalid",
@@ -3301,10 +3724,12 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             let commit = production.commit_sha.as_deref().unwrap();
             let has_preview = evidence.iter().any(|evidence| {
                 evidence.kind == ReleaseEvidenceKind::PreviewDeployment
+                    && evidence.outcome == Outcome::Passed
                     && evidence.commit_sha.as_deref() == Some(commit)
             });
             let has_push = evidence.iter().any(|evidence| {
                 evidence.kind == ReleaseEvidenceKind::Push
+                    && evidence.outcome == Outcome::Passed
                     && evidence.git_trace_id.as_deref().is_some_and(|id| {
                         traces
                             .get(id)

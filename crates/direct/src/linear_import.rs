@@ -229,7 +229,7 @@ pub fn dry_run(source: &Path, project_id: &str, output: &Path) -> Result<Value> 
         })
         .sum();
     let archive = Archive {
-        format: 9,
+        format: 10,
         workspace_id: project_id.to_owned(),
         products: vec![product],
         projects: vec![project],
@@ -240,6 +240,7 @@ pub fn dry_run(source: &Path, project_id: &str, output: &Path) -> Result<Value> 
         git_traces: vec![],
         releases: vec![],
         release_evidence: vec![],
+        release_workflows: vec![],
         issue_links,
         issues: direct_issues,
         comments,
@@ -288,6 +289,7 @@ pub fn dry_run(source: &Path, project_id: &str, output: &Path) -> Result<Value> 
             "verification_runs": archive.verifications.len(),
             "releases": archive.releases.len(),
             "release_evidence": archive.release_evidence.len(),
+            "release_workflows": archive.release_workflows.len(),
             "legacy_completed": archive.issues.iter().filter(|issue| issue.status == Status::LegacyCompleted).count(),
         },
         "omitted_cross_boundary_relations": touching_relations.len() - internal_relations.len() + external_parent_links as usize,

@@ -310,6 +310,8 @@ pub struct ReleaseRecord {
     pub status: ReleaseStatus,
     pub target_ref: String,
     #[serde(default)]
+    pub release_branch: Option<String>,
+    #[serde(default)]
     pub preview_url: Option<String>,
     #[serde(default)]
     pub notes: String,
@@ -336,6 +338,7 @@ pub enum ReleaseEvidenceKind {
     Check,
     PreviewDeployment,
     ProductionDeployment,
+    Rollback,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -356,11 +359,49 @@ pub struct ReleaseEvidence {
     #[serde(default)]
     pub target_ref: Option<String>,
     #[serde(default)]
+    pub source_ref: Option<String>,
+    #[serde(default)]
+    pub environment: Option<String>,
+    #[serde(default)]
     pub url: Option<String>,
     #[serde(default)]
     pub approver: Option<String>,
+    #[serde(default = "passed_outcome")]
+    pub outcome: Outcome,
+    #[serde(default)]
+    pub note: String,
     pub recorded_by: String,
     pub recorded_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ReleaseBranchStrategy {
+    #[default]
+    OneBranchPerRelease,
+    External,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PromotionPolicy {
+    #[default]
+    VerifiedOwnerApproval,
+    ExternalManual,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ReleaseWorkflowConfig {
+    pub product_id: String,
+    pub branch_strategy: ReleaseBranchStrategy,
+    pub production_ref: String,
+    pub release_branch_pattern: String,
+    pub preview_environment: String,
+    pub preview_url_template: String,
+    pub promotion_policy: PromotionPolicy,
+    pub version: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -487,6 +528,9 @@ pub enum Outcome {
     Passed,
     Failed,
     Canceled,
+}
+fn passed_outcome() -> Outcome {
+    Outcome::Passed
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -675,6 +719,8 @@ pub enum Command {
         version_label: String,
         target_ref: String,
         #[serde(default)]
+        release_branch: Option<String>,
+        #[serde(default)]
         preview_url: Option<String>,
         #[serde(default)]
         notes: String,
@@ -694,6 +740,8 @@ pub enum Command {
         version_label: String,
         status: ReleaseStatus,
         target_ref: String,
+        #[serde(default)]
+        release_branch: Option<String>,
         #[serde(default)]
         preview_url: Option<String>,
         #[serde(default)]
@@ -716,7 +764,26 @@ pub enum Command {
         #[serde(default)]
         target_ref: Option<String>,
         #[serde(default)]
+        source_ref: Option<String>,
+        #[serde(default)]
+        environment: Option<String>,
+        #[serde(default)]
         url: Option<String>,
+        #[serde(default = "passed_outcome")]
+        outcome: Outcome,
+        #[serde(default)]
+        note: String,
+    },
+    SetReleaseWorkflowConfig {
+        product: String,
+        #[serde(default)]
+        expected_version: Option<u64>,
+        branch_strategy: ReleaseBranchStrategy,
+        production_ref: String,
+        release_branch_pattern: String,
+        preview_environment: String,
+        preview_url_template: String,
+        promotion_policy: PromotionPolicy,
     },
     CreateProduct {
         key: String,
@@ -838,6 +905,8 @@ pub struct Archive {
     pub releases: Vec<ReleaseRecord>,
     #[serde(default)]
     pub release_evidence: Vec<ReleaseEvidence>,
+    #[serde(default)]
+    pub release_workflows: Vec<ReleaseWorkflowConfig>,
     #[serde(default)]
     pub issue_links: Vec<IssueLink>,
     pub issues: Vec<Issue>,
