@@ -2,6 +2,13 @@ import { invoke, isTauri } from "@tauri-apps/api/core";
 export type Status =
   "backlog" | "ready" | "doing" | "verify" | "done" | "canceled";
 export type Outcome = "pending" | "passed" | "failed" | "canceled";
+export type PlanningScope = "project" | "inbox";
+export type ProjectStatus =
+  | "planned"
+  | "active"
+  | "paused"
+  | "completed"
+  | "canceled";
 export interface Product {
   id: string;
   key: string;
@@ -16,6 +23,7 @@ export interface Issue {
   key: string;
   product_id: string;
   project_id: string | null;
+  planning_scope?: PlanningScope;
   theoria_refs: TheoriaReference[];
   title: string;
   body: string;
@@ -112,6 +120,7 @@ export interface Context {
   issue: Issue;
   product: Product;
   project: Project | null;
+  project_progress?: ProjectProgress | null;
   comments: { id: string; actor: string; body: string; at: number }[];
   more_comments: boolean;
   verifications: Verification[];
@@ -123,6 +132,7 @@ export interface Snapshot {
   workspace_id: string;
   products: Product[];
   projects: Project[];
+  project_progress?: ProjectProgress[];
   theoria_documents: TheoriaDocument[];
   method_findings: MethodFinding[];
   git_traces?: GitTrace[];
@@ -134,9 +144,22 @@ export interface Project {
   product_id: string;
   name: string;
   description: string;
+  status?: ProjectStatus;
+  priority?: string;
+  sort_order?: number;
   version: number;
   created_at: number;
   updated_at: number;
+}
+export interface ProjectProgress {
+  project_id: string;
+  total: number;
+  backlog: number;
+  active: number;
+  pending_verification: number;
+  completed: number;
+  canceled: number;
+  completion_percent: number;
 }
 let token = sessionStorage.getItem("direct.session") || "";
 const pending = new Map<string, string>();

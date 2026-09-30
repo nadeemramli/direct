@@ -31,6 +31,68 @@
   white-space: pre-wrap;
   line-height: 1.6;
 }
+.view-switch {
+  display: inline-flex;
+  margin-left: auto;
+  padding: 2px;
+  border: 1px solid #343d3f;
+  border-radius: 7px;
+  background: #171a1c;
+}
+.view-switch button {
+  border: 0;
+  padding: 6px 10px;
+  background: transparent;
+  color: #77848a;
+  font-size: 10px;
+}
+.view-switch button.active {
+  background: #27312e;
+  color: #cfe1d8;
+}
+.project-summary {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 8px 18px;
+  margin: 0 32px 18px;
+  padding: 13px 15px;
+  border: 1px solid #293532;
+  border-radius: 8px;
+  background: #171c1b;
+}
+.project-summary strong,
+.project-summary span {
+  display: block;
+}
+.project-summary strong {
+  color: #bdc9c4;
+  font-size: 11px;
+  font-weight: 500;
+}
+.project-summary span {
+  margin-top: 5px;
+  color: #71817b;
+  font-size: 9px;
+}
+.project-progress-copy {
+  text-align: right;
+}
+.project-progress-copy b {
+  color: #8fd1b0;
+  font-size: 16px;
+}
+.progress-track {
+  grid-column: 1 / -1;
+  height: 3px;
+  overflow: hidden;
+  border-radius: 3px;
+  background: #29312f;
+}
+.progress-track span {
+  height: 100%;
+  margin: 0;
+  background: #78bf9e;
+}
 .project-assignment {
   display: flex;
   align-items: center;
@@ -48,6 +110,9 @@
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.inbox-tag {
+  color: #8a7d67;
 }
 * {
   box-sizing: border-box;
@@ -492,6 +557,30 @@ p {
 .issue-list {
   flex: 1;
   overflow: auto;
+}
+.issue-group {
+  border-bottom: 1px solid #2b3032;
+}
+.issue-group > header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 13px 30px 9px;
+  background: #171a1c;
+}
+.issue-group > header strong,
+.issue-group > header span {
+  display: block;
+}
+.issue-group > header strong {
+  color: #b9c7c1;
+  font-size: 11px;
+}
+.issue-group > header span,
+.issue-group > header small {
+  margin-top: 3px;
+  color: #67757a;
+  font-size: 9px;
 }
 .issue-row {
   width: 100%;
