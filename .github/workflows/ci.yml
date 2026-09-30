@@ -21,5 +21,6 @@ jobs:
         working-directory: app
       - run: cargo fmt --all --check
       - run: cargo test -p direct-core -p direct --locked
+      - run: cargo test -p direct-mcp --locked
       - run: cargo clippy --workspace --all-targets --locked -- -D warnings
       - run: cargo build -p direct -p direct-desktop --features direct-desktop/custom-protocol --locked

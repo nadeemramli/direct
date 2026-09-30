@@ -120,7 +120,7 @@ async fn session(State(app): State<App>, headers: HeaderMap, Json(input): Json<G
         return fail(StatusCode::FORBIDDEN, "Local origin required");
     }
     let expiry = app.grants.lock().unwrap().remove(&input.grant);
-    if !expiry.is_some_and(|e| e > now()) {
+    if expiry.is_none_or(|e| e <= now()) {
         return fail(
             StatusCode::UNAUTHORIZED,
             "Launch link expired or already used. Run direct open again.",

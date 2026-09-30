@@ -28,11 +28,13 @@ From WSL, use `bash scripts/direct-wsl.sh list`. Both wrappers call the Windows 
 
 The routine agent handoff does not require editing JSON: inspect the assigned issue, then use the native `claim`, `renew`, and `submit` commands with the current issue version, one explicit actor, and caller-chosen stable request IDs. `submit --step` accepts an instruction followed by its expected result and may be repeated. Exact retry commands keep the same request ID; changed commands need a new one.
 
+Agents that speak MCP can use the optional local `direct-mcp` stdio server instead of the CLI for the same read, claim, renew, and submit operations. It wraps the running service through the agent contract, adds no listener or second workspace, and cannot make work Ready, review it, or mark it Done. See [local MCP access](docs/mcp.md); the CLI remains the independent supported path.
+
 ## Scope
 
 Included: product spaces with repository/vault paths, projects, goals, milestones, product-scoped releases with exact delivery evidence, issue relationships and grouping, issue capture with complete briefs and exact-key lookup, safe owner-only cleanup of unstarted issues, acceptance criteria, ownership and priority, expiring claims, comments, change history, build-specific verification, retesting, reopening, automatic updates, JSON export/restore, a bounded Linear dry-run importer, and Theoria guidance references with source fingerprints and structured method findings.
 
-Still to build: MCP, full-workspace/final-delta Linear cutover, a signed installer, and multi-device collaboration. The desktop executable compiles; the browser interface has completed the full Windows/WSL smoke test. Native desktop rendering still needs an interactive acceptance check. This is a single-owner foundation, not yet the complete Linear replacement.
+Still to build: full-workspace/final-delta Linear cutover, a signed installer, and multi-device collaboration. The desktop executable compiles; the browser interface has completed the full Windows/WSL smoke test. Native desktop rendering still needs an interactive acceptance check. This is a single-owner foundation, not yet the complete Linear replacement.
 
 Direct now tracks its own development in the normal local workspace. See [the real pilot](docs/pilot.md); ten scoped tasks were captured and project grouping is the first delivery. Final acceptance is recorded by the owner in Direct.
 
@@ -53,6 +55,7 @@ The routine script writes a validated archive and SHA-256 checksum, then retains
 
 ```powershell
 cargo test -p direct-core -p direct
+cargo test -p direct-mcp
 cargo clippy --workspace --all-targets -- -D warnings
 cargo fmt --all --check
 cd app
