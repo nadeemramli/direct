@@ -389,13 +389,23 @@ fn reject_unlisted(root: &Path, top: &str, files: &BTreeMap<String, FileChecksum
 }
 
 fn check_records(name: &str, value: &Value) -> Result<()> {
-    let Some(records) = value.get("records") else {
+    // The schema introspection payload is metadata, not an entity envelope.
+    if name == "graphql-schema.json" && value.get("records").is_none() {
+        if !value.is_object() {
+            bail!("data/{name} metadata must be an object");
+        }
         return Ok(());
+    }
+    let Some(records) = value.get("records") else {
+        bail!("data/{name} must contain a records array");
     };
     let records = records
         .as_array()
         .with_context(|| format!("data/{name} records must be an array"))?;
-    if let Some(count) = value.get("count").and_then(Value::as_u64) {
+    if let Some(count) = value.get("count") {
+        let count = count
+            .as_u64()
+            .with_context(|| format!("data/{name} count must be a non-negative integer"))?;
         if count != records.len() as u64 {
             bail!(
                 "data/{name} declares {count} records but holds {}",
@@ -404,6 +414,9 @@ fn check_records(name: &str, value: &Value) -> Result<()> {
         }
     }
     for (index, record) in records.iter().enumerate() {
+        if !record.is_object() {
+            bail!("data/{name} record {index} must be an object");
+        }
         if let Some(path) = truncated_connection(record, String::new()) {
             bail!("data/{name} record {index} has a truncated nested connection at {path}; recapture before importing");
         }

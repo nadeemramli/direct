@@ -537,3 +537,82 @@ fn successful_deletion_is_idempotent_survives_restart_and_never_reuses_the_key()
     );
     assert_eq!(inbox(&mut restored, "After restore", 110), "DIR-4");
 }
+
+#[test]
+fn deployed_release_reference_is_not_advertised_as_removable() {
+    let dir = TempDir::new().unwrap();
+    let mut store = open(&dir.path().join("db"));
+    let draft = inbox(&mut store, "Unstarted release item", 100);
+    let work = ready(&mut store, "Work that supplied the preview commit", 101);
+    send(
+        &mut store,
+        json!({"op":"claim","key":work,"expected_version":2}),
+        Role::Agent,
+        103,
+    )
+    .unwrap();
+    send(
+        &mut store,
+        json!({"op":"record_git_trace","key":work,"expected_version":3,"kind":"commit","repository":"example/direct","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","branch":"codex/release"}),
+        Role::Agent,
+        104,
+    ).unwrap();
+    let trace = store.export().unwrap().git_traces[0].id.clone();
+    let release = send(
+        &mut store,
+        json!({"op":"create_release","product":"DIR","name":"Preview","version_label":"v-preview","target_ref":"refs/heads/main","issue_keys":[draft,work]}),
+        Role::Human,
+        105,
+    ).unwrap();
+    send(
+        &mut store,
+        json!({"op":"record_release_evidence","release_id":release["id"],"expected_version":1,"kind":"commit","git_trace_id":trace}),
+        Role::Human,
+        106,
+    ).unwrap();
+    send(
+        &mut store,
+        json!({"op":"record_release_evidence","release_id":release["id"],"expected_version":2,"kind":"preview_deployment","deployment_ref":"preview-1","commit_sha":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","target_ref":"refs/heads/main","environment":"preview"}),
+        Role::Human,
+        107,
+    ).unwrap();
+    let planned = send(
+        &mut store,
+        json!({"op":"create_release","product":"DIR","name":"Planned","version_label":"v-planned","target_ref":"refs/heads/main","issue_keys":[draft]}),
+        Role::Human,
+        108,
+    ).unwrap();
+
+    let eligibility = deletion(&mut store, &draft, Role::Human, 109);
+    assert_eq!(eligibility["eligible"], false);
+    let blockers = eligibility["blockers"].as_array().unwrap();
+    assert_eq!(blockers.len(), 2);
+    let frozen = blockers
+        .iter()
+        .find(|item| item["removable"] == false)
+        .unwrap();
+    assert_eq!(frozen["kind"], "release_references");
+    assert_eq!(frozen["references"], json!([release["id"]]));
+    assert!(frozen["message"].as_str().unwrap().contains("frozen"));
+    assert!(!frozen["message"]
+        .as_str()
+        .unwrap()
+        .contains("remove the issue"));
+    let editable = blockers
+        .iter()
+        .find(|item| item["removable"] == true)
+        .unwrap();
+    assert_eq!(editable["references"], json!([planned["id"]]));
+    assert_eq!(editable["count"], 1);
+    let refused = delete(&mut store, &draft, 1, 110).unwrap_err();
+    assert!(refused.message.contains("frozen"));
+    let unlink = send(
+        &mut store,
+        json!({"op":"update_release","id":release["id"],"expected_version":3,"name":"Preview","version_label":"v-preview","status":"preview","target_ref":"refs/heads/main","project_ids":[],"issue_keys":[work]}),
+        Role::Human,
+        111,
+    ).unwrap_err();
+    assert_eq!(unlink.code, "invalid");
+    assert!(unlink.message.contains("frozen"));
+    assert_eq!(version_of(&mut store, &draft, 112), 1);
+}

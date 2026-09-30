@@ -1128,6 +1128,37 @@ fn expect_rejected(name: &str, prepare: impl FnOnce(&Path), message: &str) {
 
 #[test]
 fn unsafe_or_incomplete_packages_are_rejected_before_any_output() {
+    for malformed in [
+        json!({}),
+        json!({"records": null}),
+        json!({"records": [null]}),
+        json!({"records": [], "count": "0"}),
+    ] {
+        expect_rejected(
+            "malformed entity envelope",
+            |root| {
+                // Keep the manifest internally checksummed and omit its optional
+                // count: malformed data must not become a successful empty import.
+                let bytes = pretty(&malformed);
+                fs::write(root.join("data/documents.json"), &bytes).unwrap();
+                edit_manifest(root, |manifest| {
+                    manifest["counts"]
+                        .as_object_mut()
+                        .unwrap()
+                        .remove("documents");
+                    let entry = manifest["integrity"]["data_files"]
+                        .as_array_mut()
+                        .unwrap()
+                        .iter_mut()
+                        .find(|entry| entry["path"] == "data/documents.json")
+                        .unwrap();
+                    entry["bytes"] = json!(bytes.len());
+                    entry["sha256"] = json!(sha(&bytes));
+                });
+            },
+            "data/documents.json",
+        );
+    }
     expect_rejected(
         "checksum corruption",
         |root| {
@@ -1228,6 +1259,117 @@ fn unsafe_or_incomplete_packages_are_rejected_before_any_output() {
         },
         "symlink",
     );
+}
+
+#[cfg(any(unix, windows))]
+fn link_directory(target: &Path, link: &Path) {
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(target, link).unwrap();
+    #[cfg(windows)]
+    {
+        // Junctions are available without symlink privileges on Windows.
+        let result = direct::hidden(Process::new("powershell.exe")
+            .args(["-NoProfile", "-NonInteractive", "-Command",
+                "$ErrorActionPreference = 'Stop'; New-Item -ItemType Junction -Path $env:DIRECT_TEST_LINK -Target $env:DIRECT_TEST_TARGET | Out-Null"])
+            .env("DIRECT_TEST_LINK", link)
+            .env("DIRECT_TEST_TARGET", target))
+            .output().unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+}
+
+#[cfg(any(unix, windows))]
+#[test]
+fn replay_rejects_redirected_workspace_before_opening_another_database() {
+    for whole in [true, false] {
+        for redirect_output in [true, false] {
+            let temp = tempfile::tempdir().unwrap();
+            let source = temp.path().join("capture");
+            fixture().write(&source);
+            let output = temp.path().join("rehearsal");
+            let data_dir = temp.path().join("owner-data");
+            let run = |output: &Path| {
+                if whole {
+                    import(&data_dir, &source, output)
+                } else {
+                    direct(
+                        &data_dir,
+                        &[
+                            "linear-import-dry-run",
+                            "--project-id",
+                            "40000000-0000-4000-8000-00000000000b",
+                            "--source",
+                            source.to_str().unwrap(),
+                            "--output",
+                            output.to_str().unwrap(),
+                        ],
+                    )
+                }
+            };
+            succeeded(run(&output));
+            let external = temp.path().join("external");
+            let link = if redirect_output {
+                fs::rename(&output, &external).unwrap();
+                output.clone()
+            } else {
+                fs::rename(output.join("workspace"), &external).unwrap();
+                output.join("workspace")
+            };
+            link_directory(&external, &link);
+            // An untouched empty database is a strong sentinel: Store::open
+            // would initialize it even if the later archive comparison failed.
+            let database = if redirect_output {
+                external.join("workspace/direct.db")
+            } else {
+                external.join("direct.db")
+            };
+            fs::write(&database, []).unwrap();
+            let before = files_under(&external);
+            let error = failed(run(&output));
+            assert!(
+                error.contains("symlink") || error.contains("reparse"),
+                "{error}"
+            );
+            assert_eq!(before, files_under(&external));
+            // Remove only the link, before TempDir recursively cleans its tree.
+            #[cfg(windows)]
+            fs::remove_dir(&link).unwrap();
+            #[cfg(unix)]
+            fs::remove_file(&link).unwrap();
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn replay_rejects_redirected_database_and_sqlite_sidecars() {
+    for name in [
+        "direct.db",
+        "direct.db-wal",
+        "direct.db-shm",
+        "direct.db-journal",
+    ] {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("capture");
+        fixture().write(&source);
+        let output = temp.path().join("rehearsal");
+        let data_dir = temp.path().join("owner-data");
+        succeeded(import(&data_dir, &source, &output));
+        let external = temp.path().join("external-sentinel");
+        fs::write(&external, b"untouched").unwrap();
+        let link = output.join("workspace").join(name);
+        if link.exists() {
+            fs::remove_file(&link).unwrap();
+        }
+        std::os::unix::fs::symlink(&external, &link).unwrap();
+        let error = failed(import(&data_dir, &source, &output));
+        assert!(error.contains("symlink"), "{error}");
+        assert_eq!(fs::read(&external).unwrap(), b"untouched");
+    }
 }
 
 #[test]

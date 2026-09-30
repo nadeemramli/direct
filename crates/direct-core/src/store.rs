@@ -1349,31 +1349,55 @@ pub(crate) fn deletion_eligibility(
         .into_iter()
         .filter(|release| release.issue_keys.iter().any(|item| item == key))
         .collect();
-    if !releases.is_empty() {
-        let labels: Vec<String> = releases
+    // Deployed releases freeze linked work. Do not offer an unlink action that
+    // UpdateRelease will refuse; keep editable and frozen references distinct.
+    for frozen in [false, true] {
+        let group: Vec<&ReleaseRecord> = releases
+            .iter()
+            .filter(|release| {
+                matches!(
+                    release.status,
+                    ReleaseStatus::Preview | ReleaseStatus::Production
+                ) == frozen
+            })
+            .collect();
+        if group.is_empty() {
+            continue;
+        }
+        let labels: Vec<String> = group
             .iter()
             .map(|release| release.version_label.clone())
             .collect();
-        block(
-            DeletionBlockerKind::ReleaseReferences,
-            releases.iter().map(|release| release.id.clone()).collect(),
-            releases.len(),
-            true,
+        let message = if frozen {
+            format!(
+                "{} explicitly {} it ({}); linked work is frozen while the release is in Preview or Production",
+                plural(group.len(), "deployed release", "deployed releases"),
+                if group.len() == 1 { "includes" } else { "include" },
+                listed(&labels),
+            )
+        } else {
             format!(
                 "{} explicitly {} it ({}); remove the issue from {} first",
-                plural(releases.len(), "release", "releases"),
-                if releases.len() == 1 {
+                plural(group.len(), "release", "releases"),
+                if group.len() == 1 {
                     "includes"
                 } else {
                     "include"
                 },
                 listed(&labels),
-                if releases.len() == 1 {
+                if group.len() == 1 {
                     "that release"
                 } else {
                     "those releases"
-                }
-            ),
+                },
+            )
+        };
+        block(
+            DeletionBlockerKind::ReleaseReferences,
+            group.iter().map(|release| release.id.clone()).collect(),
+            group.len(),
+            !frozen,
+            message,
         );
     }
     let evidence: Vec<String> = all::<ReleaseEvidence>(conn, "release_evidence")?

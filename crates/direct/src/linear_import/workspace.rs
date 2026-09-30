@@ -309,8 +309,8 @@ fn verify_output(
     output: &Path,
 ) -> Result<RestoreCheck> {
     let metadata = fs::symlink_metadata(output)?;
-    if metadata.file_type().is_symlink() || !metadata.is_dir() {
-        bail!("Existing import output is not a directory; choose a new output directory");
+    if super::redirected(&metadata) || !metadata.is_dir() {
+        bail!("Existing import output is a symlink, reparse point or non-directory; choose a new output directory");
     }
     let marker = output.join(MARKER_FILE);
     if !marker.is_file() {
@@ -351,6 +351,7 @@ fn verify_output(
     if !database.is_file() {
         bail!("Existing import output has no isolated workspace database");
     }
+    super::validate_replay_workspace(output)?;
     let store = Store::open(&database)?;
     let exported = store.export()?;
     let archive: Archive = serde_json::from_slice(archive_bytes)?;
@@ -1527,7 +1528,7 @@ impl<'a> Builder<'a> {
                 continue;
             };
             if has_value(comment.get("archivedAt")) {
-                self.record(COMMENTS, index, comment, Class::Preserved, json!({"issue": key}), vec![format!("Archived in Linear (Linear archives removed records); not shown as a live Direct comment. {NATIVE_ACCESS}")]);
+                self.record(COMMENTS, index, comment, Class::Preserved, json!({"issue": key}), vec![format!("Archived in Linear; retained in the source bundle rather than shown as a live Direct comment. {NATIVE_ACCESS}")]);
                 continue;
             }
             let mut class = Class::Native;
@@ -1721,7 +1722,7 @@ impl<'a> Builder<'a> {
             };
             if has_value(relation.get("archivedAt")) {
                 self.reports.relations_archived.push(summary);
-                self.record(RELATIONS, index, relation, Class::Preserved, Value::Null, vec![format!("Archived in Linear (Linear archives removed relations); not asserted as a live Direct link. {NATIVE_ACCESS}")]);
+                self.record(RELATIONS, index, relation, Class::Preserved, Value::Null, vec![format!("Archived in Linear; retained in the source bundle rather than asserted as a live Direct link. {NATIVE_ACCESS}")]);
                 continue;
             }
             let (source_key, target_key, link_kind) = match kind.as_str() {

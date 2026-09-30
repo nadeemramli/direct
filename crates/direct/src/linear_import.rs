@@ -299,6 +299,7 @@ pub fn dry_run(
     let checksum_path = output.join("direct-import.sha256");
     let workspace = output.join("workspace");
     let idempotent_replay = if output.exists() {
+        validate_replay_workspace(output)?;
         if !archive_path.is_file()
             || !report_path.is_file()
             || !workspace.join("direct.db").is_file()
@@ -378,6 +379,62 @@ fn ensure_private_output(output: &Path, owner_data_dir: Option<&Path>) -> Result
         }
     }
     Ok(())
+}
+
+/// SQLite opens may upgrade a database and write sidecars. Reject redirected
+/// replay paths before opening anything, including Windows directory junctions.
+fn validate_replay_workspace(output: &Path) -> Result<()> {
+    let workspace = output.join("workspace");
+    for directory in [output, workspace.as_path()] {
+        let metadata = fs::symlink_metadata(directory).with_context(|| {
+            format!(
+                "Existing import workspace is missing {}",
+                directory.display()
+            )
+        })?;
+        if redirected(&metadata) || !metadata.is_dir() {
+            bail!("Existing import workspace contains a symlink, reparse point or non-directory at {}", directory.display());
+        }
+    }
+    for name in [
+        "direct.db",
+        "direct.db-wal",
+        "direct.db-shm",
+        "direct.db-journal",
+    ] {
+        let path = workspace.join(name);
+        let metadata = match fs::symlink_metadata(&path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && name != "direct.db" => {
+                continue
+            }
+            Err(error) => {
+                return Err(error).with_context(|| {
+                    format!("Read existing import workspace path {}", path.display())
+                })
+            }
+        };
+        if redirected(&metadata) || !metadata.is_file() {
+            bail!(
+                "Existing import workspace contains a symlink, reparse point or non-file at {}",
+                path.display()
+            );
+        }
+    }
+    Ok(())
+}
+
+fn redirected(metadata: &fs::Metadata) -> bool {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+    #[cfg(not(windows))]
+    {
+        metadata.file_type().is_symlink()
+    }
 }
 
 /// Resolve a path that may not exist yet through its nearest existing parent.

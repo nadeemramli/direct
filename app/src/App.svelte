@@ -1229,6 +1229,15 @@
           after: data.cursor,
         });
         if (changes.cursor !== data.cursor) await refresh();
+        else if (
+          current?.claim &&
+          current.claim.expires_at <= clock &&
+          deletion?.blockers.some((blocker) => blocker.kind === "active_claim")
+        ) {
+          // Lease expiry emits no event. Ask the server again rather than
+          // leaving a cached active-claim blocker on screen indefinitely.
+          await loadContext();
+        }
         connected = true;
       } catch {
         connected = false;
@@ -2100,7 +2109,7 @@
                             >{:else if blocker.kind === "verification_history" || blocker.kind === "verification_children"}<button
                               class="text-button"
                               onclick={() => (tab = "verify")}>Open verification</button
-                            >{:else if blocker.kind === "release_references"}{#each blocker.references as releaseId}{@const release = data.releases.find((item) => item.id === releaseId)}{#if release}<button
+                            >{:else if blocker.kind === "release_references" && blocker.removable}{#each blocker.references as releaseId}{@const release = data.releases.find((item) => item.id === releaseId)}{#if release}<button
                                   class="text-button"
                                   onclick={() => editRelease(release)}
                                   >Edit {release.version_label}</button
@@ -2110,7 +2119,7 @@
                     <p>
                       {deletion.blockers.every((blocker) => blocker.removable)
                         ? "Clear these and deletion becomes available."
-                        : "Direct retains discussion, submissions, and recorded evidence, so this issue stays in the workspace."}
+                        : "Direct retains this issue because of the history or release scope listed above."}
                     </p>
                   </div>
                 </div>{/if}
