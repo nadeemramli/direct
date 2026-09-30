@@ -1112,6 +1112,17 @@ p {
   color: #8faaa0;
   margin: 5px 0 0;
 }
+.deletion-blockers ul {
+  margin: 6px 0 0;
+  padding-left: 16px;
+  color: #8faaa0;
+  font-size: 10px;
+  line-height: 1.7;
+}
+.deletion-blockers .text-button {
+  font-size: 10px;
+  margin-left: 4px;
+}
 .info-card.warning {
   background: #302822;
   border-color: #554133;

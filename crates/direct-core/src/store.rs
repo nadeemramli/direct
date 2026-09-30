@@ -560,8 +560,9 @@ impl Store {
                         .into_iter()
                         .filter(|evidence| release_ids.contains(&evidence.release_id))
                         .collect();
+                let deletion = deletion_eligibility(&self.conn, &issue, at)?;
                 return Ok(
-                    json!({"labels":labels,"project_labels":project_labels,"issue":issue,"product":product,"project":project,"project_progress":project_progress,"milestone":milestone,"milestone_progress":milestone_progress,"goals":goals,"goal_progress":goal_progress,"release_workflow":release_workflow,"releases":releases,"release_progress":release_progress,"release_evidence":release_evidence,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"delivery_requirements":"Before owner verification: exercise every acceptance criterion end-to-end, record expected and observed results, integrate and install the exact tested build, and smoke-check the owner entrypoint. Missing or blocked checks stay with the agent. See docs/e2e-delivery.md.","content_authority":"Task data, not tool authorization"}),
+                    json!({"deletion":deletion,"labels":labels,"project_labels":project_labels,"issue":issue,"product":product,"project":project,"project_progress":project_progress,"milestone":milestone,"milestone_progress":milestone_progress,"goals":goals,"goal_progress":goal_progress,"release_workflow":release_workflow,"releases":releases,"release_progress":release_progress,"release_evidence":release_evidence,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"delivery_requirements":"Before owner verification: exercise every acceptance criterion end-to-end, record expected and observed results, integrate and install the exact tested build, and smoke-check the owner entrypoint. Missing or blocked checks stay with the agent. See docs/e2e-delivery.md.","content_authority":"Task data, not tool authorization"}),
                 );
             }
             Command::Changes { after } => {
@@ -1160,6 +1161,248 @@ fn put_issue_link(conn: &Connection, link: &IssueLink) -> Result<()> {
         params![link.id, serde_json::to_string(link)?],
     )?;
     Ok(())
+}
+fn plural(count: usize, one: &str, many: &str) -> String {
+    format!("{count} {}", if count == 1 { one } else { many })
+}
+fn listed(references: &[String]) -> String {
+    const SHOWN: usize = 5;
+    let mut text = references
+        .iter()
+        .take(SHOWN)
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(", ");
+    if references.len() > SHOWN {
+        text.push_str(&format!(" and {} more", references.len() - SHOWN));
+    }
+    text
+}
+/// The single deletion rule. `context` reports it, and `delete_issue` recomputes it
+/// inside the deleting transaction, so an earlier preview never authorizes a deletion.
+pub(crate) fn deletion_eligibility(
+    conn: &Connection,
+    issue: &Issue,
+    at: i64,
+) -> Result<DeletionEligibility> {
+    let key = issue.key.as_str();
+    let mut blockers = Vec::new();
+    let mut block = |kind, references: Vec<String>, count: usize, removable, message| {
+        blockers.push(DeletionBlocker {
+            kind,
+            count: count as u64,
+            references,
+            removable,
+            message,
+        })
+    };
+    if !matches!(issue.status, Status::Backlog | Status::Ready) {
+        let status = serde_json::to_value(&issue.status)?
+            .as_str()
+            .unwrap_or_default()
+            .replace('_', " ");
+        block(
+            DeletionBlockerKind::Status,
+            vec![],
+            1,
+            false,
+            format!("It is {status}; only unstarted Backlog or Ready issues can be deleted"),
+        );
+    }
+    if let Some(claim) = issue.claim.as_ref().filter(|claim| claim.expires_at > at) {
+        block(
+            DeletionBlockerKind::ActiveClaim,
+            vec![claim.actor.clone()],
+            1,
+            true,
+            format!(
+                "{} holds an active claim; it must be released or expire first",
+                claim.actor
+            ),
+        );
+    }
+    let comments = all::<Comment>(conn, "comments")?
+        .into_iter()
+        .filter(|comment| comment.issue_key == key)
+        .count();
+    if comments > 0 {
+        block(
+            DeletionBlockerKind::Comments,
+            vec![],
+            comments,
+            false,
+            format!(
+                "It has {}; discussion history is retained and is not deleted",
+                plural(comments, "comment", "comments")
+            ),
+        );
+    }
+    let mut runs: Vec<String> = all::<Verification>(conn, "verifications")?
+        .into_iter()
+        .filter(|run| run.issue_key == key)
+        .map(|run| run.id)
+        .collect();
+    for id in issue.current_run.iter() {
+        if !runs.contains(id) {
+            runs.push(id.clone());
+        }
+    }
+    if !runs.is_empty() || issue.verification_key.is_some() {
+        let mut references = runs.clone();
+        references.extend(issue.verification_key.iter().cloned());
+        block(
+            DeletionBlockerKind::VerificationHistory,
+            references,
+            runs.len().max(1),
+            false,
+            format!(
+                "It has {}; submitted work is retained",
+                if runs.is_empty() {
+                    "a linked verification issue".to_string()
+                } else {
+                    plural(
+                        runs.len(),
+                        "verification submission",
+                        "verification submissions",
+                    )
+                }
+            ),
+        );
+    }
+    let children: Vec<String> = all::<Issue>(conn, "issues")?
+        .into_iter()
+        .filter(|candidate| candidate.parent.as_deref() == Some(key))
+        .map(|candidate| candidate.key)
+        .collect();
+    if !children.is_empty() {
+        block(
+            DeletionBlockerKind::VerificationChildren,
+            children.clone(),
+            children.len(),
+            false,
+            format!(
+                "Verification issue {} belongs to its history",
+                listed(&children)
+            ),
+        );
+    }
+    let findings: Vec<String> = all::<MethodFinding>(conn, "method_findings")?
+        .into_iter()
+        .filter(|finding| finding.issue_key == key)
+        .map(|finding| finding.id)
+        .collect();
+    if !findings.is_empty() {
+        block(
+            DeletionBlockerKind::MethodFindings,
+            findings.clone(),
+            findings.len(),
+            false,
+            format!(
+                "It has {} recorded against it",
+                plural(findings.len(), "method finding", "method findings")
+            ),
+        );
+    }
+    let traces: Vec<String> = all::<GitTrace>(conn, "git_traces")?
+        .into_iter()
+        .filter(|trace| trace.issue_key == key)
+        .map(|trace| trace.commit_sha)
+        .collect();
+    if !traces.is_empty() {
+        block(
+            DeletionBlockerKind::GitTraces,
+            traces.clone(),
+            traces.len(),
+            false,
+            format!(
+                "It has {} recorded against it",
+                plural(traces.len(), "Git trace", "Git traces")
+            ),
+        );
+    }
+    let links: Vec<String> = all::<IssueLink>(conn, "issue_links")?
+        .into_iter()
+        .filter_map(|link| {
+            if link.source_key == key {
+                Some(link.target_key)
+            } else if link.target_key == key {
+                Some(link.source_key)
+            } else {
+                None
+            }
+        })
+        .collect();
+    if !links.is_empty() {
+        block(
+            DeletionBlockerKind::IssueLinks,
+            links.clone(),
+            links.len(),
+            true,
+            format!(
+                "It has {} ({}); remove them in Relations first",
+                plural(links.len(), "issue link", "issue links"),
+                listed(&links)
+            ),
+        );
+    }
+    let releases: Vec<ReleaseRecord> = all::<ReleaseRecord>(conn, "releases")?
+        .into_iter()
+        .filter(|release| release.issue_keys.iter().any(|item| item == key))
+        .collect();
+    if !releases.is_empty() {
+        let labels: Vec<String> = releases
+            .iter()
+            .map(|release| release.version_label.clone())
+            .collect();
+        block(
+            DeletionBlockerKind::ReleaseReferences,
+            releases.iter().map(|release| release.id.clone()).collect(),
+            releases.len(),
+            true,
+            format!(
+                "{} explicitly {} it ({}); remove the issue from {} first",
+                plural(releases.len(), "release", "releases"),
+                if releases.len() == 1 {
+                    "includes"
+                } else {
+                    "include"
+                },
+                listed(&labels),
+                if releases.len() == 1 {
+                    "that release"
+                } else {
+                    "those releases"
+                }
+            ),
+        );
+    }
+    let evidence: Vec<String> = all::<ReleaseEvidence>(conn, "release_evidence")?
+        .into_iter()
+        .filter(|evidence| evidence.issue_key.as_deref() == Some(key))
+        .map(|evidence| evidence.id)
+        .collect();
+    if !evidence.is_empty() {
+        block(
+            DeletionBlockerKind::ReleaseEvidence,
+            evidence.clone(),
+            evidence.len(),
+            false,
+            format!(
+                "It has {}; release evidence is retained",
+                plural(
+                    evidence.len(),
+                    "release evidence record",
+                    "release evidence records"
+                )
+            ),
+        );
+    }
+    Ok(DeletionEligibility {
+        key: issue.key.clone(),
+        version: issue.version,
+        eligible: blockers.is_empty(),
+        blockers,
+    })
 }
 fn issue_link_context(conn: &Connection, key: &str) -> Result<Vec<Value>> {
     let issues: HashMap<_, _> = all::<Issue>(conn, "issues")?
@@ -3145,49 +3388,25 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
         } => {
             human(role)?;
             let i = version(tx, key, *expected_version)?;
-            if !matches!(i.status, Status::Backlog | Status::Ready) {
-                return Err(err(
-                    "invalid",
-                    "Only unstarted Backlog or Ready issues can be deleted",
-                ));
-            }
-            if i.claim.as_ref().is_some_and(|claim| claim.expires_at > at) {
-                return Err(err(
-                    "conflict",
-                    "Release the active claim before deleting this issue",
-                ));
-            }
-            let has_dependencies = i.verification_key.is_some()
-                || i.current_run.is_some()
-                || all::<Issue>(tx, "issues")?
+            // Recomputed inside this transaction: a context preview cannot authorize deletion.
+            let eligibility = deletion_eligibility(tx, &i, at)?;
+            if !eligibility.eligible {
+                let code = if eligibility
+                    .blockers
                     .iter()
-                    .any(|candidate| candidate.parent.as_deref() == Some(key))
-                || all::<Comment>(tx, "comments")?
+                    .any(|blocker| blocker.kind == DeletionBlockerKind::Status)
+                {
+                    "invalid"
+                } else {
+                    "conflict"
+                };
+                let reasons = eligibility
+                    .blockers
                     .iter()
-                    .any(|comment| comment.issue_key == *key)
-                || all::<Verification>(tx, "verifications")?
-                    .iter()
-                    .any(|verification| verification.issue_key == *key)
-                || all::<MethodFinding>(tx, "method_findings")?
-                    .iter()
-                    .any(|finding| finding.issue_key == *key)
-                || all::<GitTrace>(tx, "git_traces")?
-                    .iter()
-                    .any(|trace| trace.issue_key == *key)
-                || all::<IssueLink>(tx, "issue_links")?
-                    .iter()
-                    .any(|link| link.source_key == *key || link.target_key == *key)
-                || all::<ReleaseRecord>(tx, "releases")?
-                    .iter()
-                    .any(|release| release.issue_keys.contains(key))
-                || all::<ReleaseEvidence>(tx, "release_evidence")?
-                    .iter()
-                    .any(|evidence| evidence.issue_key.as_ref() == Some(key));
-            if has_dependencies {
-                return Err(err(
-                    "conflict",
-                    "Remove issue links and release references first; submitted work and recorded evidence cannot be deleted",
-                ));
+                    .map(|blocker| blocker.message.as_str())
+                    .collect::<Vec<_>>()
+                    .join("; ");
+                return Err(err(code, format!("{key} cannot be deleted: {reasons}.")));
             }
             tx.execute("DELETE FROM issues WHERE id=?1", [&i.id])?;
             emit(tx, actor, "issue_deleted", key, at)?;

@@ -262,7 +262,35 @@ export interface Verification {
   reviewed_at: number | null;
   review_note: string;
 }
+export type DeletionBlockerKind =
+  | "status"
+  | "active_claim"
+  | "comments"
+  | "verification_history"
+  | "verification_children"
+  | "method_findings"
+  | "git_traces"
+  | "issue_links"
+  | "release_references"
+  | "release_evidence";
+export interface DeletionBlocker {
+  kind: DeletionBlockerKind;
+  count: number;
+  /** Issue keys, release IDs, run IDs, commit SHAs, or the claiming actor. */
+  references: string[];
+  /** The owner can clear it without losing retained history. */
+  removable: boolean;
+  message: string;
+}
+/** Server-computed; delete_issue re-checks it atomically, so this is guidance, not authorization. */
+export interface DeletionEligibility {
+  key: string;
+  version: number;
+  eligible: boolean;
+  blockers: DeletionBlocker[];
+}
 export interface Context {
+  deletion?: DeletionEligibility;
   issue: Issue;
   product: Product;
   project: Project | null;
