@@ -1031,6 +1031,37 @@ pub enum Command {
         expected_version: u64,
         reason: String,
     },
+    /// Read-only list of retained source bundles with their summaries.
+    SourceBundles,
+    /// Read-only bounded search over retained source records.
+    SearchSources {
+        #[serde(default)]
+        query: String,
+        #[serde(default)]
+        bundle_id: Option<String>,
+        #[serde(default)]
+        kind: Option<String>,
+        #[serde(default)]
+        classification: Option<String>,
+        #[serde(default)]
+        issue_key: Option<String>,
+        #[serde(default = "source_page")]
+        limit: u32,
+        #[serde(default)]
+        offset: u32,
+    },
+    /// Read-only: one retained record with its exact original source bytes.
+    SourceRecord {
+        id: String,
+    },
+    /// Owner only: undo an applied migration while nothing has changed since.
+    RollbackMigration {
+        bundle_id: String,
+        expected_cursor: u64,
+    },
+}
+fn source_page() -> u32 {
+    50
 }
 fn lease() -> i64 {
     3600
@@ -1077,4 +1108,120 @@ pub struct Archive {
     pub verifications: Vec<Verification>,
     pub events: Vec<Event>,
     pub requests: Vec<Replay>,
+    /// Retained external sources (format 12). Files carry base64 bytes in archives.
+    #[serde(default)]
+    pub source_bundles: Vec<SourceBundle>,
+    #[serde(default)]
+    pub source_files: Vec<SourceFile>,
+    #[serde(default)]
+    pub source_records: Vec<SourceRecord>,
+}
+
+/// A verified external source package retained for native, read-only access.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SourceBundle {
+    pub id: String,
+    pub source: String,
+    pub label: String,
+    pub captured_at: String,
+    pub manifest_sha256: String,
+    pub file_count: u64,
+    pub total_bytes: u64,
+    pub record_count: u64,
+    /// Bounded reconciliation summary: preservation, access, freshness and gates.
+    #[serde(default)]
+    pub summary: serde_json::Value,
+    /// Present when the bundle arrived through a migration applied to this workspace.
+    #[serde(default)]
+    pub application: Option<MigrationApplication>,
+    pub imported_by: String,
+    pub imported_at: i64,
+}
+
+/// IDs of every record a migration added, so replay and rollback are exact.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+pub struct MigrationEntities {
+    #[serde(default)]
+    pub products: Vec<String>,
+    #[serde(default)]
+    pub projects: Vec<String>,
+    #[serde(default)]
+    pub goals: Vec<String>,
+    #[serde(default)]
+    pub milestones: Vec<String>,
+    #[serde(default)]
+    pub labels: Vec<String>,
+    #[serde(default)]
+    pub issues: Vec<String>,
+    #[serde(default)]
+    pub comments: Vec<String>,
+    #[serde(default)]
+    pub issue_links: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct MigrationApplication {
+    pub artifact_sha256: String,
+    /// Event cursor the owner confirmed before applying.
+    pub baseline_cursor: u64,
+    /// Event cursor immediately after the import transaction.
+    pub applied_cursor: u64,
+    /// File name of the pre-import backup written by the service, when one was written.
+    #[serde(default)]
+    pub backup: Option<String>,
+    pub entities: MigrationEntities,
+}
+
+/// One retained file. `data` (base64) is present in archives and absent in metadata views.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SourceFile {
+    pub bundle_id: String,
+    pub path: String,
+    pub sha256: String,
+    pub bytes: u64,
+    pub content_type: String,
+    /// `manifest`, `data` or `upload`.
+    pub role: String,
+    #[serde(default)]
+    pub original_name: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<String>,
+}
+
+/// Index entry for one source record: an exact byte span of a retained file.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct SourceRecord {
+    pub id: String,
+    pub bundle_id: String,
+    pub kind: String,
+    /// `record`, `component` or `file`.
+    pub level: String,
+    #[serde(default)]
+    pub source_id: Option<String>,
+    #[serde(default)]
+    pub label: Option<String>,
+    #[serde(default)]
+    pub title: Option<String>,
+    /// `native`, `transformed`, `preserved` or `unresolved`.
+    pub classification: String,
+    /// `native` (also a Direct record), `retained` (source view only) or `missing`.
+    pub access: String,
+    pub file: String,
+    pub start: u64,
+    pub end: u64,
+    #[serde(default)]
+    pub pointer: String,
+    #[serde(default)]
+    pub direct: serde_json::Value,
+    #[serde(default)]
+    pub reasons: Vec<String>,
+    #[serde(default)]
+    pub preserved_fields: Vec<String>,
+    #[serde(default)]
+    pub issue_keys: Vec<String>,
+    /// Retained file this record describes (for uploaded files).
+    #[serde(default)]
+    pub download_path: Option<String>,
+    #[serde(default)]
+    pub search_text: String,
 }

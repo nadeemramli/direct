@@ -7,7 +7,7 @@ publish.workspace = true
 [dependencies]
 direct-core.workspace = true
 serde.workspace = true
-serde_json.workspace = true
+serde_json = { workspace = true, features = ["raw_value"] }
 uuid.workspace = true
 axum = "0.8"
 tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
@@ -17,6 +17,7 @@ reqwest = { version = "0.12", default-features = false, features = ["blocking", 
 fs2 = "0.4"
 anyhow = "1"
 sha2 = "0.10"
+base64 = "0.22"
 chrono = "0.4"
 
 [dev-dependencies]
