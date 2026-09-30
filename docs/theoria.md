@@ -45,4 +45,6 @@ The snapshot includes the current document cache and proposal index. Issue conte
 
 ## Review posture
 
-The owner continues to decide readiness and verification outcomes in the normal Direct workflow. Automated checks can support a finding, but they do not accept the method proposal. Accepted Development Operating System changes must be reviewed and maintained in its authoritative knowledge workflow with provenance; Direct retains the originating issue and evidence trail.
+The owner continues to decide readiness and second-pass acceptance in the normal Direct workflow. The agent first reads relevant current guidance, records its fingerprint/known playbook version, and performs the [first-pass E2E verification](e2e-delivery.md). Only an explicit agent Pass with evidence reaches human review. The human reviews intent, usability, evidence and material risks with focused spot checks, rather than repeating deterministic testing.
+
+The maintained source protocol is `dos-e2e-verification`; refresh the cache after an authorized canonical update. The cached document and its fingerprint must match the source before claiming the new guidance is available. Automated checks can support a finding, but they do not accept the method proposal. Accepted Development Operating System changes must be maintained in its authoritative knowledge workflow with owner-direction provenance; Direct retains the originating issue and evidence trail. The two-pass policy is an owner decision, not automatic promotion of an experimental playbook or proof of improved performance.

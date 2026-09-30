@@ -2,6 +2,17 @@
 
 Owner direction, 1 October 2026: every issue must represent a working user outcome before the agent asks the owner to verify it. This applies to existing work and every future issue, including cloud contributions.
 
+## Two passes
+
+The Development Operating System's maintained `9. Agent E2E Verification Protocol.md`, exposed through Theoria as `dos-e2e-verification`, defines the shared policy. Read relevant guidance and the issue's acceptance before implementation, verify freshness, and pin the source fingerprint with the actual known playbook version. Do not invent a version or load every playbook.
+
+1. **Agent verification:** reproduce, implement, run the applicable checks and complete affected E2E journeys, fix failures, then verify the exact delivered artifact. Record **Pass**, **Fail**, or **Blocked**, with each criterion's action, expectation, observation and evidence. Missing, skipped, canceled or blocked required checks cannot be Pass. Fail/Blocked stays in Doing with evidence and a concrete next action.
+2. **Human acceptance:** after Agent Pass, the owner reviews the outcome, usability, evidence and important tradeoffs, with focused spot checks. Give a concise first-pass verdict and usually one to three purposeful human checks; add more only for a specific risk. Do not transfer deterministic suite execution, build/install work or diagnosis to the owner. The human independently accepts, requests changes or cancels the current run.
+
+Current data already separates these facts: `Verification.e2e.outcome` is the agent's passing first-pass assertion; `Verification.outcome` starts pending and records the owner's second-pass result. Fail/Blocked agent attempts belong in issue evidence/comments before submission; these labels do not introduce new native issue statuses. Evidence is auditable, not a guarantee that an assertion is true. A change request leads to agent repair, another first pass, and a new run tied to the retested build.
+
+Verification scales to the deliverable. A documentation-only change needs source, link, consistency and delivery checks; it does not need an unrelated application test suite. UI/client changes must exercise their actual flow. Native-specific acceptance still needs native evidence.
+
 ## Before submission
 
 1. Read the issue acceptance and previous failed reviews. Write an executable scenario for each criterion: entrypoint, setup, action, expected result, observed result, and evidence location. An unclear criterion remains unresolved, not passed.

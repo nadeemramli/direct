@@ -37,7 +37,7 @@ The preferred routine handoff uses native commands. Keep one actor from claim th
   --step "Perform a concrete action" "Observe the expected behavior"
 ```
 
-Repeat `--step INSTRUCTION EXPECTED` for multiple owner checks. These commands use only the agent capability. Submission moves the issue to Verify; it does not record owner acceptance. The WSL wrapper accepts the same arguments after `bash scripts/direct-wsl.sh`.
+Repeat `--step INSTRUCTION EXPECTED` for focused second-pass owner checks, usually one to three for bounded work. Include the judgment or concrete risk each check addresses; do not copy the agent's deterministic suite into this list. The agent first records a Pass, Fail or Blocked verdict with criterion-level evidence; only Pass can be submitted. Fail/Blocked remains agent work with evidence in the issue. These commands use only the agent capability. Submission moves the issue to Verify with `e2e.outcome = passed`; the independent human run `outcome` remains pending until owner review. The WSL wrapper accepts the same arguments after `bash scripts/direct-wsl.sh`.
 
 The optional local `direct-mcp` server offers the same read, `claim`, `renew`, and `submit` operations to MCP clients over stdio with identical rules: agent role only, one configured actor, caller-supplied stable request IDs, current versions, and owner verification. It exposes nothing else. See [local MCP access](mcp.md).
 
