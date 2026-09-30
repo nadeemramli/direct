@@ -179,7 +179,7 @@ fn issue_guidance_and_method_proposals_are_traceable_without_becoming_decisions(
     );
 
     let archive = store.export().unwrap();
-    assert_eq!(archive.format, 4);
+    assert_eq!(archive.format, 5);
     validate_archive(&archive).unwrap();
     drop(store);
     let reopened = Store::open(&path).unwrap();
@@ -224,6 +224,7 @@ fn malformed_or_cross_product_theoria_records_are_rejected() {
         key: "DIR-1".into(),
         product_id: broken.products[0].id.clone(),
         project_id: None,
+        planning_scope: PlanningScope::Inbox,
         theoria_refs: vec![TheoriaReference {
             document_id: "missing".into(),
             recorded_fingerprint: None,

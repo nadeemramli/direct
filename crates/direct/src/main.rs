@@ -1,6 +1,8 @@
 use anyhow::{bail, Context, Result};
 use clap::{Parser, Subcommand};
-use direct_core::{Archive, Command, GitTraceKind, Request, Role, Store, TheoriaDocumentInput};
+use direct_core::{
+    Archive, Command, GitTraceKind, PlanningScope, Request, Role, Store, TheoriaDocumentInput,
+};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::{
@@ -102,6 +104,10 @@ enum Cli {
         title: String,
         #[arg(long, default_value = "")]
         body: String,
+        #[arg(long, default_value = "inbox")]
+        planning_scope: String,
+        #[arg(long)]
+        project_id: Option<String>,
     },
     /// Execute a JSON agent command from a file or stdin. Human approval is unavailable here.
     Call {
@@ -319,15 +325,26 @@ fn run() -> Result<()> {
                     product,
                     title,
                     body,
-                } => Request {
-                    actor: args.actor,
-                    request_id: uuid::Uuid::new_v4().to_string(),
-                    command: Command::CreateIssue {
-                        product,
-                        title,
-                        body,
-                    },
-                },
+                    planning_scope,
+                    project_id,
+                } => {
+                    let planning_scope = match planning_scope.as_str() {
+                        "project" => PlanningScope::Project,
+                        "inbox" => PlanningScope::Inbox,
+                        _ => bail!("planning scope must be 'project' or 'inbox'"),
+                    };
+                    Request {
+                        actor: args.actor,
+                        request_id: uuid::Uuid::new_v4().to_string(),
+                        command: Command::CreateIssue {
+                            product,
+                            title,
+                            body,
+                            planning_scope,
+                            project_id,
+                        },
+                    }
+                }
                 Cli::Call { file } => {
                     let text = if let Some(f) = file {
                         fs::read_to_string(f)?

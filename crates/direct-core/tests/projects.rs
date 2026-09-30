@@ -165,6 +165,130 @@ fn grouping_respects_claims_and_carries_verification_children() {
 }
 
 #[test]
+fn project_first_intake_metadata_and_verified_progress_are_enforced() {
+    let dir = TempDir::new().unwrap();
+    let mut s = Store::open(&dir.path().join("db")).unwrap();
+    let project = send(
+        &mut s,
+        json!({"op":"create_project","product":"DIR","name":"Release planning","description":"Ship a bounded change","priority":"urgent","sort_order":7}),
+        Role::Human,
+    )
+    .unwrap();
+    assert_eq!(project["status"], "planned");
+    assert_eq!(project["priority"], "urgent");
+    assert_eq!(project["sort_order"], 7);
+    let project = send(
+        &mut s,
+        json!({"op":"update_project","id":project["id"],"expected_version":1,"name":"Release planning","description":"Ship a bounded change","status":"active","priority":"high","sort_order":3}),
+        Role::Human,
+    )
+    .unwrap();
+    assert_eq!(project["status"], "active");
+    assert_eq!(project["priority"], "high");
+    assert_eq!(project["sort_order"], 3);
+
+    let issue = send(
+        &mut s,
+        json!({"op":"create_issue","product":"DIR","title":"Project delivery","body":"Deliver it","planning_scope":"project","project_id":project["id"]}),
+        Role::Agent,
+    )
+    .unwrap();
+    assert_eq!(issue["project_id"], project["id"]);
+    assert_eq!(issue["planning_scope"], "project");
+    let key = issue["key"].as_str().unwrap();
+    send(
+        &mut s,
+        json!({"op":"update_issue","key":key,"expected_version":1,"title":"Project delivery","body":"Deliver it","acceptance":"Verified","owner":"owner","priority":"high"}),
+        Role::Agent,
+    )
+    .unwrap();
+    send(
+        &mut s,
+        json!({"op":"ready","key":key,"expected_version":2}),
+        Role::Human,
+    )
+    .unwrap();
+    send(
+        &mut s,
+        json!({"op":"claim","key":key,"expected_version":3}),
+        Role::Agent,
+    )
+    .unwrap();
+    assert_eq!(
+        send(
+            &mut s,
+            json!({"op":"set_issue_project","key":key,"expected_version":4,"project_id":null}),
+            Role::Agent,
+        )
+        .unwrap_err()
+        .code,
+        "invalid"
+    );
+    let submitted = send(
+        &mut s,
+        json!({"op":"submit","key":key,"expected_version":4,"build_ref":"commit:abc","delivery_ref":"branch","summary":"Done","checks":"Passed","steps":[{"instruction":"Open it","expected":"It works"}]}),
+        Role::Agent,
+    )
+    .unwrap();
+    send(
+        &mut s,
+        json!({"op":"review","key":key,"expected_version":5,"run_id":submitted["current_run"],"outcome":"passed","results":[{"outcome":"passed","note":"Observed"}],"note":"Accepted"}),
+        Role::Human,
+    )
+    .unwrap();
+    let context = send(&mut s, json!({"op":"context","key":key}), Role::Agent).unwrap();
+    assert_eq!(context["project"]["status"], "active");
+    assert_eq!(context["project_progress"]["total"], 1);
+    assert_eq!(context["project_progress"]["completed"], 1);
+    assert_eq!(context["project_progress"]["completion_percent"], 100);
+    let snapshot = send(&mut s, json!({"op":"snapshot"}), Role::Agent).unwrap();
+    assert_eq!(snapshot["project_progress"][0]["total"], 1);
+
+    let ungrouped = send(
+        &mut s,
+        json!({"op":"create_issue","product":"DIR","title":"Needs a project","body":"Feature work","planning_scope":"project"}),
+        Role::Agent,
+    )
+    .unwrap();
+    let ungrouped_key = ungrouped["key"].as_str().unwrap();
+    send(
+        &mut s,
+        json!({"op":"update_issue","key":ungrouped_key,"expected_version":1,"title":"Needs a project","body":"Feature work","acceptance":"Scoped","owner":"owner","priority":"medium"}),
+        Role::Agent,
+    )
+    .unwrap();
+    assert_eq!(
+        send(
+            &mut s,
+            json!({"op":"ready","key":ungrouped_key,"expected_version":2}),
+            Role::Human,
+        )
+        .unwrap_err()
+        .code,
+        "invalid"
+    );
+
+    let other = send(
+        &mut s,
+        json!({"op":"create_product","key":"ALT","name":"Other"}),
+        Role::Human,
+    )
+    .unwrap();
+    assert_eq!(
+        send(
+            &mut s,
+            json!({"op":"create_issue","product":"ALT","title":"Wrong project","planning_scope":"project","project_id":project["id"]}),
+            Role::Agent,
+        )
+        .unwrap_err()
+        .code,
+        "invalid"
+    );
+    assert_eq!(other["key"], "ALT");
+    validate_archive(&s.export().unwrap()).unwrap();
+}
+
+#[test]
 fn legacy_database_and_archive_upgrade_without_losing_identity_or_replays() {
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("db");
@@ -212,7 +336,7 @@ fn legacy_database_and_archive_upgrade_without_losing_identity_or_replays() {
         conn.query_row("SELECT value FROM meta WHERE key='schema'", [], |r| r
             .get::<_, String>(0))
             .unwrap(),
-        "4"
+        "5"
     );
     let mut restored = Store::open(&dir.path().join("restore-v1")).unwrap();
     restored
@@ -226,4 +350,69 @@ fn legacy_database_and_archive_upgrade_without_losing_identity_or_replays() {
         send(&mut restored, create, Role::Agent).unwrap(),
         old_response
     );
+}
+
+#[test]
+fn legacy_project_links_upgrade_to_project_planning_scope() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("db");
+    let mut store = Store::open(&path).unwrap();
+    let project = send(
+        &mut store,
+        json!({"op":"create_project","product":"DIR","name":"Legacy project"}),
+        Role::Human,
+    )
+    .unwrap();
+    let issue = send(
+        &mut store,
+        json!({"op":"create_issue","product":"DIR","title":"Legacy project issue"}),
+        Role::Agent,
+    )
+    .unwrap();
+    send(
+        &mut store,
+        json!({"op":"set_issue_project","key":issue["key"],"expected_version":1,"project_id":project["id"]}),
+        Role::Agent,
+    )
+    .unwrap();
+
+    let mut legacy = serde_json::to_value(store.export().unwrap()).unwrap();
+    legacy["format"] = json!(4);
+    for field in ["status", "priority", "sort_order"] {
+        legacy["projects"][0].as_object_mut().unwrap().remove(field);
+    }
+    legacy["issues"][0]
+        .as_object_mut()
+        .unwrap()
+        .remove("planning_scope");
+    drop(store);
+
+    let conn = rusqlite::Connection::open(&path).unwrap();
+    conn.execute("UPDATE meta SET value='4' WHERE key='schema'", [])
+        .unwrap();
+    conn.execute(
+        "UPDATE projects SET data=?1",
+        [serde_json::to_string(&legacy["projects"][0]).unwrap()],
+    )
+    .unwrap();
+    conn.execute(
+        "UPDATE issues SET data=?1",
+        [serde_json::to_string(&legacy["issues"][0]).unwrap()],
+    )
+    .unwrap();
+    drop(conn);
+
+    let upgraded = Store::open(&path).unwrap().export().unwrap();
+    assert_eq!(upgraded.issues[0].planning_scope, PlanningScope::Project);
+    assert_eq!(upgraded.projects[0].status, ProjectStatus::Active);
+    assert_eq!(upgraded.projects[0].priority, "medium");
+    assert_eq!(upgraded.projects[0].sort_order, 0);
+
+    let mut restored = Store::open(&dir.path().join("restored-v4")).unwrap();
+    restored
+        .restore(serde_json::from_value(legacy).unwrap())
+        .unwrap();
+    let restored = restored.export().unwrap();
+    assert_eq!(restored.issues[0].planning_scope, PlanningScope::Project);
+    assert_eq!(restored.projects[0].status, ProjectStatus::Active);
 }

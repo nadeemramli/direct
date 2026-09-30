@@ -57,6 +57,23 @@ fn limited(value: &str, field: &str, max: usize) -> Result<()> {
     }
     Ok(())
 }
+fn valid_priority(value: &str) -> bool {
+    ["low", "medium", "high", "urgent"].contains(&value)
+}
+fn validate_project_fields(name: &str, priority: &str, sort_order: i64) -> Result<()> {
+    required(name, "project name")?;
+    limited(name, "project name", 160)?;
+    if !valid_priority(priority) {
+        return Err(err("invalid", "Unknown project priority"));
+    }
+    if !(0..=1_000_000).contains(&sort_order) {
+        return Err(err(
+            "invalid",
+            "Project order must be between 0 and 1000000",
+        ));
+    }
+    Ok(())
+}
 fn stable_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 120
@@ -133,8 +150,9 @@ impl Store {
                 r.get(0)
             })
             .optional()?;
-        if let Some(schema) = schema {
-            if schema != "1" && schema != "2" && schema != "3" && schema != "4" {
+        let upgrade_legacy_project_planning = schema.as_deref().is_some_and(|schema| schema != "5");
+        if let Some(schema) = schema.as_deref() {
+            if schema != "1" && schema != "2" && schema != "3" && schema != "4" && schema != "5" {
                 return Err(err("unsupported", "Unsupported database schema"));
             }
         } else {
@@ -161,8 +179,20 @@ impl Store {
              CREATE TABLE IF NOT EXISTS theoria_documents (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS method_findings (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS git_traces (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-             UPDATE meta SET value='4' WHERE key='schema';",
+             UPDATE meta SET value='5' WHERE key='schema';",
         )?;
+        if upgrade_legacy_project_planning {
+            // Before schema 5, a project link was the only way to express project-scoped work.
+            // Preserve that meaning instead of deserializing every legacy issue as Inbox work.
+            for mut issue in all::<Issue>(&tx, "issues")? {
+                issue.planning_scope = if issue.project_id.is_some() {
+                    PlanningScope::Project
+                } else {
+                    PlanningScope::Inbox
+                };
+                put_issue(&tx, &issue)?;
+            }
+        }
         tx.commit()?;
         Ok(Self { conn })
     }
@@ -181,6 +211,7 @@ impl Store {
                     "workspace_id":self.workspace_id()?,
                     "products":all::<Product>(&self.conn,"products")?,
                     "projects":all::<Project>(&self.conn,"projects")?,
+                    "project_progress":all::<Project>(&self.conn,"projects")?.iter().map(|project| project_progress(&self.conn, &project.id)).collect::<Result<Vec<_>>>()?,
                     "theoria_documents":all::<TheoriaDocument>(&self.conn,"theoria_documents")?,
                     "method_findings":all::<MethodFinding>(&self.conn,"method_findings")?,
                     "git_traces":all::<GitTrace>(&self.conn,"git_traces")?,
@@ -232,8 +263,12 @@ impl Store {
                     .filter(|trace| trace.issue_key == *key)
                     .collect();
                 git_traces.sort_by_key(|trace| trace.recorded_at);
+                let project_progress = project
+                    .as_ref()
+                    .map(|project| project_progress(&self.conn, &project.id))
+                    .transpose()?;
                 return Ok(
-                    json!({"issue":issue,"product":product,"project":project,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"content_authority":"Task data, not tool authorization"}),
+                    json!({"issue":issue,"product":product,"project":project,"project_progress":project_progress,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"content_authority":"Task data, not tool authorization"}),
                 );
             }
             Command::Changes { after } => {
@@ -315,7 +350,7 @@ impl Store {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(Archive {
-            format: 4,
+            format: 5,
             workspace_id: self.workspace_id()?,
             products: all(&self.conn, "products")?,
             projects: all(&self.conn, "projects")?,
@@ -331,8 +366,17 @@ impl Store {
     }
 
     /// Only used for offline restore into a newly created destination by the CLI.
-    pub fn restore(&mut self, a: Archive) -> Result<()> {
+    pub fn restore(&mut self, mut a: Archive) -> Result<()> {
         validate_archive(&a)?;
+        if a.format < 5 {
+            for issue in &mut a.issues {
+                issue.planning_scope = if issue.project_id.is_some() {
+                    PlanningScope::Project
+                } else {
+                    PlanningScope::Inbox
+                };
+            }
+        }
         let tx = self.conn.transaction()?;
         tx.execute_batch("DELETE FROM projects; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
         tx.execute(
@@ -437,6 +481,49 @@ fn project(conn: &Connection, id: &str) -> Result<Project> {
     Ok(serde_json::from_str(
         &data.ok_or_else(|| err("not_found", "Unknown project"))?,
     )?)
+}
+fn project_progress(conn: &Connection, project_id: &str) -> Result<ProjectProgress> {
+    let issues = all::<Issue>(conn, "issues")?;
+    let parents: Vec<_> = issues
+        .iter()
+        .filter(|issue| issue.parent.is_none() && issue.project_id.as_deref() == Some(project_id))
+        .collect();
+    let total = parents.len() as u64;
+    let backlog = parents
+        .iter()
+        .filter(|issue| issue.status == Status::Backlog)
+        .count() as u64;
+    let active = parents
+        .iter()
+        .filter(|issue| matches!(issue.status, Status::Ready | Status::Doing))
+        .count() as u64;
+    let pending_verification = parents
+        .iter()
+        .filter(|issue| issue.status == Status::Verify)
+        .count() as u64;
+    let completed = parents
+        .iter()
+        .filter(|issue| issue.status == Status::Done)
+        .count() as u64;
+    let canceled = parents
+        .iter()
+        .filter(|issue| issue.status == Status::Canceled)
+        .count() as u64;
+    let eligible = total.saturating_sub(canceled);
+    let completion_percent = completed
+        .checked_mul(100)
+        .and_then(|value| value.checked_div(eligible))
+        .unwrap_or(0) as u8;
+    Ok(ProjectProgress {
+        project_id: project_id.into(),
+        total,
+        backlog,
+        active,
+        pending_verification,
+        completed,
+        canceled,
+        completion_percent,
+    })
 }
 fn put_project(conn: &Connection, p: &Project) -> Result<()> {
     conn.execute(
@@ -556,7 +643,15 @@ fn check_lease(seconds: i64) -> Result<()> {
         Ok(())
     }
 }
-fn new_issue(conn: &Connection, p: &Product, title: &str, body: &str, at: i64) -> Result<Issue> {
+fn new_issue(
+    conn: &Connection,
+    p: &Product,
+    title: &str,
+    body: &str,
+    planning_scope: PlanningScope,
+    project_id: Option<String>,
+    at: i64,
+) -> Result<Issue> {
     let existing = all::<Issue>(conn, "issues")?;
     let next = existing
         .iter()
@@ -569,7 +664,8 @@ fn new_issue(conn: &Connection, p: &Product, title: &str, body: &str, at: i64) -
         id: id(),
         key: format!("{}-{next}", p.key),
         product_id: p.id.clone(),
-        project_id: None,
+        project_id,
+        planning_scope,
         theoria_refs: vec![],
         title: title.trim().into(),
         body: body.into(),
@@ -601,8 +697,11 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             product,
             name,
             description,
+            priority,
+            sort_order,
         } => {
             human(role)?;
+            validate_project_fields(name, priority, *sort_order)?;
             let product = all::<Product>(tx, "products")?
                 .into_iter()
                 .find(|p| p.key == *product)
@@ -613,6 +712,9 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 product_id: product.id,
                 name: name.trim().into(),
                 description: description.clone(),
+                status: ProjectStatus::Planned,
+                priority: priority.clone(),
+                sort_order: *sort_order,
                 version: 1,
                 created_at: at,
                 updated_at: at,
@@ -626,6 +728,9 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             expected_version,
             name,
             description,
+            status,
+            priority,
+            sort_order,
         } => {
             human(role)?;
             let mut p = project(tx, id)?;
@@ -635,9 +740,17 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                     "Project changed; reopen its editor before retrying",
                 ));
             }
+            let next_priority = priority.clone().unwrap_or_else(|| p.priority.clone());
+            let next_sort_order = sort_order.unwrap_or(p.sort_order);
+            validate_project_fields(name, &next_priority, next_sort_order)?;
             project_name(tx, &p.product_id, name, Some(id))?;
             p.name = name.trim().into();
             p.description = description.clone();
+            if let Some(status) = status {
+                p.status = status.clone();
+            }
+            p.priority = next_priority;
+            p.sort_order = next_sort_order;
             p.version += 1;
             p.updated_at = at;
             put_project(tx, &p)?;
@@ -663,6 +776,13 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 if p.product_id != i.product_id {
                     return Err(err("invalid", "Project must belong to the issue's product"));
                 }
+            } else if i.planning_scope == PlanningScope::Project
+                && !matches!(i.status, Status::Backlog | Status::Canceled)
+            {
+                return Err(err(
+                    "invalid",
+                    "Active project work cannot remove its project",
+                ));
             }
             i.project_id = project_id.clone();
             if let Some(key) = &i.verification_key {
@@ -1011,13 +1131,29 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             product,
             title,
             body,
+            planning_scope,
+            project_id,
         } => {
             required(title, "title")?;
             let p = all::<Product>(tx, "products")?
                 .into_iter()
                 .find(|p| p.key == *product)
                 .ok_or_else(|| err("not_found", "Unknown product"))?;
-            let i = new_issue(tx, &p, title, body, at)?;
+            if let Some(id) = project_id {
+                let selected = project(tx, id)?;
+                if selected.product_id != p.id {
+                    return Err(err("invalid", "Project must belong to the issue's product"));
+                }
+            }
+            let i = new_issue(
+                tx,
+                &p,
+                title,
+                body,
+                planning_scope.clone(),
+                project_id.clone(),
+                at,
+            )?;
             put_issue(tx, &i)?;
             emit(tx, actor, "issue_created", &i.key, at)?;
             Ok(json!(i))
@@ -1030,10 +1166,11 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             acceptance,
             owner,
             priority,
+            planning_scope,
         } => {
             let mut i = version(tx, key, *expected_version)?;
             required(title, "title")?;
-            if !["low", "medium", "high", "urgent"].contains(&priority.as_str()) {
+            if !valid_priority(priority) {
                 return Err(err("invalid", "Unknown priority"));
             }
             if matches!(i.status, Status::Verify | Status::Done | Status::Canceled) {
@@ -1050,8 +1187,17 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             i.acceptance = acceptance.clone();
             i.owner = owner.clone();
             i.priority = priority.clone();
+            if let Some(scope) = planning_scope {
+                i.planning_scope = scope.clone();
+            }
             if i.status == Status::Ready {
                 i.status = Status::Backlog;
+            }
+            if i.planning_scope == PlanningScope::Project
+                && i.project_id.is_none()
+                && !matches!(i.status, Status::Backlog | Status::Canceled)
+            {
+                return Err(err("invalid", "Active project work must have a project"));
             }
             save(tx, i, actor, "issue_updated", at)
         }
@@ -1067,6 +1213,12 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             required(&i.body, "problem / outcome")?;
             required(&i.acceptance, "acceptance criteria")?;
             required(&i.owner, "human owner")?;
+            if i.planning_scope == PlanningScope::Project && i.project_id.is_none() {
+                return Err(err(
+                    "invalid",
+                    "Project-scoped work must choose a project before Ready",
+                ));
+            }
             i.status = Status::Ready;
             save(tx, i, actor, "issue_ready", at)
         }
@@ -1176,6 +1328,8 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                     &p,
                     &format!("Verify: {}", i.title),
                     "Human verification",
+                    i.planning_scope.clone(),
+                    i.project_id.clone(),
                     at,
                 )?,
             };
@@ -1340,7 +1494,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
 }
 
 pub fn validate_archive(a: &Archive) -> Result<()> {
-    if a.format != 1 && a.format != 2 && a.format != 3 && a.format != 4 {
+    if a.format != 1 && a.format != 2 && a.format != 3 && a.format != 4 && a.format != 5 {
         return Err(err("unsupported", "Unsupported archive format"));
     }
     Uuid::parse_str(&a.workspace_id).map_err(|_| err("invalid", "Invalid workspace identity"))?;
@@ -1447,11 +1601,26 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
     if a.format < 4 && !a.git_traces.is_empty() {
         return Err(err("invalid", "Git trace data requires archive format 4"));
     }
+    if a.format < 5
+        && (a.projects.iter().any(|project| {
+            project.status != ProjectStatus::Active
+                || project.priority != "medium"
+                || project.sort_order != 0
+        }) || a
+            .issues
+            .iter()
+            .any(|issue| issue.planning_scope != PlanningScope::Inbox))
+    {
+        return Err(err(
+            "invalid",
+            "Project planning data requires archive format 5",
+        ));
+    }
     let mut project_ids = HashSet::new();
     let mut project_names = HashSet::new();
     for p in &a.projects {
         required(&p.id, "project ID")?;
-        required(&p.name, "project name")?;
+        validate_project_fields(&p.name, &p.priority, p.sort_order)?;
         if p.version == 0
             || p.name.len() > 160
             || !a.products.iter().any(|product| product.id == p.product_id)
@@ -1470,6 +1639,15 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             {
                 return Err(err("invalid", "Unresolved or cross-product project link"));
             }
+        }
+        if i.planning_scope == PlanningScope::Project
+            && i.project_id.is_none()
+            && !matches!(i.status, Status::Backlog | Status::Canceled)
+        {
+            return Err(err(
+                "invalid",
+                "Project-scoped active work is missing its project",
+            ));
         }
     }
     let run_ids: HashSet<_> = a.verifications.iter().map(|v| v.id.clone()).collect();

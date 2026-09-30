@@ -17,6 +17,7 @@
     workspace_id: "",
     products: [],
     projects: [],
+    project_progress: [],
     theoria_documents: [],
     method_findings: [],
     git_traces: [],
@@ -28,13 +29,20 @@
   let view = $state("all");
   let product = $state("all");
   let projectFilter = $state("all");
+  let listMode = $state<"flat" | "project">("flat");
+  let sortMode = $state<"updated" | "key">("updated");
   let selectedProject = $derived(
     data.projects.find((p) => p.id === projectFilter),
   );
   let availableProjects = $derived(
     data.projects
       .filter((p) => product === "all" || p.product_id === product)
-      .sort((a, b) => a.name.localeCompare(b.name)),
+      .sort(
+        (a, b) =>
+          projectPriority(a.priority) - projectPriority(b.priority) ||
+          (a.sort_order || 0) - (b.sort_order || 0) ||
+          a.name.localeCompare(b.name),
+      ),
   );
   $effect(() => {
     if (
@@ -57,6 +65,9 @@
     product: "DIR",
     name: "",
     description: "",
+    status: "planned",
+    priority: "medium",
+    sort_order: 0,
     version: 0,
   });
   let draft = $state({
@@ -66,6 +77,8 @@
     owner: "",
     priority: "medium",
     product: "DIR",
+    planning_scope: "project" as "project" | "inbox",
+    project_id: "",
     key: "",
     version: 0,
   });
@@ -166,9 +179,27 @@
             .toLowerCase()
             .includes(search.toLowerCase()),
       )
-      .sort(
-        (a, b) => b.updated_at - a.updated_at || a.key.localeCompare(b.key),
+      .sort((a, b) =>
+        sortMode === "key"
+          ? issueCode(a.key) - issueCode(b.key) || a.key.localeCompare(b.key)
+          : b.updated_at - a.updated_at || a.key.localeCompare(b.key),
       ),
+  );
+  let groupedVisible = $derived(
+    [
+      ...availableProjects.map((project) => ({
+        id: project.id,
+        name: project.name,
+        project,
+        issues: visible.filter((issue) => issue.project_id === project.id),
+      })),
+      {
+        id: "none",
+        name: "No project · Inbox",
+        project: null,
+        issues: visible.filter((issue) => !issue.project_id),
+      },
+    ].filter((group) => group.issues.length > 0),
   );
   let title = $derived(
     view === "theoria"
@@ -195,6 +226,35 @@
   }
   function shortSha(sha: string) {
     return sha.slice(0, 12);
+  }
+  function issueCode(key: string) {
+    const value = Number(key.split("-").at(-1));
+    return Number.isFinite(value) ? value : Number.MAX_SAFE_INTEGER;
+  }
+  function projectPriority(priority = "medium") {
+    return { urgent: 0, high: 1, medium: 2, low: 3 }[priority] ?? 2;
+  }
+  function projectProgress(id: string) {
+    const provided = data.project_progress?.find(
+      (progress) => progress.project_id === id,
+    );
+    if (provided) return provided;
+    const issues = parents.filter((issue) => issue.project_id === id);
+    const canceled = issues.filter((issue) => issue.status === "canceled").length;
+    const completed = issues.filter((issue) => issue.status === "done").length;
+    const eligible = issues.length - canceled;
+    return {
+      project_id: id,
+      total: issues.length,
+      backlog: issues.filter((issue) => issue.status === "backlog").length,
+      active: issues.filter((issue) => ["ready", "doing"].includes(issue.status))
+        .length,
+      pending_verification: issues.filter((issue) => issue.status === "verify")
+        .length,
+      completed,
+      canceled,
+      completion_percent: eligible ? Math.floor((completed * 100) / eligible) : 0,
+    };
   }
   function guidanceState(
     document: TheoriaDocument | undefined,
@@ -322,22 +382,25 @@
       key: i.key,
       version: i.version,
       product: "",
+      planning_scope:
+        i.planning_scope || (i.project_id ? "project" : "inbox"),
+      project_id: i.project_id || "",
     };
     modal = "edit";
   }
   function newIssue() {
-    // Capture starts ungrouped; assignment is an explicit action on its detail.
-    projectFilter = "all";
+    const selectedProduct =
+      data.products.find((p) => p.id === product) || data.products[0];
+    const inheritedProject = selectedProject?.id || "";
     draft = {
       title: "",
       body: "",
       acceptance: "",
       owner: "",
       priority: "medium",
-      product:
-        data.products.find((p) => p.id === product)?.key ||
-        data.products[0]?.key ||
-        "DIR",
+      product: selectedProduct?.key || "DIR",
+      planning_scope: "project",
+      project_id: inheritedProject,
       key: "",
       version: 0,
     };
@@ -352,6 +415,8 @@
             product: draft.product,
             title: draft.title,
             body: draft.body,
+            planning_scope: draft.planning_scope,
+            project_id: draft.project_id || null,
           })
         : await act({
             op: "update_issue",
@@ -362,6 +427,7 @@
             acceptance: draft.acceptance,
             owner: draft.owner,
             priority: draft.priority,
+            planning_scope: draft.planning_scope,
           });
     if (result) {
       modal = null;
@@ -390,6 +456,9 @@
             .key,
           name: p.name,
           description: p.description,
+          status: p.status || "active",
+          priority: p.priority || "medium",
+          sort_order: p.sort_order || 0,
           version: p.version,
         }
       : {
@@ -400,6 +469,9 @@
             "DIR",
           name: "",
           description: "",
+          status: "planned",
+          priority: "medium",
+          sort_order: 0,
           version: 0,
         };
     modal = "project";
@@ -418,12 +490,17 @@
               expected_version: projectDraft.version,
               name: projectDraft.name,
               description: projectDraft.description,
+              status: projectDraft.status,
+              priority: projectDraft.priority,
+              sort_order: projectDraft.sort_order,
             }
           : {
               op: "create_project",
               product: projectDraft.product,
               name: projectDraft.name,
               description: projectDraft.description,
+              priority: projectDraft.priority,
+              sort_order: projectDraft.sort_order,
             },
         true,
       );
@@ -531,6 +608,29 @@
     };
   });
 </script>
+
+{#snippet issueRow(i: Issue)}
+  <button
+    class="issue-row"
+    class:selected={selected === i.key}
+    onclick={() => choose(i.key)}
+    ><span class="state-icon {i.status}">{glyphs[i.status]}</span>
+    <div class="row-content">
+      <div class="issue-title">{i.title}</div>
+      <div class="issue-meta">
+        <span>{i.key}</span><span class="dot-separator">·</span><span
+          >{data.products.find((p) => p.id === i.product_id)?.name}</span
+        >{#if i.needs_fix}<span class="fix-badge">Needs fix</span>{/if}{#if i.claim}<span
+            class="claim-meta">↗ {i.claim.actor}</span
+          >{/if}
+        {#if i.project_id}<span class="project-tag"
+            >{data.projects.find((p) => p.id === i.project_id)?.name}</span
+          >{:else}<span class="inbox-tag">Inbox</span>{/if}
+      </div>
+    </div>
+    <span class="status-badge {i.status}">{labels[i.status]}</span></button
+  >
+{/snippet}
 
 <svelte:head><title>Direct · {title}</title></svelte:head>
 
@@ -843,36 +943,71 @@
               disabled={!connected || busy}
               onclick={() => editProject(selectedProject)}>Edit project</button
             >{/if}
+          <div class="view-switch" aria-label="Issue layout">
+            <button
+              class:active={listMode === "flat"}
+              aria-pressed={listMode === "flat"}
+              onclick={() => (listMode = "flat")}>Flat</button
+            ><button
+              class:active={listMode === "project"}
+              aria-pressed={listMode === "project"}
+              onclick={() => (listMode = "project")}>By project</button
+            >
+          </div>
+          {#if listMode === "flat"}<label class="project-filter"
+              >Sort<select aria-label="Sort issues" bind:value={sortMode}
+                ><option value="updated">Recently updated</option><option value="key"
+                  >Issue code</option
+                ></select
+              ></label
+            >{/if}
         </div>
-        {#if selectedProject?.description}<p class="project-description">
-            {selectedProject.description}
-          </p>{/if}
+        {#if selectedProject}
+          {@const progress = projectProgress(selectedProject.id)}
+          <div class="project-summary">
+            <div>
+              <strong>{selectedProject.description || "No project outcome recorded."}</strong>
+              <span
+                >{selectedProject.status || "active"} · {selectedProject.priority ||
+                  "medium"} priority · order {selectedProject.sort_order || 0}</span
+              >
+            </div>
+            <div class="project-progress-copy">
+              <b>{progress.completion_percent}%</b>
+              <span
+                >{progress.completed}/{progress.total - progress.canceled} verified done · {progress.pending_verification} verify · {progress.canceled} canceled</span
+              >
+            </div>
+            <div class="progress-track" aria-label="Project completion">
+              <span style={`width: ${progress.completion_percent}%`}></span>
+            </div>
+          </div>
+        {/if}
         <div class="list-label"><span>ISSUE</span><span>STATUS</span></div>
         <div class="issue-list">
-          {#each visible as i}<button
-              class="issue-row"
-              class:selected={selected === i.key}
-              onclick={() => choose(i.key)}
-              ><span class="state-icon {i.status}">{glyphs[i.status]}</span>
-              <div class="row-content">
-                <div class="issue-title">{i.title}</div>
-                <div class="issue-meta">
-                  <span>{i.key}</span><span class="dot-separator">·</span><span
-                    >{data.products.find((p) => p.id === i.product_id)
-                      ?.name}</span
-                  >{#if i.needs_fix}<span class="fix-badge">Needs fix</span
-                    >{/if}{#if i.claim}<span class="claim-meta"
-                      >↗ {i.claim.actor}</span
-                    >{/if}
-                  {#if i.project_id}<span class="project-tag"
-                      >{data.projects.find((p) => p.id === i.project_id)
-                        ?.name}</span
-                    >{/if}
-                </div>
-              </div>
-              <span class="status-badge {i.status}">{labels[i.status]}</span
-              ></button
-            >
+          {#if visible.length && listMode === "project"}
+            {#each groupedVisible as group}
+              {@const progress = group.project
+                ? projectProgress(group.project.id)
+                : null}
+              <section class="issue-group">
+                <header>
+                  <div>
+                    <strong>{group.name}</strong>
+                    {#if group.project}<span
+                        >{group.project.status || "active"} · {group.project.priority ||
+                          "medium"}</span
+                      >{:else}<span>Explicitly ungrouped work</span>{/if}
+                  </div>
+                  {#if progress}<small
+                      >{progress.completion_percent}% · {progress.completed} done · {progress.pending_verification} verify</small
+                    >{:else}<small>{group.issues.length} items</small>{/if}
+                </header>
+                {#each group.issues as i}{@render issueRow(i)}{/each}
+              </section>
+            {/each}
+          {:else if visible.length}
+            {#each visible as i}{@render issueRow(i)}{/each}
           {:else}<div class="empty">
               <div class="empty-symbol">
                 {search ? "⌕" : view === "needs" ? "✓" : "↗"}
@@ -896,7 +1031,7 @@
                   onclick={newIssue}
                   disabled={!connected}>Create your first issue</button
                 >{/if}
-            </div>{/each}
+            </div>{/if}
         </div>
         <div class="list-footer">
           <span
@@ -933,6 +1068,11 @@
             <div class="properties">
               <span>Owner <b>{current.owner || "Unassigned"}</b></span><span
                 >Priority <b>{current.priority}</b></span
+              ><span
+                >Route <b>{current.planning_scope === "project" ||
+                    (!current.planning_scope && current.project_id)
+                    ? "Project work"
+                    : "Inbox / maintenance"}</b></span
               >
             </div>
             <label class="project-assignment"
@@ -1012,7 +1152,9 @@
               <div class="actions">
                 {#if current.status === "backlog"}<button
                     class="primary"
-                    disabled={busy}
+                    disabled={busy ||
+                      (current.planning_scope === "project" &&
+                        !current.project_id)}
                     onclick={() =>
                       act({
                         op: "ready",
@@ -1021,7 +1163,9 @@
                       })}>Make ready <span>→</span></button
                   >
                   <p class="hint">
-                    Requires a brief, acceptance criteria, and an owner.
+                    {current.planning_scope === "project" && !current.project_id
+                      ? "Choose a project before making project work Ready."
+                      : "Requires a brief, acceptance criteria, and an owner."}
                   </p>{/if}
                 {#if ["ready", "doing"].includes(current.status) && (!current.claim || current.claim.expires_at <= clock)}<button
                     class="primary"
@@ -1487,6 +1631,32 @@
               bind:value={projectDraft.description}
               placeholder="What should this project deliver?"></textarea></label
           >
+          <div class="form-grid">
+            {#if projectDraft.id}<label class="field"
+                >Status<select bind:value={projectDraft.status}
+                  ><option value="planned">Planned</option><option value="active"
+                    >Active</option
+                  ><option value="paused">Paused</option><option value="completed"
+                    >Completed</option
+                  ><option value="canceled">Canceled</option></select
+                ></label
+              >{/if}<label class="field"
+              >Priority<select bind:value={projectDraft.priority}
+                ><option value="urgent">Urgent</option><option value="high"
+                  >High</option
+                ><option value="medium">Medium</option><option value="low"
+                  >Low</option
+                ></select
+              ></label
+            ><label class="field"
+              >Order<input
+                type="number"
+                min="0"
+                max="1000000"
+                bind:value={projectDraft.sort_order}
+              /></label
+            >
+          </div>
           <div class="modal-footer">
             <button class="primary" disabled={busy}
               >{projectDraft.id ? "Save project" : "Create project"}</button
@@ -1591,10 +1761,33 @@
         </form>
       {:else}<form onsubmit={saveDraft}>
           {#if modal === "issue"}<label class="field"
-              >Product<select bind:value={draft.product}
+              >Product<select
+                value={draft.product}
+                onchange={(event) => {
+                  draft.product = event.currentTarget.value;
+                  draft.project_id = "";
+                }}
                 >{#each data.products as p}<option value={p.key}
                     >{p.name} · {p.key}</option
                   >{/each}</select
+              ></label
+            >{/if}<label class="field"
+            >Work route<select bind:value={draft.planning_scope}
+              ><option value="project">Project work · feature or change</option><option
+                value="inbox">Inbox / exceptional maintenance</option
+              ></select
+            ></label
+          >{#if modal === "issue" && draft.planning_scope === "project"}<label
+              class="field">Project<select required bind:value={draft.project_id}
+                ><option value="" disabled>Choose the delivery scope</option>{#each data.projects.filter(
+                    (project) =>
+                      project.product_id ===
+                      data.products.find((product) => product.key === draft.product)
+                        ?.id,
+                  ) as project}<option value={project.id}>{project.name}</option
+                  >{/each}</select
+              ><small
+                >Feature and change work enters the project directly. Use Inbox only when ungrouped capture is intentional.</small
               ></label
             >{/if}<label class="field"
             >Issue title<input

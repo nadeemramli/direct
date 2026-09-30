@@ -34,15 +34,56 @@ pub struct Claim {
     pub expires_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum ProjectStatus {
+    Planned,
+    #[default]
+    Active,
+    Paused,
+    Completed,
+    Canceled,
+}
+
+fn default_project_priority() -> String {
+    "medium".into()
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Project {
     pub id: String,
     pub product_id: String,
     pub name: String,
     pub description: String,
+    #[serde(default)]
+    pub status: ProjectStatus,
+    #[serde(default = "default_project_priority")]
+    pub priority: String,
+    #[serde(default)]
+    pub sort_order: i64,
     pub version: u64,
     pub created_at: i64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProjectProgress {
+    pub project_id: String,
+    pub total: u64,
+    pub backlog: u64,
+    pub active: u64,
+    pub pending_verification: u64,
+    pub completed: u64,
+    pub canceled: u64,
+    pub completion_percent: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum PlanningScope {
+    Project,
+    #[default]
+    Inbox,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -170,6 +211,8 @@ pub struct Issue {
     #[serde(default)]
     pub project_id: Option<String>,
     #[serde(default)]
+    pub planning_scope: PlanningScope,
+    #[serde(default)]
     pub theoria_refs: Vec<TheoriaReference>,
     pub title: String,
     pub body: String,
@@ -272,12 +315,22 @@ pub enum Command {
         name: String,
         #[serde(default)]
         description: String,
+        #[serde(default = "default_project_priority")]
+        priority: String,
+        #[serde(default)]
+        sort_order: i64,
     },
     UpdateProject {
         id: String,
         expected_version: u64,
         name: String,
         description: String,
+        #[serde(default)]
+        status: Option<ProjectStatus>,
+        #[serde(default)]
+        priority: Option<String>,
+        #[serde(default)]
+        sort_order: Option<i64>,
     },
     SetIssueProject {
         key: String,
@@ -336,6 +389,10 @@ pub enum Command {
         title: String,
         #[serde(default)]
         body: String,
+        #[serde(default)]
+        planning_scope: PlanningScope,
+        #[serde(default)]
+        project_id: Option<String>,
     },
     UpdateIssue {
         key: String,
@@ -345,6 +402,8 @@ pub enum Command {
         acceptance: String,
         owner: String,
         priority: String,
+        #[serde(default)]
+        planning_scope: Option<PlanningScope>,
     },
     Ready {
         key: String,
