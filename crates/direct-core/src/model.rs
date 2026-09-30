@@ -80,6 +80,78 @@ pub struct ProjectProgress {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 #[serde(rename_all = "snake_case")]
+pub enum GoalStatus {
+    Planned,
+    #[default]
+    Active,
+    Paused,
+    Completed,
+    Canceled,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Goal {
+    pub id: String,
+    pub product_id: String,
+    pub name: String,
+    pub description: String,
+    #[serde(default)]
+    pub status: GoalStatus,
+    #[serde(default = "default_project_priority")]
+    pub priority: String,
+    #[serde(default)]
+    pub project_ids: Vec<String>,
+    #[serde(default)]
+    pub external_source: Option<String>,
+    #[serde(default)]
+    pub external_id: Option<String>,
+    pub version: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct Milestone {
+    pub id: String,
+    pub project_id: String,
+    pub name: String,
+    pub description: String,
+    pub sort_order: i64,
+    #[serde(default)]
+    pub external_source: Option<String>,
+    #[serde(default)]
+    pub external_id: Option<String>,
+    pub version: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct GoalProgress {
+    pub goal_id: String,
+    pub total: u64,
+    pub backlog: u64,
+    pub active: u64,
+    pub pending_verification: u64,
+    pub completed: u64,
+    pub canceled: u64,
+    pub completion_percent: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MilestoneProgress {
+    pub milestone_id: String,
+    pub total: u64,
+    pub backlog: u64,
+    pub active: u64,
+    pub pending_verification: u64,
+    pub completed: u64,
+    pub canceled: u64,
+    pub completion_percent: u8,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum PlanningScope {
     Project,
     #[default]
@@ -210,6 +282,8 @@ pub struct Issue {
     pub product_id: String,
     #[serde(default)]
     pub project_id: Option<String>,
+    #[serde(default)]
+    pub milestone_id: Option<String>,
     #[serde(default)]
     pub planning_scope: PlanningScope,
     #[serde(default)]
@@ -359,6 +433,53 @@ pub enum Command {
         key: String,
         expected_version: u64,
         project_id: Option<String>,
+    },
+    CreateGoal {
+        product: String,
+        name: String,
+        #[serde(default)]
+        description: String,
+        #[serde(default = "default_project_priority")]
+        priority: String,
+        #[serde(default)]
+        project_ids: Vec<String>,
+        #[serde(default)]
+        external_source: Option<String>,
+        #[serde(default)]
+        external_id: Option<String>,
+    },
+    UpdateGoal {
+        id: String,
+        expected_version: u64,
+        name: String,
+        description: String,
+        status: GoalStatus,
+        priority: String,
+        project_ids: Vec<String>,
+    },
+    CreateMilestone {
+        project_id: String,
+        name: String,
+        #[serde(default)]
+        description: String,
+        #[serde(default)]
+        sort_order: i64,
+        #[serde(default)]
+        external_source: Option<String>,
+        #[serde(default)]
+        external_id: Option<String>,
+    },
+    UpdateMilestone {
+        id: String,
+        expected_version: u64,
+        name: String,
+        description: String,
+        sort_order: i64,
+    },
+    SetIssueMilestone {
+        key: String,
+        expected_version: u64,
+        milestone_id: Option<String>,
     },
     CreateIssueLink {
         key: String,
@@ -516,6 +637,10 @@ pub struct Archive {
     pub products: Vec<Product>,
     #[serde(default)]
     pub projects: Vec<Project>,
+    #[serde(default)]
+    pub goals: Vec<Goal>,
+    #[serde(default)]
+    pub milestones: Vec<Milestone>,
     #[serde(default)]
     pub theoria_documents: Vec<TheoriaDocument>,
     #[serde(default)]

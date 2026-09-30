@@ -13,12 +13,18 @@
     FindingClassification,
     EvidenceKind,
     IssueLinkKind,
+    Goal,
+    Milestone,
   } from "./api";
   let data = $state<Snapshot>({
     workspace_id: "",
     products: [],
     projects: [],
     project_progress: [],
+    goals: [],
+    goal_progress: [],
+    milestones: [],
+    milestone_progress: [],
     theoria_documents: [],
     method_findings: [],
     git_traces: [],
@@ -35,6 +41,18 @@
   let sortMode = $state<"updated" | "key">("updated");
   let selectedProject = $derived(
     data.projects.find((p) => p.id === projectFilter),
+  );
+  let selectedProjectGoals = $derived(
+    selectedProject
+      ? data.goals.filter((goal) => goal.project_ids.includes(selectedProject.id))
+      : [],
+  );
+  let selectedProjectMilestones = $derived(
+    selectedProject
+      ? data.milestones
+          .filter((milestone) => milestone.project_id === selectedProject.id)
+          .sort((a, b) => a.sort_order - b.sort_order || a.name.localeCompare(b.name))
+      : [],
   );
   let availableProjects = $derived(
     data.projects
@@ -60,7 +78,7 @@
   let busy = $state(false);
   let tab = $state("brief");
   let modal = $state<
-    "issue" | "product" | "project" | "edit" | "submit" | null
+    "issue" | "product" | "project" | "goal" | "milestone" | "edit" | "submit" | null
   >(null);
   let projectDraft = $state({
     id: "",
@@ -69,6 +87,24 @@
     description: "",
     status: "planned",
     priority: "medium",
+    sort_order: 0,
+    version: 0,
+  });
+  let goalDraft = $state({
+    id: "",
+    product: "DIR",
+    name: "",
+    description: "",
+    status: "planned",
+    priority: "medium",
+    project_ids: [] as string[],
+    version: 0,
+  });
+  let milestoneDraft = $state({
+    id: "",
+    project_id: "",
+    name: "",
+    description: "",
     sort_order: 0,
     version: 0,
   });
@@ -259,6 +295,14 @@
       canceled,
       completion_percent: eligible ? Math.floor((completed * 100) / eligible) : 0,
     };
+  }
+  function goalProgress(id: string) {
+    return data.goal_progress.find((progress) => progress.goal_id === id);
+  }
+  function milestoneProgress(id: string) {
+    return data.milestone_progress.find(
+      (progress) => progress.milestone_id === id,
+    );
   }
   function guidanceState(
     document: TheoriaDocument | undefined,
@@ -543,6 +587,124 @@
       await refresh();
       product = saved.product_id;
       projectFilter = saved.id;
+      modal = null;
+    } catch (e) {
+      error = String(e).replace(/^Error: /, "");
+    } finally {
+      busy = false;
+    }
+  }
+  function editGoal(goal?: Goal) {
+    const productKey = goal
+      ? data.products.find((product) => product.id === goal.product_id)?.key
+      : data.products.find((candidate) => candidate.id === product)?.key ||
+        data.products[0]?.key;
+    goalDraft = goal
+      ? {
+          id: goal.id,
+          product: productKey || "DIR",
+          name: goal.name,
+          description: goal.description,
+          status: goal.status,
+          priority: goal.priority,
+          project_ids: [...goal.project_ids],
+          version: goal.version,
+        }
+      : {
+          id: "",
+          product: productKey || "DIR",
+          name: "",
+          description: "",
+          status: "planned",
+          priority: "medium",
+          project_ids: selectedProject ? [selectedProject.id] : [],
+          version: 0,
+        };
+    modal = "goal";
+  }
+  async function saveGoal(event: SubmitEvent) {
+    event.preventDefault();
+    if (busy) return;
+    busy = true;
+    error = "";
+    try {
+      await api<Goal>(
+        goalDraft.id
+          ? {
+              op: "update_goal",
+              id: goalDraft.id,
+              expected_version: goalDraft.version,
+              name: goalDraft.name,
+              description: goalDraft.description,
+              status: goalDraft.status,
+              priority: goalDraft.priority,
+              project_ids: goalDraft.project_ids,
+            }
+          : {
+              op: "create_goal",
+              product: goalDraft.product,
+              name: goalDraft.name,
+              description: goalDraft.description,
+              priority: goalDraft.priority,
+              project_ids: goalDraft.project_ids,
+            },
+        true,
+      );
+      await refresh();
+      modal = null;
+    } catch (e) {
+      error = String(e).replace(/^Error: /, "");
+    } finally {
+      busy = false;
+    }
+  }
+  function editMilestone(milestone?: Milestone) {
+    if (!selectedProject && !milestone) return;
+    milestoneDraft = milestone
+      ? {
+          id: milestone.id,
+          project_id: milestone.project_id,
+          name: milestone.name,
+          description: milestone.description,
+          sort_order: milestone.sort_order,
+          version: milestone.version,
+        }
+      : {
+          id: "",
+          project_id: selectedProject!.id,
+          name: "",
+          description: "",
+          sort_order: selectedProjectMilestones.length,
+          version: 0,
+        };
+    modal = "milestone";
+  }
+  async function saveMilestone(event: SubmitEvent) {
+    event.preventDefault();
+    if (busy) return;
+    busy = true;
+    error = "";
+    try {
+      await api<Milestone>(
+        milestoneDraft.id
+          ? {
+              op: "update_milestone",
+              id: milestoneDraft.id,
+              expected_version: milestoneDraft.version,
+              name: milestoneDraft.name,
+              description: milestoneDraft.description,
+              sort_order: milestoneDraft.sort_order,
+            }
+          : {
+              op: "create_milestone",
+              project_id: milestoneDraft.project_id,
+              name: milestoneDraft.name,
+              description: milestoneDraft.description,
+              sort_order: milestoneDraft.sort_order,
+            },
+        true,
+      );
+      await refresh();
       modal = null;
     } catch (e) {
       error = String(e).replace(/^Error: /, "");
@@ -974,6 +1136,11 @@
             disabled={!connected || busy}
             onclick={() => editProject()}>＋ New project</button
           >
+          <button
+            class="text-button"
+            disabled={!connected || busy}
+            onclick={() => editGoal()}>＋ New goal</button
+          >
           {#if selectedProject}<button
               class="text-button"
               disabled={!connected || busy}
@@ -1016,6 +1183,33 @@
             </div>
             <div class="progress-track" aria-label="Project completion">
               <span style={`width: ${progress.completion_percent}%`}></span>
+            </div>
+            <div class="project-planning-links">
+              <div>
+                <span>GOALS</span>
+                {#each selectedProjectGoals as goal}
+                  {@const progress = goalProgress(goal.id)}
+                  <button class="planning-link" onclick={() => editGoal(goal)}
+                    ><b>{goal.name}</b><small
+                      >{goal.status} · {goal.priority} · {progress?.completion_percent || 0}%</small
+                    ></button
+                  >
+                {:else}<small>No goals link this project yet.</small>{/each}
+              </div>
+              <div>
+                <span>MILESTONES</span>
+                {#each selectedProjectMilestones as milestone}
+                  {@const progress = milestoneProgress(milestone.id)}
+                  <button class="planning-link" onclick={() => editMilestone(milestone)}
+                    ><b>{milestone.name}</b><small
+                      >order {milestone.sort_order} · {progress?.completion_percent || 0}% · {progress?.pending_verification || 0} verify</small
+                    ></button
+                  >
+                {:else}<small>No milestones in this project yet.</small>{/each}
+                <button class="text-button add-planning" onclick={() => editMilestone()}
+                  >＋ Add milestone</button
+                >
+              </div>
             </div>
           </div>
         {/if}
@@ -1134,6 +1328,38 @@
                   >{/each}
               </select>
             </label>
+            {#if current.project_id}
+              <label class="project-assignment"
+                >Milestone
+                <select
+                  aria-label="Issue milestone"
+                  value={current.milestone_id || ""}
+                  disabled={busy || !connected}
+                  onchange={async (event) => {
+                    const control = event.currentTarget;
+                    const result = await act({
+                      op: "set_issue_milestone",
+                      key: current.key,
+                      expected_version: current.version,
+                      milestone_id: control.value || null,
+                    });
+                    if (!result) control.value = current?.milestone_id || "";
+                  }}
+                >
+                  <option value="">No milestone</option>
+                  {#each data.milestones.filter((milestone) => milestone.project_id === current.project_id).sort((a, b) => a.sort_order - b.sort_order) as milestone}<option
+                      value={milestone.id}>{milestone.name}</option
+                    >{/each}
+                </select>
+              </label>
+              {@const issueGoals = data.goals.filter((goal) => goal.project_ids.includes(current.project_id!))}
+              {#if issueGoals.length}<div class="issue-goals">
+                  <span>Goals</span>
+                  {#each issueGoals as goal}<button onclick={() => editGoal(goal)}
+                      >{goal.name}</button
+                    >{/each}
+                </div>{/if}
+            {/if}
           </div>
           <div class="tabs" role="tablist" aria-label="Issue sections">
             {#each [["brief", "Brief"], ["relations", "Relations"], ["theoria", "Theoria"], ["verify", "Verification"], ["activity", "Activity"]] as [id, label]}<button
@@ -1664,6 +1890,14 @@
         ? projectDraft.id
           ? "Edit project"
           : "New project"
+        : modal === "goal"
+          ? goalDraft.id
+            ? "Edit goal"
+            : "New goal"
+          : modal === "milestone"
+            ? milestoneDraft.id
+              ? "Edit milestone"
+              : "New milestone"
         : modal === "product"
           ? "New product"
           : modal === "submit"
@@ -1683,6 +1917,14 @@
               ? projectDraft.id
                 ? "Shape the project"
                 : "Group work into a project"
+              : modal === "goal"
+                ? goalDraft.id
+                  ? "Shape the goal"
+                  : "Connect projects to an outcome"
+                : modal === "milestone"
+                  ? milestoneDraft.id
+                    ? "Shape the milestone"
+                    : "Add a project phase"
               : modal === "product"
                 ? "A space for your product"
                 : modal === "submit"
@@ -1752,6 +1994,77 @@
           <div class="modal-footer">
             <button class="primary" disabled={busy}
               >{projectDraft.id ? "Save project" : "Create project"}</button
+            >
+          </div>
+        </form>
+      {:else if modal === "goal"}<form onsubmit={saveGoal}>
+          <label class="field"
+            >Product<select bind:value={goalDraft.product} disabled={!!goalDraft.id}>
+              {#each data.products as p}<option value={p.key}>{p.name}</option
+                >{/each}
+            </select></label
+          >
+          <label class="field"
+            >Goal / initiative name<input required maxlength="160" bind:value={goalDraft.name}
+          /></label>
+          <label class="field"
+            >Outcome<textarea rows="3" bind:value={goalDraft.description}></textarea></label
+          >
+          <div class="form-grid">
+            {#if goalDraft.id}<label class="field"
+                >Status<select bind:value={goalDraft.status}
+                  ><option value="planned">Planned</option><option value="active"
+                    >Active</option
+                  ><option value="paused">Paused</option><option value="completed"
+                    >Completed</option
+                  ><option value="canceled">Canceled</option></select
+                ></label
+              >{/if}<label class="field"
+              >Priority<select bind:value={goalDraft.priority}
+                ><option value="urgent">Urgent</option><option value="high">High</option
+                ><option value="medium">Medium</option><option value="low">Low</option
+                ></select
+              ></label
+            >
+          </div>
+          <div class="field">
+            <span>Linked projects</span>
+            <div class="project-checklist">
+              {#each data.projects.filter((project) => project.product_id === data.products.find((candidate) => candidate.key === goalDraft.product)?.id) as project}
+                <label><input type="checkbox" value={project.id} bind:group={goalDraft.project_ids} /> {project.name}</label>
+              {:else}<small>No projects in this product yet.</small>{/each}
+            </div>
+          </div>
+          {#if goalDraft.id && data.goals.find((goal) => goal.id === goalDraft.id)?.external_source}<p class="source-warning"
+              >Imported from {data.goals.find((goal) => goal.id === goalDraft.id)?.external_source} · {data.goals.find((goal) => goal.id === goalDraft.id)?.external_id}</p
+            >{/if}
+          <div class="modal-footer">
+            <button class="primary" disabled={busy}
+              >{goalDraft.id ? "Save goal" : "Create goal"}</button
+            >
+          </div>
+        </form>
+      {:else if modal === "milestone"}<form onsubmit={saveMilestone}>
+          <label class="field"
+            >Project<select disabled value={milestoneDraft.project_id}>
+              {#each data.projects as project}<option value={project.id}>{project.name}</option>{/each}
+            </select></label
+          >
+          <label class="field"
+            >Milestone name<input required maxlength="160" bind:value={milestoneDraft.name}
+          /></label>
+          <label class="field"
+            >Phase outcome<textarea rows="3" bind:value={milestoneDraft.description}></textarea></label
+          >
+          <label class="field"
+            >Order<input type="number" min="0" max="1000000" bind:value={milestoneDraft.sort_order}
+          /></label>
+          {#if milestoneDraft.id && data.milestones.find((milestone) => milestone.id === milestoneDraft.id)?.external_source}<p class="source-warning"
+              >Imported from {data.milestones.find((milestone) => milestone.id === milestoneDraft.id)?.external_source} · {data.milestones.find((milestone) => milestone.id === milestoneDraft.id)?.external_id}</p
+            >{/if}
+          <div class="modal-footer">
+            <button class="primary" disabled={busy}
+              >{milestoneDraft.id ? "Save milestone" : "Create milestone"}</button
             >
           </div>
         </form>

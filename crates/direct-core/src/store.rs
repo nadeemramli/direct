@@ -74,6 +74,40 @@ fn validate_project_fields(name: &str, priority: &str, sort_order: i64) -> Resul
     }
     Ok(())
 }
+fn validate_goal_fields(name: &str, priority: &str) -> Result<()> {
+    required(name, "goal name")?;
+    limited(name, "goal name", 160)?;
+    if !valid_priority(priority) {
+        return Err(err("invalid", "Unknown goal priority"));
+    }
+    Ok(())
+}
+fn validate_milestone_fields(name: &str, sort_order: i64) -> Result<()> {
+    required(name, "milestone name")?;
+    limited(name, "milestone name", 160)?;
+    if !(0..=1_000_000).contains(&sort_order) {
+        return Err(err(
+            "invalid",
+            "Milestone order must be between 0 and 1000000",
+        ));
+    }
+    Ok(())
+}
+fn validate_optional_provenance(source: Option<&str>, external_id: Option<&str>) -> Result<()> {
+    if source.is_some() != external_id.is_some() {
+        return Err(err(
+            "invalid",
+            "External source and external ID must be provided together",
+        ));
+    }
+    if let (Some(source), Some(external_id)) = (source, external_id) {
+        required(source, "external source")?;
+        required(external_id, "external ID")?;
+        limited(source, "external source", 120)?;
+        limited(external_id, "external ID", 512)?;
+    }
+    Ok(())
+}
 fn stable_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 120
@@ -154,7 +188,7 @@ impl Store {
             .as_deref()
             .is_some_and(|schema| matches!(schema, "1" | "2" | "3" | "4"));
         if let Some(schema) = schema.as_deref() {
-            if !matches!(schema, "1" | "2" | "3" | "4" | "5" | "6") {
+            if !matches!(schema, "1" | "2" | "3" | "4" | "5" | "6" | "7") {
                 return Err(err("unsupported", "Unsupported database schema"));
             }
         } else {
@@ -182,7 +216,9 @@ impl Store {
              CREATE TABLE IF NOT EXISTS method_findings (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS git_traces (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS issue_links (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-             UPDATE meta SET value='6' WHERE key='schema';",
+             CREATE TABLE IF NOT EXISTS goals (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS milestones (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             UPDATE meta SET value='7' WHERE key='schema';",
         )?;
         if upgrade_legacy_project_planning {
             // Before schema 5, a project link was the only way to express project-scoped work.
@@ -215,6 +251,10 @@ impl Store {
                     "products":all::<Product>(&self.conn,"products")?,
                     "projects":all::<Project>(&self.conn,"projects")?,
                     "project_progress":all::<Project>(&self.conn,"projects")?.iter().map(|project| project_progress(&self.conn, &project.id)).collect::<Result<Vec<_>>>()?,
+                    "goals":all::<Goal>(&self.conn,"goals")?,
+                    "goal_progress":all::<Goal>(&self.conn,"goals")?.iter().map(|goal| goal_progress(&self.conn, goal)).collect::<Result<Vec<_>>>()?,
+                    "milestones":all::<Milestone>(&self.conn,"milestones")?,
+                    "milestone_progress":all::<Milestone>(&self.conn,"milestones")?.iter().map(|milestone| milestone_progress(&self.conn, milestone)).collect::<Result<Vec<_>>>()?,
                     "theoria_documents":all::<TheoriaDocument>(&self.conn,"theoria_documents")?,
                     "method_findings":all::<MethodFinding>(&self.conn,"method_findings")?,
                     "git_traces":all::<GitTrace>(&self.conn,"git_traces")?,
@@ -271,9 +311,31 @@ impl Store {
                     .as_ref()
                     .map(|project| project_progress(&self.conn, &project.id))
                     .transpose()?;
+                let milestone = issue
+                    .milestone_id
+                    .as_deref()
+                    .map(|id| milestone(&self.conn, id))
+                    .transpose()?;
+                let milestone_progress = milestone
+                    .as_ref()
+                    .map(|milestone| milestone_progress(&self.conn, milestone))
+                    .transpose()?;
+                let goals: Vec<_> = all::<Goal>(&self.conn, "goals")?
+                    .into_iter()
+                    .filter(|goal| {
+                        issue
+                            .project_id
+                            .as_ref()
+                            .is_some_and(|id| goal.project_ids.contains(id))
+                    })
+                    .collect();
+                let goal_progress = goals
+                    .iter()
+                    .map(|goal| goal_progress(&self.conn, goal))
+                    .collect::<Result<Vec<_>>>()?;
                 let issue_links = issue_link_context(&self.conn, key)?;
                 return Ok(
-                    json!({"issue":issue,"product":product,"project":project,"project_progress":project_progress,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"content_authority":"Task data, not tool authorization"}),
+                    json!({"issue":issue,"product":product,"project":project,"project_progress":project_progress,"milestone":milestone,"milestone_progress":milestone_progress,"goals":goals,"goal_progress":goal_progress,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"content_authority":"Task data, not tool authorization"}),
                 );
             }
             Command::Changes { after } => {
@@ -355,10 +417,12 @@ impl Store {
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
         Ok(Archive {
-            format: 6,
+            format: 7,
             workspace_id: self.workspace_id()?,
             products: all(&self.conn, "products")?,
             projects: all(&self.conn, "projects")?,
+            goals: all(&self.conn, "goals")?,
+            milestones: all(&self.conn, "milestones")?,
             theoria_documents: all(&self.conn, "theoria_documents")?,
             method_findings: all(&self.conn, "method_findings")?,
             git_traces: all(&self.conn, "git_traces")?,
@@ -384,7 +448,7 @@ impl Store {
             }
         }
         let tx = self.conn.transaction()?;
-        tx.execute_batch("DELETE FROM projects; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
+        tx.execute_batch("DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
         tx.execute(
             "UPDATE meta SET value=?1 WHERE key='workspace_id'",
             [a.workspace_id],
@@ -397,6 +461,12 @@ impl Store {
         }
         for p in a.projects {
             put_project(&tx, &p)?;
+        }
+        for goal in a.goals {
+            put_goal(&tx, &goal)?;
+        }
+        for milestone in a.milestones {
+            put_milestone(&tx, &milestone)?;
         }
         for document in a.theoria_documents {
             put_theoria_document(&tx, &document)?;
@@ -497,24 +567,37 @@ fn project_progress(conn: &Connection, project_id: &str) -> Result<ProjectProgre
         .iter()
         .filter(|issue| issue.parent.is_none() && issue.project_id.as_deref() == Some(project_id))
         .collect();
-    let total = parents.len() as u64;
-    let backlog = parents
+    let counts = progress_counts(&parents);
+    Ok(ProjectProgress {
+        project_id: project_id.into(),
+        total: counts.0,
+        backlog: counts.1,
+        active: counts.2,
+        pending_verification: counts.3,
+        completed: counts.4,
+        canceled: counts.5,
+        completion_percent: counts.6,
+    })
+}
+fn progress_counts(issues: &[&Issue]) -> (u64, u64, u64, u64, u64, u64, u8) {
+    let total = issues.len() as u64;
+    let backlog = issues
         .iter()
         .filter(|issue| issue.status == Status::Backlog)
         .count() as u64;
-    let active = parents
+    let active = issues
         .iter()
         .filter(|issue| matches!(issue.status, Status::Ready | Status::Doing))
         .count() as u64;
-    let pending_verification = parents
+    let pending_verification = issues
         .iter()
         .filter(|issue| issue.status == Status::Verify)
         .count() as u64;
-    let completed = parents
+    let completed = issues
         .iter()
         .filter(|issue| issue.status == Status::Done)
         .count() as u64;
-    let canceled = parents
+    let canceled = issues
         .iter()
         .filter(|issue| issue.status == Status::Canceled)
         .count() as u64;
@@ -523,8 +606,7 @@ fn project_progress(conn: &Connection, project_id: &str) -> Result<ProjectProgre
         .checked_mul(100)
         .and_then(|value| value.checked_div(eligible))
         .unwrap_or(0) as u8;
-    Ok(ProjectProgress {
-        project_id: project_id.into(),
+    (
         total,
         backlog,
         active,
@@ -532,12 +614,88 @@ fn project_progress(conn: &Connection, project_id: &str) -> Result<ProjectProgre
         completed,
         canceled,
         completion_percent,
+    )
+}
+fn goal_progress(conn: &Connection, goal: &Goal) -> Result<GoalProgress> {
+    let issues = all::<Issue>(conn, "issues")?;
+    let parents: Vec<_> = issues
+        .iter()
+        .filter(|issue| {
+            issue.parent.is_none()
+                && issue
+                    .project_id
+                    .as_ref()
+                    .is_some_and(|id| goal.project_ids.contains(id))
+        })
+        .collect();
+    let counts = progress_counts(&parents);
+    Ok(GoalProgress {
+        goal_id: goal.id.clone(),
+        total: counts.0,
+        backlog: counts.1,
+        active: counts.2,
+        pending_verification: counts.3,
+        completed: counts.4,
+        canceled: counts.5,
+        completion_percent: counts.6,
+    })
+}
+fn milestone_progress(conn: &Connection, milestone: &Milestone) -> Result<MilestoneProgress> {
+    let issues = all::<Issue>(conn, "issues")?;
+    let parents: Vec<_> = issues
+        .iter()
+        .filter(|issue| {
+            issue.parent.is_none() && issue.milestone_id.as_ref() == Some(&milestone.id)
+        })
+        .collect();
+    let counts = progress_counts(&parents);
+    Ok(MilestoneProgress {
+        milestone_id: milestone.id.clone(),
+        total: counts.0,
+        backlog: counts.1,
+        active: counts.2,
+        pending_verification: counts.3,
+        completed: counts.4,
+        canceled: counts.5,
+        completion_percent: counts.6,
     })
 }
 fn put_project(conn: &Connection, p: &Project) -> Result<()> {
     conn.execute(
         "INSERT INTO projects VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
         params![p.id, serde_json::to_string(p)?],
+    )?;
+    Ok(())
+}
+fn goal(conn: &Connection, id: &str) -> Result<Goal> {
+    let data: Option<String> = conn
+        .query_row("SELECT data FROM goals WHERE id=?1", [id], |r| r.get(0))
+        .optional()?;
+    Ok(serde_json::from_str(
+        &data.ok_or_else(|| err("not_found", "Unknown goal"))?,
+    )?)
+}
+fn put_goal(conn: &Connection, goal: &Goal) -> Result<()> {
+    conn.execute(
+        "INSERT INTO goals VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+        params![goal.id, serde_json::to_string(goal)?],
+    )?;
+    Ok(())
+}
+fn milestone(conn: &Connection, id: &str) -> Result<Milestone> {
+    let data: Option<String> = conn
+        .query_row("SELECT data FROM milestones WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    Ok(serde_json::from_str(
+        &data.ok_or_else(|| err("not_found", "Unknown milestone"))?,
+    )?)
+}
+fn put_milestone(conn: &Connection, milestone: &Milestone) -> Result<()> {
+    conn.execute(
+        "INSERT INTO milestones VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+        params![milestone.id, serde_json::to_string(milestone)?],
     )?;
     Ok(())
 }
@@ -640,18 +798,7 @@ fn validate_external_provenance(
     external_source: Option<&str>,
     external_id: Option<&str>,
 ) -> Result<()> {
-    if external_source.is_some() != external_id.is_some() {
-        return Err(err(
-            "invalid",
-            "External source and external ID must be provided together",
-        ));
-    }
-    if let (Some(source), Some(external_id)) = (external_source, external_id) {
-        required(source, "external source")?;
-        required(external_id, "external ID")?;
-        limited(source, "external source", 120)?;
-        limited(external_id, "external ID", 512)?;
-    }
+    validate_optional_provenance(external_source, external_id)?;
     if *kind == IssueLinkKind::LegacyVerification && external_source.is_none() {
         return Err(err(
             "invalid",
@@ -706,6 +853,56 @@ fn project_name(
             "conflict",
             "A project with this name already exists in this product",
         ));
+    }
+    Ok(())
+}
+fn goal_name(conn: &Connection, product_id: &str, name: &str, except: Option<&str>) -> Result<()> {
+    if all::<Goal>(conn, "goals")?.iter().any(|goal| {
+        goal.product_id == product_id
+            && Some(goal.id.as_str()) != except
+            && goal.name.to_lowercase() == name.trim().to_lowercase()
+    }) {
+        return Err(err(
+            "conflict",
+            "A goal with this name already exists in this product",
+        ));
+    }
+    Ok(())
+}
+fn milestone_name(
+    conn: &Connection,
+    project_id: &str,
+    name: &str,
+    except: Option<&str>,
+) -> Result<()> {
+    if all::<Milestone>(conn, "milestones")?
+        .iter()
+        .any(|milestone| {
+            milestone.project_id == project_id
+                && Some(milestone.id.as_str()) != except
+                && milestone.name.to_lowercase() == name.trim().to_lowercase()
+        })
+    {
+        return Err(err(
+            "conflict",
+            "A milestone with this name already exists in this project",
+        ));
+    }
+    Ok(())
+}
+fn validate_goal_projects(
+    conn: &Connection,
+    product_id: &str,
+    project_ids: &[String],
+) -> Result<()> {
+    let mut unique = HashSet::new();
+    for id in project_ids {
+        if !unique.insert(id) || project(conn, id)?.product_id != product_id {
+            return Err(err(
+                "invalid",
+                "Goal projects must be unique and belong to the goal's product",
+            ));
+        }
     }
     Ok(())
 }
@@ -787,6 +984,7 @@ fn new_issue(
         key: format!("{}-{next}", p.key),
         product_id: p.id.clone(),
         project_id,
+        milestone_id: None,
         planning_scope,
         theoria_refs: vec![],
         title: title.trim().into(),
@@ -879,6 +1077,125 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             emit(tx, actor, "project_updated", id, at)?;
             Ok(json!(p))
         }
+        Command::CreateGoal {
+            product,
+            name,
+            description,
+            priority,
+            project_ids,
+            external_source,
+            external_id,
+        } => {
+            human(role)?;
+            validate_goal_fields(name, priority)?;
+            validate_optional_provenance(external_source.as_deref(), external_id.as_deref())?;
+            let product = all::<Product>(tx, "products")?
+                .into_iter()
+                .find(|candidate| candidate.key == *product)
+                .ok_or_else(|| err("not_found", "Unknown product"))?;
+            goal_name(tx, &product.id, name, None)?;
+            validate_goal_projects(tx, &product.id, project_ids)?;
+            let goal = Goal {
+                id: id(),
+                product_id: product.id,
+                name: name.trim().into(),
+                description: description.clone(),
+                status: GoalStatus::Planned,
+                priority: priority.clone(),
+                project_ids: project_ids.clone(),
+                external_source: external_source.clone(),
+                external_id: external_id.clone(),
+                version: 1,
+                created_at: at,
+                updated_at: at,
+            };
+            put_goal(tx, &goal)?;
+            emit(tx, actor, "goal_created", &goal.id, at)?;
+            Ok(json!(goal))
+        }
+        Command::UpdateGoal {
+            id,
+            expected_version,
+            name,
+            description,
+            status,
+            priority,
+            project_ids,
+        } => {
+            human(role)?;
+            let mut goal = goal(tx, id)?;
+            if goal.version != *expected_version {
+                return Err(err("conflict", "Goal version changed; refresh and retry"));
+            }
+            validate_goal_fields(name, priority)?;
+            goal_name(tx, &goal.product_id, name, Some(id))?;
+            validate_goal_projects(tx, &goal.product_id, project_ids)?;
+            goal.name = name.trim().into();
+            goal.description = description.clone();
+            goal.status = status.clone();
+            goal.priority = priority.clone();
+            goal.project_ids = project_ids.clone();
+            goal.version += 1;
+            goal.updated_at = at;
+            put_goal(tx, &goal)?;
+            emit(tx, actor, "goal_updated", id, at)?;
+            Ok(json!(goal))
+        }
+        Command::CreateMilestone {
+            project_id,
+            name,
+            description,
+            sort_order,
+            external_source,
+            external_id,
+        } => {
+            human(role)?;
+            validate_milestone_fields(name, *sort_order)?;
+            validate_optional_provenance(external_source.as_deref(), external_id.as_deref())?;
+            project(tx, project_id)?;
+            milestone_name(tx, project_id, name, None)?;
+            let milestone = Milestone {
+                id: id(),
+                project_id: project_id.clone(),
+                name: name.trim().into(),
+                description: description.clone(),
+                sort_order: *sort_order,
+                external_source: external_source.clone(),
+                external_id: external_id.clone(),
+                version: 1,
+                created_at: at,
+                updated_at: at,
+            };
+            put_milestone(tx, &milestone)?;
+            emit(tx, actor, "milestone_created", &milestone.id, at)?;
+            Ok(json!(milestone))
+        }
+        Command::UpdateMilestone {
+            id,
+            expected_version,
+            name,
+            description,
+            sort_order,
+        } => {
+            human(role)?;
+            let mut milestone = milestone(tx, id)?;
+            if milestone.version != *expected_version {
+                return Err(err(
+                    "conflict",
+                    "Milestone version changed; refresh and retry",
+                ));
+            }
+            validate_milestone_fields(name, *sort_order)?;
+            milestone_name(tx, &milestone.project_id, name, Some(id))?;
+            milestone.name = name.trim().into();
+            milestone.description = description.clone();
+            milestone.sort_order = *sort_order;
+            milestone.version += 1;
+            milestone.updated_at = at;
+            put_milestone(tx, &milestone)?;
+            emit(tx, actor, "milestone_updated", id, at)?;
+            Ok(json!(milestone))
+        }
         Command::SetIssueProject {
             key,
             expected_version,
@@ -907,15 +1224,54 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 ));
             }
             i.project_id = project_id.clone();
+            if let Some(id) = &i.milestone_id {
+                if Some(milestone(tx, id)?.project_id) != *project_id {
+                    i.milestone_id = None;
+                }
+            }
             if let Some(key) = &i.verification_key {
                 let mut child = issue(tx, key)?;
                 child.project_id = project_id.clone();
+                child.milestone_id = i.milestone_id.clone();
                 child.version += 1;
                 child.updated_at = at;
                 put_issue(tx, &child)?;
             }
             // Planning metadata does not change readiness or invalidate test evidence.
             save(tx, i, actor, "issue_project_changed", at)
+        }
+        Command::SetIssueMilestone {
+            key,
+            expected_version,
+            milestone_id,
+        } => {
+            let mut i = version(tx, key, *expected_version)?;
+            if role == Role::Agent {
+                if matches!(i.status, Status::Verify | Status::Done | Status::Canceled) {
+                    human(role)?;
+                }
+                if i.status == Status::Doing {
+                    held(&i, actor, at)?;
+                }
+            }
+            if let Some(id) = milestone_id {
+                let milestone = milestone(tx, id)?;
+                if Some(milestone.project_id) != i.project_id {
+                    return Err(err(
+                        "invalid",
+                        "Milestone must belong to the issue's project",
+                    ));
+                }
+            }
+            i.milestone_id = milestone_id.clone();
+            if let Some(key) = &i.verification_key {
+                let mut child = issue(tx, key)?;
+                child.milestone_id = milestone_id.clone();
+                child.version += 1;
+                child.updated_at = at;
+                put_issue(tx, &child)?;
+            }
+            save(tx, i, actor, "issue_milestone_changed", at)
         }
         Command::CreateIssueLink {
             key,
@@ -1552,6 +1908,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             };
             child.parent = Some(key.clone());
             child.project_id = i.project_id.clone();
+            child.milestone_id = i.milestone_id.clone();
             child.owner = i.owner.clone();
             child.status = Status::Ready;
             child.version += 1;
@@ -1711,7 +2068,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
 }
 
 pub fn validate_archive(a: &Archive) -> Result<()> {
-    if !matches!(a.format, 1..=6) {
+    if !matches!(a.format, 1..=7) {
         return Err(err("unsupported", "Unsupported archive format"));
     }
     Uuid::parse_str(&a.workspace_id).map_err(|_| err("invalid", "Invalid workspace identity"))?;
@@ -1836,6 +2193,16 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
     if a.format < 6 && !a.issue_links.is_empty() {
         return Err(err("invalid", "Issue links require archive format 6"));
     }
+    if a.format < 7
+        && (!a.goals.is_empty()
+            || !a.milestones.is_empty()
+            || a.issues.iter().any(|issue| issue.milestone_id.is_some()))
+    {
+        return Err(err(
+            "invalid",
+            "Goal and milestone data requires archive format 7",
+        ));
+    }
     let mut project_ids = HashSet::new();
     let mut project_names = HashSet::new();
     for p in &a.projects {
@@ -1850,6 +2217,54 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             return Err(err("invalid", "Invalid or duplicate project"));
         }
     }
+    let mut goal_ids = HashSet::new();
+    let mut goal_names = HashSet::new();
+    let mut goal_sources = HashSet::new();
+    for goal in &a.goals {
+        validate_goal_fields(&goal.name, &goal.priority)?;
+        validate_optional_provenance(goal.external_source.as_deref(), goal.external_id.as_deref())?;
+        let mut linked_projects = HashSet::new();
+        if goal.version == 0
+            || !product_ids.contains(&goal.product_id)
+            || !goal_ids.insert(goal.id.clone())
+            || !goal_names.insert((goal.product_id.clone(), goal.name.trim().to_lowercase()))
+            || goal.external_source.as_ref().is_some_and(|source| {
+                !goal_sources.insert((source.clone(), goal.external_id.clone().unwrap()))
+            })
+            || goal.project_ids.iter().any(|id| {
+                !linked_projects.insert(id)
+                    || !a
+                        .projects
+                        .iter()
+                        .any(|project| project.id == *id && project.product_id == goal.product_id)
+            })
+        {
+            return Err(err("invalid", "Invalid or duplicate goal"));
+        }
+    }
+    let mut milestone_ids = HashSet::new();
+    let mut milestone_names = HashSet::new();
+    let mut milestone_sources = HashSet::new();
+    for milestone in &a.milestones {
+        validate_milestone_fields(&milestone.name, milestone.sort_order)?;
+        validate_optional_provenance(
+            milestone.external_source.as_deref(),
+            milestone.external_id.as_deref(),
+        )?;
+        if milestone.version == 0
+            || !project_ids.contains(&milestone.project_id)
+            || !milestone_ids.insert(milestone.id.clone())
+            || !milestone_names.insert((
+                milestone.project_id.clone(),
+                milestone.name.trim().to_lowercase(),
+            ))
+            || milestone.external_source.as_ref().is_some_and(|source| {
+                !milestone_sources.insert((source.clone(), milestone.external_id.clone().unwrap()))
+            })
+        {
+            return Err(err("invalid", "Invalid or duplicate milestone"));
+        }
+    }
     for i in &a.issues {
         if let Some(id) = &i.project_id {
             if !a
@@ -1858,6 +2273,13 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
                 .any(|p| p.id == *id && p.product_id == i.product_id)
             {
                 return Err(err("invalid", "Unresolved or cross-product project link"));
+            }
+        }
+        if let Some(id) = &i.milestone_id {
+            if !a.milestones.iter().any(|milestone| {
+                milestone.id == *id && Some(&milestone.project_id) == i.project_id.as_ref()
+            }) {
+                return Err(err("invalid", "Unresolved or cross-project milestone link"));
             }
         }
         if i.planning_scope == PlanningScope::Project
@@ -1936,6 +2358,7 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
             if child.parent.as_ref() != Some(&i.key)
                 || child.product_id != i.product_id
                 || child.project_id != i.project_id
+                || child.milestone_id != i.milestone_id
             {
                 return Err(err("invalid", "Broken verification child link"));
             }

@@ -23,6 +23,7 @@ export interface Issue {
   key: string;
   product_id: string;
   project_id: string | null;
+  milestone_id?: string | null;
   planning_scope?: PlanningScope;
   theoria_refs: TheoriaReference[];
   title: string;
@@ -140,6 +141,10 @@ export interface Context {
   product: Product;
   project: Project | null;
   project_progress?: ProjectProgress | null;
+  milestone: Milestone | null;
+  milestone_progress: MilestoneProgress | null;
+  goals: Goal[];
+  goal_progress: GoalProgress[];
   issue_links: IssueLinkContext[];
   comments: { id: string; actor: string; body: string; at: number }[];
   more_comments: boolean;
@@ -153,6 +158,10 @@ export interface Snapshot {
   products: Product[];
   projects: Project[];
   project_progress?: ProjectProgress[];
+  goals: Goal[];
+  goal_progress: GoalProgress[];
+  milestones: Milestone[];
+  milestone_progress: MilestoneProgress[];
   theoria_documents: TheoriaDocument[];
   method_findings: MethodFinding[];
   git_traces?: GitTrace[];
@@ -181,6 +190,44 @@ export interface ProjectProgress {
   completed: number;
   canceled: number;
   completion_percent: number;
+}
+export type GoalStatus =
+  | "planned"
+  | "active"
+  | "paused"
+  | "completed"
+  | "canceled";
+export interface Goal {
+  id: string;
+  product_id: string;
+  name: string;
+  description: string;
+  status: GoalStatus;
+  priority: string;
+  project_ids: string[];
+  external_source: string | null;
+  external_id: string | null;
+  version: number;
+  created_at: number;
+  updated_at: number;
+}
+export interface Milestone {
+  id: string;
+  project_id: string;
+  name: string;
+  description: string;
+  sort_order: number;
+  external_source: string | null;
+  external_id: string | null;
+  version: number;
+  created_at: number;
+  updated_at: number;
+}
+export interface GoalProgress extends Omit<ProjectProgress, "project_id"> {
+  goal_id: string;
+}
+export interface MilestoneProgress extends Omit<ProjectProgress, "project_id"> {
+  milestone_id: string;
 }
 let token = sessionStorage.getItem("direct.session") || "";
 const pending = new Map<string, string>();
