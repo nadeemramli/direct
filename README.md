@@ -41,11 +41,13 @@ The current build upgrades the database to schema 6 and writes archive format 6.
 ## Backup and restore
 
 ```powershell
+.\scripts\backup.ps1
+.\scripts\direct.ps1 recovery-check C:\backups\direct-backup-....json C:\backups\direct-recovery-drill
 .\target\debug\direct.exe export C:\backups\direct-2026-09-28.json
 .\target\debug\direct.exe --data-dir C:\backups\direct-restored restore C:\backups\direct-2026-09-28.json
 ```
 
-The export file must not exist, and restore requires a new directory beneath an existing parent. Export preserves workspace identity, issues, test evidence, comments, event cursors, and retry records. Backups contain your work content; store them privately. Never copy an active SQLite database by itself.
+The routine script writes a validated archive and SHA-256 checksum, then retains the newest 14 managed snapshots by default. The recovery check restores into a new isolated directory and verifies the complete archive round trip with record counts. The export file must not exist, and restore requires a new directory beneath an existing parent. Export preserves workspace identity, projects, issues, comments, test evidence, Git traces, Theoria records, event cursors, and retry records. Archive format 5 does not support attachments. Backups contain your work content; store them privately. Never copy an active SQLite database by itself. See [the backup and recovery runbook](docs/backup-recovery.md).
 
 ## Development checks
 

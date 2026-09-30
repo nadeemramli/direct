@@ -4,12 +4,13 @@ use direct_core::{
     Archive, Command, GitTraceKind, PlanningScope, Request, Role, Step, Store, TheoriaDocumentInput,
 };
 use serde::Deserialize;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use std::{
     fs,
     io::{self, Read, Write},
     path::{Component, Path, PathBuf},
-    time::UNIX_EPOCH,
+    time::{SystemTime, UNIX_EPOCH},
 };
 
 #[derive(Deserialize)]
@@ -168,10 +169,198 @@ enum Cli {
     Export {
         out: PathBuf,
     },
+    /// Write a validated live-service archive, checksum it, and prune older managed backups.
+    Backup {
+        directory: PathBuf,
+        #[arg(long, default_value_t = 14)]
+        retain: usize,
+    },
     /// Offline restore into a NEW --data-dir. Existing directories are never replaced.
     Restore {
         from: PathBuf,
     },
+    /// Restore an archive into a NEW directory and prove its complete semantic round trip.
+    RecoveryCheck {
+        from: PathBuf,
+        restore_dir: PathBuf,
+    },
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    format!("{:x}", Sha256::digest(bytes))
+}
+
+fn create_new_synced(path: &Path, bytes: &[u8]) -> Result<()> {
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(path)?;
+    file.write_all(bytes)?;
+    file.sync_all()?;
+    Ok(())
+}
+
+fn managed_backups(directory: &Path) -> Result<Vec<PathBuf>> {
+    let mut backups = fs::read_dir(directory)?
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with("direct-backup-") && name.ends_with(".json"))
+        })
+        .collect::<Vec<_>>();
+    backups.sort_by(|left, right| left.file_name().cmp(&right.file_name()));
+    Ok(backups)
+}
+
+fn write_backup(value: &Value, directory: &Path, retain: usize) -> Result<Value> {
+    if retain == 0 {
+        bail!("Backup retention must be at least one snapshot");
+    }
+    let archive: Archive = serde_json::from_value(value.clone())?;
+    direct_core::validate_archive(&archive)?;
+    direct::protect_dir(directory)?;
+
+    let timestamp = SystemTime::now().duration_since(UNIX_EPOCH)?.as_nanos();
+    let nonce = uuid::Uuid::new_v4().simple().to_string();
+    let stem = format!("direct-backup-{timestamp}-{nonce}");
+    let final_path = directory.join(format!("{stem}.json"));
+    let checksum_path = directory.join(format!("{stem}.sha256"));
+    let temporary_path = directory.join(format!(".{stem}.partial"));
+    let checksum_temporary_path = directory.join(format!(".{stem}.sha256.partial"));
+
+    let mut bytes = serde_json::to_vec_pretty(&archive)?;
+    bytes.push(b'\n');
+    let checksum = sha256_hex(&bytes);
+    create_new_synced(&temporary_path, &bytes).context("Write the temporary backup archive")?;
+    fs::rename(&temporary_path, &final_path).context("Publish the completed backup archive")?;
+    let checksum_line = format!(
+        "{checksum}  {}\n",
+        final_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .context("Backup file name is not UTF-8")?
+    );
+    create_new_synced(&checksum_temporary_path, checksum_line.as_bytes())
+        .context("Write the temporary backup checksum")?;
+    fs::rename(&checksum_temporary_path, &checksum_path)
+        .context("Publish the completed backup checksum")?;
+
+    let backups = managed_backups(directory)?;
+    let remove_count = backups.len().saturating_sub(retain);
+    let mut removed = Vec::with_capacity(remove_count);
+    for old in backups.iter().take(remove_count) {
+        fs::remove_file(old).with_context(|| format!("Remove expired backup {}", old.display()))?;
+        let old_checksum = old.with_extension("sha256");
+        if old_checksum.exists() {
+            fs::remove_file(&old_checksum).with_context(|| {
+                format!("Remove expired backup checksum {}", old_checksum.display())
+            })?;
+        }
+        removed.push(old.display().to_string());
+    }
+
+    Ok(json!({
+        "archive": final_path,
+        "checksum_file": checksum_path,
+        "sha256": checksum,
+        "format": archive.format,
+        "workspace_id": archive.workspace_id,
+        "retained": managed_backups(directory)?.len(),
+        "retention_limit": retain,
+        "removed": removed
+    }))
+}
+
+fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
+    if restore_dir.exists() {
+        bail!("Recovery check requires a new, nonexistent restore directory");
+    }
+    let source_bytes = fs::read(from).context("Read the backup archive")?;
+    let source_sha256 = sha256_hex(&source_bytes);
+    let checksum_path = from.with_extension("sha256");
+    let checksum_verified = if checksum_path.exists() {
+        let checksum = fs::read_to_string(&checksum_path).context("Read the backup checksum")?;
+        let expected = checksum
+            .split_whitespace()
+            .next()
+            .context("Backup checksum file is empty")?;
+        if !expected.eq_ignore_ascii_case(&source_sha256) {
+            bail!("Backup checksum does not match the archive");
+        }
+        true
+    } else {
+        false
+    };
+    let archive: Archive = serde_json::from_slice(&source_bytes)?;
+    direct_core::validate_archive(&archive)?;
+    let source_format = archive.format;
+    let mut expected = archive.clone();
+    if expected.format < 5 {
+        for issue in &mut expected.issues {
+            issue.planning_scope = if issue.project_id.is_some() {
+                PlanningScope::Project
+            } else {
+                PlanningScope::Inbox
+            };
+        }
+        expected.format = 5;
+    }
+    fs::create_dir(restore_dir)
+        .context("Create the recovery workspace beneath an existing parent")?;
+    direct::protect_dir(restore_dir)?;
+    let mut store = Store::open(&restore_dir.join("direct.db"))?;
+    store.restore(archive.clone())?;
+    let restored = store.export()?;
+    let source_value = serde_json::to_value(&expected)?;
+    let restored_value = serde_json::to_value(&restored)?;
+    if source_value != restored_value {
+        bail!("Recovered workspace did not reproduce the complete source archive");
+    }
+    let mut restored_bytes = serde_json::to_vec_pretty(&restored)?;
+    restored_bytes.push(b'\n');
+    let byte_for_byte_archive_match = source_bytes == restored_bytes;
+
+    Ok(json!({
+        "verified": true,
+        "source": from,
+        "restore_dir": restore_dir,
+        "source_sha256": source_sha256,
+        "restored_archive_sha256": sha256_hex(&restored_bytes),
+        "checksum_present_and_verified": checksum_verified,
+        "byte_for_byte_archive_match": byte_for_byte_archive_match,
+        "semantic_archive_match": true,
+        "record_checks": {
+            "workspace_identity": true,
+            "product_project_issue_identities": true,
+            "comments": true,
+            "verification_runs": true,
+            "git_evidence": true,
+            "theoria_records": true,
+            "events_and_request_replays": true
+        },
+        "source_format": source_format,
+        "restored_format": restored.format,
+        "compatibility_upgrade_applied": source_format != restored.format,
+        "workspace_id": archive.workspace_id,
+        "records": {
+            "products": archive.products.len(),
+            "projects": archive.projects.len(),
+            "issues": archive.issues.len(),
+            "comments": archive.comments.len(),
+            "verification_runs": archive.verifications.len(),
+            "git_evidence": archive.git_traces.len(),
+            "theoria_documents": archive.theoria_documents.len(),
+            "theoria_findings": archive.method_findings.len(),
+            "events": archive.events.len(),
+            "request_replays": archive.requests.len()
+        },
+        "attachments": {
+            "supported": false,
+            "count": 0,
+            "note": "Archive format 5 has no attachment record type"
+        }
+    }))
 }
 
 fn workflow_request(actor: &str, command: &Cli) -> Result<Option<Request>> {
@@ -360,6 +549,13 @@ fn run() -> Result<()> {
             );
             Ok(())
         }
+        Cli::RecoveryCheck { from, restore_dir } => {
+            println!(
+                "{}",
+                serde_json::to_string_pretty(&recovery_check(&from, &restore_dir)?)?
+            );
+            Ok(())
+        }
         other => {
             let client = direct::Client::new(&dir)?;
             if matches!(other, Cli::Open) {
@@ -367,6 +563,7 @@ fn run() -> Result<()> {
                 return Ok(());
             }
             let mut output = None;
+            let mut backup = None;
             let workflow = workflow_request(&args.actor, &other)?;
             let request = match other {
                 Cli::Claim { .. } | Cli::Renew { .. } | Cli::Submit { .. } => {
@@ -486,10 +683,23 @@ fn run() -> Result<()> {
                         command: Command::Export,
                     }
                 }
+                Cli::Backup { directory, retain } => {
+                    backup = Some((directory, retain));
+                    Request {
+                        actor: args.actor,
+                        request_id: String::new(),
+                        command: Command::Export,
+                    }
+                }
                 _ => unreachable!(),
             };
             let value = client.call(&request, Role::Agent)?;
-            if let Some(out) = output {
+            if let Some((directory, retain)) = backup {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&write_backup(&value, &directory, retain)?)?
+                );
+            } else if let Some(out) = output {
                 let mut f = fs::OpenOptions::new()
                     .write(true)
                     .create_new(true)
@@ -673,5 +883,76 @@ mod tests {
             .unwrap_err()
             .to_string()
             .contains("explicit --actor"));
+    }
+
+    #[test]
+    fn backup_writer_checksums_and_prunes_only_managed_archives() {
+        let temp = TempDir::new().unwrap();
+        let store = Store::open(&temp.path().join("source.db")).unwrap();
+        let archive = serde_json::to_value(store.export().unwrap()).unwrap();
+        let backups = temp.path().join("backups");
+        fs::create_dir(&backups).unwrap();
+        fs::write(backups.join("keep-me.json"), b"unrelated").unwrap();
+        assert!(write_backup(&archive, &backups, 0).is_err());
+
+        for _ in 0..3 {
+            write_backup(&archive, &backups, 2).unwrap();
+        }
+        assert_eq!(managed_backups(&backups).unwrap().len(), 2);
+        assert!(backups.join("keep-me.json").exists());
+        assert_eq!(
+            fs::read_dir(&backups)
+                .unwrap()
+                .filter_map(|entry| entry.ok())
+                .filter(|entry| entry.path().extension().is_some_and(|ext| ext == "sha256"))
+                .count(),
+            2
+        );
+    }
+
+    #[test]
+    fn recovery_check_restores_a_complete_semantic_copy() {
+        let temp = TempDir::new().unwrap();
+        let store = Store::open(&temp.path().join("source.db")).unwrap();
+        let archive = serde_json::to_value(store.export().unwrap()).unwrap();
+        let backup = write_backup(&archive, &temp.path().join("backups"), 2).unwrap();
+        let source = PathBuf::from(backup["archive"].as_str().unwrap());
+        let restored = temp.path().join("restored");
+
+        let report = recovery_check(&source, &restored).unwrap();
+        assert_eq!(report["verified"], true);
+        assert_eq!(report["workspace_id"], archive["workspace_id"]);
+        assert_eq!(report["records"]["products"], 1);
+        assert_eq!(report["checksum_present_and_verified"], true);
+        assert_eq!(report["byte_for_byte_archive_match"], true);
+        assert!(restored.join("direct.db").exists());
+        assert!(recovery_check(&source, &restored).is_err());
+
+        let corrupt_source = temp.path().join("corrupt.json");
+        fs::copy(&source, &corrupt_source).unwrap();
+        fs::write(
+            corrupt_source.with_extension("sha256"),
+            b"0000  corrupt.json\n",
+        )
+        .unwrap();
+        let corrupt_restore = temp.path().join("corrupt-restore");
+        assert!(recovery_check(&corrupt_source, &corrupt_restore).is_err());
+        assert!(!corrupt_restore.exists());
+    }
+
+    #[test]
+    fn recovery_check_normalizes_supported_older_formats() {
+        let temp = TempDir::new().unwrap();
+        let store = Store::open(&temp.path().join("source.db")).unwrap();
+        let mut archive = store.export().unwrap();
+        archive.format = 3;
+        let source = temp.path().join("format-3.json");
+        fs::write(&source, serde_json::to_vec_pretty(&archive).unwrap()).unwrap();
+
+        let report = recovery_check(&source, &temp.path().join("restored-v5")).unwrap();
+        assert_eq!(report["source_format"], 3);
+        assert_eq!(report["restored_format"], 5);
+        assert_eq!(report["compatibility_upgrade_applied"], true);
+        assert_eq!(report["semantic_archive_match"], true);
     }
 }
