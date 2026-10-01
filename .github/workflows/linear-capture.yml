@@ -1,0 +1,56 @@
+name: Encrypted Linear capture
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: one-off-linear-capture
+  cancel-in-progress: false
+
+jobs:
+  capture:
+    if: github.repository == 'nadeemramli/direct' && github.ref == 'refs/heads/main' && github.actor == 'nadeemramli'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 55
+    environment: migration-linear-personal-api-key
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.18.0
+      - name: Install pinned encryption tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz \
+            --output "$RUNNER_TEMP/age.tar.gz"
+          echo "cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10  $RUNNER_TEMP/age.tar.gz" | sha256sum --check --status
+          mkdir "$RUNNER_TEMP/age-tools"
+          tar -xzf "$RUNNER_TEMP/age.tar.gz" -C "$RUNNER_TEMP/age-tools"
+      - name: Test encryption and failure containment with synthetic data
+        env:
+          AGE_BIN: ${{ runner.temp }}/age-tools/age/age
+          AGE_KEYGEN_BIN: ${{ runner.temp }}/age-tools/age/age-keygen
+        run: node --test scripts/capture-linear-encrypted.test.mjs
+      - name: Capture into an encrypted envelope
+        id: capture
+        env:
+          LINEAR_API_KEY: ${{ secrets.LINEAR_MIGRATION_API_KEY }}
+          AGE_BIN: ${{ runner.temp }}/age-tools/age/age
+          CAPTURE_RECIPIENT: age1f595le6w0jrx0n5der73hem7wqwxj5kftlfr0kqgkxzqz4jj3cfs3qea6d
+        run: node scripts/capture-linear-encrypted.mjs
+      - name: Upload ciphertext only
+        if: ${{ !cancelled() && steps.capture.outputs.encrypted == 'true' }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: encrypted-capture-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/direct-encrypted/capture.age
+          if-no-files-found: error
+          retention-days: 1
+          compression-level: 0
