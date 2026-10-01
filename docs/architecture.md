@@ -15,6 +15,8 @@ Every mutable issue has a version. A stale command returns a conflict instead of
 
 The UI polls an event cursor every 750 ms and refreshes affected views. This is automatic local polling, not WebSocket streaming. Editing drafts keep their original version, so concurrent updates are detected at save time.
 
+The window is split into a sidebar, the work list and a detail pane, each bounded by the window and scrolled independently, so large workspaces never overflow the page. The sidebar and detail pane can be resized by dragging or with the keyboard (focus the divider; arrows, Shift+arrows, Home/End, Enter, double-click to reset). The sidebar collapses to an icon rail and its sections fold; the detail pane can expand for reading and restore its previous width. These preferences are per-device UI state in browser `localStorage` (`direct.layout.v1`), never workspace data; unreadable or out-of-range values fall back to defaults and widths are re-clamped to the current window. Guidance opened from an issue offers **Back** (or Alt+←) to that issue with its filters, tab and scroll positions.
+
 ## Git evidence
 
 Direct stores commit and successful-push evidence as structured records linked to an issue. The agent must hold the active claim and supply the current issue version, repository identity, full commit object ID, and branch. Push evidence additionally requires the remote and remote ref. Logical duplicates are rejected independently of request replay, and records survive archive/restore.
