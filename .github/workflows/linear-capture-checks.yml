@@ -1,0 +1,42 @@
+name: Encrypted capture checks
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/linear-capture*.yml'
+      - 'scripts/capture-linear*.mjs'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/linear-capture*.yml'
+      - 'scripts/capture-linear*.mjs'
+
+permissions:
+  contents: read
+
+jobs:
+  synthetic-encryption:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    # No Environment and no Linear secret in this validation job.
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 24.18.0
+      - name: Install pinned encryption tool
+        shell: bash
+        run: |
+          set -euo pipefail
+          curl --fail --silent --show-error --location \
+            https://github.com/FiloSottile/age/releases/download/v1.3.2/age-v1.3.2-linux-amd64.tar.gz \
+            --output "$RUNNER_TEMP/age.tar.gz"
+          echo "cbe24006683f8eb669266162894b9a522a1af52f2665fbc63a4bb032ed26ac10  $RUNNER_TEMP/age.tar.gz" | sha256sum --check --status
+          mkdir "$RUNNER_TEMP/age-tools"
+          tar -xzf "$RUNNER_TEMP/age.tar.gz" -C "$RUNNER_TEMP/age-tools"
+      - name: Exercise success, failure, integrity and retry boundaries
+        env:
+          AGE_BIN: ${{ runner.temp }}/age-tools/age/age
+          AGE_KEYGEN_BIN: ${{ runner.temp }}/age-tools/age/age-keygen
+        run: node --test scripts/capture-linear-encrypted.test.mjs
