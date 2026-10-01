@@ -864,6 +864,11 @@ main {
   overflow-y: auto;
   overscroll-behavior: contain;
 }
+/* The list pane is the scroller: its sections keep their natural height
+   instead of shrinking (an inner overflow:auto list would collapse to 0). */
+.list-panel > * {
+  flex-shrink: 0;
+}
 .page-heading {
   padding: 37px 31px 24px;
 }
