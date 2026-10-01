@@ -70,6 +70,6 @@ request. A final cutover still requires a later delta capture after the dry-run
 import has passed.
 
 Use the retained package with the offline
-[Linear import dry-run](linear-import.md), either one project at a time or as a
-whole-workspace rehearsal. The importer verifies every listed checksum again
+[Linear import](linear-import.md): a project or whole-workspace rehearsal,
+or a migration artifact prepared for the owner's existing workspace. The importer verifies every listed checksum again
 and never writes to the live Direct workspace.

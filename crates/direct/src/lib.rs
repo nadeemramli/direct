@@ -51,6 +51,47 @@ fn resolve_data_dir(
             .join(".local/share/direct"),
     )
 }
+/// Write a validated pre-migration backup (archive plus `.sha256`) beneath the
+/// data directory and return the archive path. Files are created new and
+/// published by rename, so a partial backup is never mistaken for a complete one.
+pub fn write_migration_backup(dir: &Path, archive: &direct_core::Archive) -> Result<PathBuf> {
+    use sha2::{Digest, Sha256};
+    use std::io::Write;
+    direct_core::validate_archive(archive)?;
+    let backups = dir.join("migration-backups");
+    protect_dir(&backups)?;
+    let stem = format!(
+        "pre-migration-{}-{}",
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)?
+            .as_nanos(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let mut bytes = serde_json::to_vec_pretty(archive)?;
+    bytes.push(b'\n');
+    let checksum = format!("{:x}", Sha256::digest(&bytes));
+    let final_path = backups.join(format!("{stem}.json"));
+    for (path, contents) in [
+        (final_path.clone(), bytes),
+        (
+            backups.join(format!("{stem}.sha256")),
+            format!("{checksum}  {stem}.json\n").into_bytes(),
+        ),
+    ] {
+        let temporary = backups.join(format!(
+            ".{}.partial",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temporary)?;
+        file.write_all(&contents)?;
+        file.sync_all()?;
+        fs::rename(&temporary, &path)?;
+    }
+    Ok(final_path)
+}
 pub fn endpoint(dir: &Path) -> Result<Endpoint> {
     let e: Endpoint = serde_json::from_slice(
         &fs::read(dir.join("endpoint.json"))
@@ -90,8 +131,82 @@ impl Client {
             ))
             .bearer_auth(token)
             .json(request)
+            .timeout(if matches!(request.command, direct_core::Command::Export) {
+                // Exports carry retained source bytes and can be large.
+                Duration::from_secs(900)
+            } else {
+                Duration::from_secs(10)
+            })
             .send()
             .context("Direct service is unavailable. Restart it and retry the same request ID.")?;
+        let status = response.status();
+        let value: Value = response.json()?;
+        if !status.is_success() {
+            bail!(
+                "{}: {}",
+                value["code"].as_str().unwrap_or("error"),
+                value["message"].as_str().unwrap_or("Request failed")
+            );
+        }
+        Ok(value)
+    }
+    fn token(&self, role: Role) -> &str {
+        if role == Role::Human {
+            &self.endpoint.owner_token
+        } else {
+            &self.endpoint.agent_token
+        }
+    }
+    /// Retained source file bytes (read-only, any role).
+    pub fn source_file(&self, bundle_id: &str, path: &str, role: Role) -> Result<Vec<u8>> {
+        let response = self
+            .http
+            .post(format!(
+                "http://127.0.0.1:{}/api/source-file",
+                self.endpoint.port
+            ))
+            .bearer_auth(self.token(role))
+            .json(&serde_json::json!({"bundle_id": bundle_id, "path": path}))
+            .timeout(Duration::from_secs(600))
+            .send()
+            .context("Direct service is unavailable")?;
+        let status = response.status();
+        if !status.is_success() {
+            let value: Value = response.json().unwrap_or_default();
+            bail!(
+                "{}: {}",
+                value["code"].as_str().unwrap_or("error"),
+                value["message"].as_str().unwrap_or("Request failed")
+            );
+        }
+        Ok(response.bytes()?.to_vec())
+    }
+    /// Owner-only migration preview (`expected` = None) or apply.
+    pub fn migration(
+        &self,
+        artifact: Vec<u8>,
+        expected: Option<(u64, &str)>,
+        role: Role,
+    ) -> Result<Value> {
+        let url = match expected {
+            None => format!(
+                "http://127.0.0.1:{}/api/migration/preview",
+                self.endpoint.port
+            ),
+            Some((cursor, sha)) => format!(
+                "http://127.0.0.1:{}/api/migration/apply?expected_cursor={cursor}&artifact_sha256={sha}",
+                self.endpoint.port
+            ),
+        };
+        let response = self
+            .http
+            .post(url)
+            .bearer_auth(self.token(role))
+            .header("content-type", "application/octet-stream")
+            .body(artifact)
+            .timeout(Duration::from_secs(1800))
+            .send()
+            .context("Direct service is unavailable")?;
         let status = response.status();
         let value: Value = response.json()?;
         if !status.is_success() {

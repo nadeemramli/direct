@@ -1,7 +1,10 @@
 mod index;
+mod migration;
 mod package;
+mod retained;
 mod workspace;
 
+pub use migration::prepare as prepare_migration;
 pub use workspace::whole_workspace;
 
 use anyhow::{bail, Context, Result};
@@ -217,7 +220,7 @@ pub fn dry_run(
         })
         .sum();
     let archive = Archive {
-        format: 11,
+        format: 12,
         workspace_id: project_id.to_owned(),
         products: vec![product],
         projects: vec![project],
@@ -236,6 +239,9 @@ pub fn dry_run(
         verifications: vec![],
         events: vec![],
         requests: vec![],
+        source_bundles: vec![],
+        source_files: vec![],
+        source_records: vec![],
     };
     validate_archive(&archive).context("Generated Direct archive is invalid")?;
 

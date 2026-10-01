@@ -9,9 +9,11 @@
 use super::{
     deterministic_uuid, ensure_private_output, index, nested_string, optional_string,
     package::{reread, verify_package, VerifiedPackage},
-    pretty_bytes, required_string, resolved_path, sha256, string, timestamp, write_new, SOURCE,
+    pretty_bytes, required_string, resolved_path, retained, sha256, string, timestamp, write_new,
+    SOURCE,
 };
 use anyhow::{bail, Context, Result};
+use base64::{engine::general_purpose::STANDARD, Engine};
 use direct_core::{
     validate_archive, Archive, Comment, ExternalIssueRecord, ExternalIssueState, Goal, GoalStatus,
     Issue, IssueLink, IssueLinkKind, Label, LabelProductRule, LinearLabelOrigin, Milestone,
@@ -42,7 +44,7 @@ const PROJECT_UPDATES: &str = "project-updates.json";
 const INITIATIVE_UPDATES: &str = "initiative-updates.json";
 const SCHEMA: &str = "graphql-schema.json";
 
-const WHOLE_REQUIRED: &[&str] = &[
+pub(super) const WHOLE_REQUIRED: &[&str] = &[
     TEAMS,
     STATES,
     LABELS,
@@ -70,7 +72,7 @@ const MARKER_FILE: &str = "import-complete.json";
 const SECONDS: &str =
     "Stored as whole seconds; the exact RFC 3339 string is retained in the source bundle";
 const PRESERVED: &str = "No native Direct field; the exact value is retained in the source bundle";
-const NATIVE_ACCESS: &str = "The retained source bundle preserves this information byte for byte, but Direct cannot show or use it natively. Preservation is not proof of native access.";
+const NATIVE_ACCESS: &str = "Retained byte for byte and readable in Direct's Imported sources view (original record, search, issue links and file download); it is not converted into Direct planning records.";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -120,6 +122,55 @@ pub(super) struct Plan {
     pub archive: Archive,
     pub entries: Vec<Entry>,
     pub reconciliation: Value,
+    /// Linear issue ID → Direct issue key.
+    pub issue_keys: HashMap<String, String>,
+    pub reused_products: Vec<String>,
+    pub reused_labels: Vec<String>,
+    /// Linear label ID → existing Direct label ID reused for it.
+    pub reused_label_origins: BTreeMap<String, String>,
+}
+
+/// Bounded summary stored with a retained bundle in Direct.
+pub(super) fn bundle_summary(report: &Value) -> Value {
+    let mut summary = serde_json::Map::new();
+    for field in [
+        "mode",
+        "source",
+        "source_counts",
+        "imported_counts",
+        "accounting",
+        "classification_totals",
+        "cutover_readiness",
+        "native_access",
+        "policies",
+        "unsupported_fields",
+        "label_disambiguations",
+        "name_disambiguations",
+        "cross_product_mappings",
+        "previous_identifiers",
+        "unknown_state_types",
+        "source_limitations",
+        "relations",
+    ] {
+        if let Some(value) = report.get(field) {
+            summary.insert(field.into(), value.clone());
+        }
+    }
+    // Keep the summary inside Direct's bound; long lists stay in reconciliation.json.
+    for field in [
+        "relations",
+        "cross_product_mappings",
+        "previous_identifiers",
+        "label_disambiguations",
+        "name_disambiguations",
+        "unsupported_fields",
+    ] {
+        if serde_json::to_vec(&summary).map_or(0, |bytes| bytes.len()) <= 400_000 {
+            break;
+        }
+        summary.insert(field.into(), json!({"omitted": "see reconciliation.json"}));
+    }
+    Value::Object(summary)
 }
 
 pub fn whole_workspace(
@@ -136,7 +187,28 @@ pub fn whole_workspace(
         bail!("The import output must not overlap the Linear source package");
     }
     let package = verify_package(&source_root, WHOLE_REQUIRED)?;
-    let plan = build(&package)?;
+    let mut plan = build(&package, &Target::default())?;
+    let retained = retained::build(
+        &package,
+        &plan.entries,
+        &plan.issue_keys,
+        bundle_summary(&plan.reconciliation),
+        "linear-import-dry-run",
+        chrono::DateTime::parse_from_rfc3339(&package.manifest.captured_at)
+            .map(|time| time.timestamp())
+            .unwrap_or(0),
+    )?;
+    plan.archive.source_bundles = vec![retained.bundle];
+    plan.archive.source_files = retained
+        .files
+        .into_iter()
+        .map(|(mut file, bytes)| {
+            file.data = Some(STANDARD.encode(bytes));
+            file
+        })
+        .collect();
+    plan.archive.source_records = retained.records;
+    plan.archive.source_records.sort_by(|a, b| a.id.cmp(&b.id));
     validate_archive(&plan.archive).context("Generated Direct archive is invalid")?;
     let archive_bytes = pretty_bytes(&plan.archive)?;
     let generated = generated_files(&package, &plan, &archive_bytes)?;
@@ -410,8 +482,49 @@ struct Reports {
     unknown_states: BTreeSet<String>,
 }
 
+/// The existing workspace an import will merge into. Empty for an isolated rehearsal.
+#[derive(Default)]
+pub(super) struct Target {
+    pub baseline_cursor: u64,
+    pub products: Vec<Product>,
+    /// Explicit Linear team ID → existing Direct product ID mapping.
+    pub team_map: HashMap<String, String>,
+    pub labels: Vec<Label>,
+    /// Existing issue keys plus keys reserved by activity history.
+    pub keys: HashSet<String>,
+    pub project_names: HashSet<(String, String)>,
+    pub goal_names: HashSet<(String, String)>,
+    pub ids: HashSet<String>,
+}
+
+impl Target {
+    fn highest_number(&self, product_key: &str) -> u64 {
+        let prefix = format!("{product_key}-");
+        self.keys
+            .iter()
+            .filter_map(|key| key.strip_prefix(&prefix)?.parse::<u64>().ok())
+            .max()
+            .unwrap_or(0)
+    }
+}
+
+#[derive(Clone)]
+enum LabelScope {
+    Workspace,
+    Team(String),
+    /// Reused existing label: Direct product IDs it applies to (empty = all).
+    Products(Vec<String>),
+}
+
 struct Builder<'a> {
     package: &'a VerifiedPackage,
+    target: &'a Target,
+    /// Linear team ID → Direct product ID (the team ID unless mapped).
+    product_ids: HashMap<String, String>,
+    reused_products: BTreeSet<String>,
+    reused_labels: BTreeSet<String>,
+    /// Linear issue ID → original identifier, for issues given a new Direct key.
+    renumbered: HashMap<String, String>,
     entries: Vec<Entry>,
     reports: Reports,
     products: Vec<Product>,
@@ -423,7 +536,7 @@ struct Builder<'a> {
     milestones: Vec<Milestone>,
     milestone_projects: HashMap<String, String>,
     labels: Vec<Label>,
-    label_map: HashMap<String, (String, Option<String>)>,
+    label_map: HashMap<String, (String, LabelScope)>,
     issues: Vec<Issue>,
     issue_keys: HashMap<String, String>,
     issue_products: HashMap<String, String>,
@@ -433,9 +546,14 @@ struct Builder<'a> {
     link_sources: HashMap<String, String>,
 }
 
-pub(super) fn build(package: &VerifiedPackage) -> Result<Plan> {
+pub(super) fn build(package: &VerifiedPackage, target: &Target) -> Result<Plan> {
     let mut builder = Builder {
         package,
+        target,
+        product_ids: HashMap::new(),
+        reused_products: BTreeSet::new(),
+        reused_labels: BTreeSet::new(),
+        renumbered: HashMap::new(),
         entries: Vec::new(),
         reports: Reports::default(),
         products: Vec::new(),
@@ -472,6 +590,19 @@ pub(super) fn build(package: &VerifiedPackage) -> Result<Plan> {
 }
 
 impl<'a> Builder<'a> {
+    /// Existing names in mapped products, keyed by the Linear team scope used for naming.
+    fn reserved_names(&self, names: &HashSet<(String, String)>) -> HashSet<(String, String)> {
+        let mut reserved = HashSet::new();
+        for (team, product) in &self.product_ids {
+            for (product_id, name) in names {
+                if product_id == product {
+                    reserved.insert((team.clone(), name.clone()));
+                }
+            }
+        }
+        reserved
+    }
+
     fn record(
         &mut self,
         file: &str,
@@ -551,7 +682,45 @@ impl<'a> Builder<'a> {
                 class = Class::Transformed;
                 reasons.push("Archived in Linear; Direct products have no archived state, so archivedAt is retained in the source bundle".into());
             }
+            if let Some(product_id) = self.target.team_map.get(&id) {
+                let product = self
+                    .target
+                    .products
+                    .iter()
+                    .find(|product| product.id == *product_id)
+                    .with_context(|| {
+                        format!("Team mapping for {key} names unknown product {product_id}")
+                    })?;
+                self.team_keys.insert(id.clone(), product.key.clone());
+                self.product_ids.insert(id.clone(), product.id.clone());
+                self.reused_products.insert(product.id.clone());
+                reasons.push(format!(
+                    "Explicitly mapped to existing Direct product {} ({}); that product record is not changed",
+                    product.key, product.name
+                ));
+                self.record(
+                    TEAMS,
+                    index,
+                    team,
+                    Class::Transformed,
+                    json!({"entity": "product", "id": product.id, "key": product.key, "existing": true}),
+                    reasons,
+                );
+                continue;
+            }
+            if let Some(existing) = self
+                .target
+                .products
+                .iter()
+                .find(|product| product.key.eq_ignore_ascii_case(&key) || product.id == id)
+            {
+                bail!(
+                    "Linear team {key} collides with existing Direct product {} ({}). Import it into that product explicitly with --map-team {id}={}, or rename one of them first",
+                    existing.key, existing.name, existing.id
+                );
+            }
             self.team_keys.insert(id.clone(), key.clone());
+            self.product_ids.insert(id.clone(), id.clone());
             self.products.push(Product {
                 id: id.clone(),
                 key: key.clone(),
@@ -570,8 +739,13 @@ impl<'a> Builder<'a> {
                 reasons,
             );
         }
-        if self.products.is_empty() {
+        if self.team_keys.is_empty() {
             bail!("Linear source package contains no teams");
+        }
+        for team in self.target.team_map.keys() {
+            if !self.team_keys.contains_key(team) {
+                bail!("--map-team names Linear team {team}, which is not in this capture");
+            }
         }
         Ok(())
     }
@@ -621,6 +795,29 @@ impl<'a> Builder<'a> {
         let mut candidates = Vec::new();
         for (index, label) in package.records(LABELS).iter().enumerate() {
             let id = required_string(label, "id")?;
+            if let Some(existing) = self.target.labels.iter().find(|existing| {
+                existing
+                    .linear_origins
+                    .iter()
+                    .any(|origin| origin.id == id.trim())
+            }) {
+                self.reused_labels.insert(existing.id.clone());
+                self.label_map.insert(
+                    id.clone(),
+                    (
+                        existing.id.clone(),
+                        LabelScope::Products(
+                            existing
+                                .products
+                                .iter()
+                                .map(|rule| rule.product_id.clone())
+                                .collect(),
+                        ),
+                    ),
+                );
+                self.record(LABELS, index, label, Class::Transformed, json!({"entity": "label", "id": existing.id, "name": existing.name, "existing": true}), vec![format!("Existing Direct label {:?} already records this Linear label as its origin; assignments use it and the label is not changed", existing.name)]);
+                continue;
+            }
             let team_id = nested_string(label, &["team", "id"]);
             let team = match team_id {
                 Some(team_id) => match self.team_keys.get(&team_id) {
@@ -670,7 +867,13 @@ impl<'a> Builder<'a> {
             .partition(|candidate| groups[&normalized(&candidate.original)] == 1);
         singles.sort_by_key(order);
         collided.sort_by_key(order);
-        let mut taken = HashSet::new();
+        let mut taken: HashSet<String> = self
+            .target
+            .labels
+            .iter()
+            .flat_map(|label| std::iter::once(&label.name).chain(label.aliases.iter()))
+            .map(|name| normalized(name))
+            .collect();
         let mut named = Vec::new();
         for candidate in singles.into_iter().chain(collided) {
             let short = short_id(&candidate.id);
@@ -683,7 +886,8 @@ impl<'a> Builder<'a> {
                 .team
                 .as_ref()
                 .map_or_else(|| "workspace".to_owned(), |team| team.1.clone());
-            let collision = groups[&normalized(&candidate.original)] > 1;
+            let collision = groups[&normalized(&candidate.original)] > 1
+                || taken.contains(&normalized(&candidate.original));
             let mut attempts = Vec::new();
             if !collision {
                 attempts.push(fit(&base, "", 80));
@@ -706,7 +910,7 @@ impl<'a> Builder<'a> {
             if name != candidate.original {
                 class = Class::Transformed;
                 let reason = if collision {
-                    format!("Name {:?} collides case-insensitively with other Linear label definitions; kept distinct as {name:?} (original name retained in linear_origins)", candidate.original)
+                    format!("Name {:?} collides case-insensitively with another Linear or existing Direct label; kept distinct as {name:?} (original name retained in linear_origins)", candidate.original)
                 } else {
                     format!("Name adjusted to {name:?} to fit Direct's label name rules (original retained in linear_origins)")
                 };
@@ -748,7 +952,7 @@ impl<'a> Builder<'a> {
                 .as_ref()
                 .map(|team| {
                     vec![LabelProductRule {
-                        product_id: team.0.clone(),
+                        product_id: self.product_ids[&team.0].clone(),
                         default_for_new_issues: false,
                     }]
                 })
@@ -772,7 +976,12 @@ impl<'a> Builder<'a> {
                 candidate.id.clone(),
                 (
                     direct_id.clone(),
-                    candidate.team.as_ref().map(|team| team.0.clone()),
+                    candidate
+                        .team
+                        .as_ref()
+                        .map_or(LabelScope::Workspace, |team| {
+                            LabelScope::Team(team.0.clone())
+                        }),
                 ),
             );
             self.record(
@@ -891,6 +1100,7 @@ impl<'a> Builder<'a> {
             }),
             160,
             "Linear project",
+            &self.reserved_names(&self.target.project_names),
         );
         let ranks = ranks(pending.iter().map(|item| {
             let project = &records[item.index];
@@ -943,7 +1153,7 @@ impl<'a> Builder<'a> {
                 .insert(id.clone(), item.product.clone());
             self.projects.push(Project {
                 id: id.clone(),
-                product_id: item.product.clone(),
+                product_id: self.product_ids[&item.product].clone(),
                 name: name.clone(),
                 description: optional_string(project, "description").unwrap_or_default(),
                 status,
@@ -1000,6 +1210,7 @@ impl<'a> Builder<'a> {
             }),
             160,
             "Linear milestone",
+            &HashSet::new(),
         );
         let ranks = ranks(pending.iter().map(|(index, project)| {
             let milestone = &records[*index];
@@ -1144,6 +1355,7 @@ impl<'a> Builder<'a> {
             }),
             160,
             "Linear initiative",
+            &self.reserved_names(&self.target.goal_names),
         );
         let mut by_index: BTreeMap<usize, Vec<Part>> = BTreeMap::new();
         for part in parts {
@@ -1198,7 +1410,7 @@ impl<'a> Builder<'a> {
                 }
                 self.goals.push(Goal {
                     id: part.id.clone(),
-                    product_id: part.product.clone(),
+                    product_id: self.product_ids[&part.product].clone(),
                     name,
                     description: optional_string(initiative, "description").unwrap_or_default(),
                     status: status.clone(),
@@ -1232,29 +1444,71 @@ impl<'a> Builder<'a> {
     fn issues(&mut self) -> Result<()> {
         let package = self.package;
         let mut seen_ids = HashSet::new();
+        let mut seen_identifiers = HashSet::new();
+        let mut by_team: BTreeMap<String, Vec<(u64, String, String)>> = BTreeMap::new();
         for issue in package.records(ISSUES) {
             let id = required_string(issue, "id")?;
-            let key = required_string(issue, "identifier")?;
-            if !seen_ids.insert(id.clone()) || self.issue_products.contains_key(&key) {
-                bail!("Linear issues repeat id or identifier {key}");
+            let identifier = required_string(issue, "identifier")?;
+            if !seen_ids.insert(id.clone()) || !seen_identifiers.insert(identifier.clone()) {
+                bail!("Linear issues repeat id or identifier {identifier}");
             }
             let team = nested_string(issue, &["team", "id"])
-                .with_context(|| format!("Linear issue {key} has no team"))?;
-            let team_key = self.team_keys.get(&team).with_context(|| {
-                format!("Linear issue {key} references team {team}, which is absent from teams.json; the capture is incomplete")
-            })?;
-            if !key
-                .strip_prefix(&format!("{team_key}-"))
-                .is_some_and(|number| number.parse::<u64>().is_ok_and(|value| value > 0))
-            {
-                bail!("Linear issue identifier {key} does not match its team key {team_key}");
+                .with_context(|| format!("Linear issue {identifier} has no team"))?;
+            if !self.team_keys.contains_key(&team) {
+                bail!("Linear issue {identifier} references team {team}, which is absent from teams.json; the capture is incomplete");
             }
-            self.issue_keys.insert(id, key.clone());
-            self.issue_products.insert(key, team);
+            let number = identifier
+                .rsplit('-')
+                .next()
+                .and_then(|number| number.parse::<u64>().ok())
+                .filter(|number| *number > 0)
+                .with_context(|| {
+                    format!("Linear issue identifier {identifier} has no issue number")
+                })?;
+            by_team
+                .entry(team)
+                .or_default()
+                .push((number, identifier, id));
+        }
+        for (team, mut issues) in by_team {
+            let product_key = self.team_keys[&team].clone();
+            let mapped = self.target.team_map.contains_key(&team);
+            let keep = issues.iter().all(|(_, identifier, _)| {
+                identifier
+                    .strip_prefix(&format!("{product_key}-"))
+                    .is_some_and(|number| number.parse::<u64>().is_ok_and(|value| value > 0))
+                    && !self.target.keys.contains(identifier)
+            });
+            if keep {
+                for (_, identifier, id) in issues {
+                    self.issue_keys.insert(id, identifier.clone());
+                    self.issue_products.insert(identifier, team.clone());
+                }
+                continue;
+            }
+            if !mapped {
+                bail!("Linear issue identifiers of team {product_key} do not match its key or collide with existing or reserved Direct keys; map the team explicitly with --map-team to renumber them");
+            }
+            // Explicitly mapped into an existing product whose key space is taken:
+            // allocate new keys after every used or reserved number, in Linear order.
+            issues.sort();
+            let mut next = self.target.highest_number(&product_key);
+            for (_, identifier, id) in issues {
+                next += 1;
+                let key = format!("{product_key}-{next}");
+                self.reports.previous_identifiers.push(json!({
+                    "previous": identifier,
+                    "direct_key": key,
+                    "reason": "renumbered into an explicitly mapped existing product",
+                }));
+                self.renumbered.insert(id.clone(), identifier);
+                self.issue_keys.insert(id, key.clone());
+                self.issue_products.insert(key, team.clone());
+            }
         }
         for (index, issue) in package.records(ISSUES).iter().enumerate() {
             let id = required_string(issue, "id")?;
-            let key = required_string(issue, "identifier")?;
+            let key = self.issue_keys[&id].clone();
             let product = self.issue_products[&key].clone();
             let pointer = format!("/records/{index}");
             let mut class = Class::Native;
@@ -1312,6 +1566,10 @@ impl<'a> Builder<'a> {
                 class = class.max(Class::Transformed);
                 reasons.push(reason);
             }
+            if let Some(identifier) = self.renumbered.get(&id) {
+                class = class.max(Class::Transformed);
+                reasons.push(format!("Linear identifier {identifier} is already used or reserved in the mapped product, so this issue is {key}; the original identifier stays searchable in its retained source record"));
+            }
             if has_value(issue.get("archivedAt")) {
                 reasons
                     .push("Archived in Linear; archivedAt is kept in external provenance".into());
@@ -1343,7 +1601,14 @@ impl<'a> Builder<'a> {
             for (assignment_pointer, label) in assignments {
                 let (assignment_class, direct, reason) = match self.label_map.get(&label) {
                     Some((direct_id, scope))
-                        if scope.as_ref().is_none_or(|team| *team == product) =>
+                        if match scope {
+                            LabelScope::Workspace => true,
+                            LabelScope::Team(team) => *team == product,
+                            LabelScope::Products(products) => {
+                                products.is_empty()
+                                    || products.contains(&self.product_ids[&product])
+                            }
+                        } =>
                     {
                         if labels.insert(direct_id.clone()) {
                             (
@@ -1363,9 +1628,16 @@ impl<'a> Builder<'a> {
                         }
                     }
                     Some((_, scope)) => {
-                        let scope = scope.clone().unwrap_or_default();
-                        self.reports.cross_product.push(json!({"kind": "label_assignment", "issue": key, "label_id": label, "label_team": self.team_keys.get(&scope)}));
-                        (Class::Unresolved, Value::Null, Some(format!("Label belongs to team {}; Direct label rules do not apply it to this issue's product", self.team_keys.get(&scope).cloned().unwrap_or(scope))))
+                        let scope = match scope {
+                            LabelScope::Team(team) => self
+                                .team_keys
+                                .get(team)
+                                .cloned()
+                                .unwrap_or_else(|| team.clone()),
+                            _ => "other products".to_owned(),
+                        };
+                        self.reports.cross_product.push(json!({"kind": "label_assignment", "issue": key, "label_id": label, "label_team": scope}));
+                        (Class::Unresolved, Value::Null, Some(format!("Label belongs to {scope}; Direct label rules do not apply it to this issue's product")))
                     }
                     None => (
                         Class::Unresolved,
@@ -1455,7 +1727,7 @@ impl<'a> Builder<'a> {
                 labels: labels.into_iter().collect(),
                 id: id.clone(),
                 key: key.clone(),
-                product_id: product.clone(),
+                product_id: self.product_ids[&product].clone(),
                 project_id: project_id.clone(),
                 milestone_id,
                 planning_scope: if source_project.is_some() {
@@ -1984,7 +2256,7 @@ impl<'a> Builder<'a> {
         }
 
         let mut archive = Archive {
-            format: 11,
+            format: 12,
             workspace_id: deterministic_uuid("linear-workspace", &{
                 let mut ids: Vec<_> = self
                     .products
@@ -2011,6 +2283,9 @@ impl<'a> Builder<'a> {
             verifications: vec![],
             events: vec![],
             requests: vec![],
+            source_bundles: vec![],
+            source_files: vec![],
+            source_records: vec![],
         };
         archive.products.sort_by(|a, b| a.id.cmp(&b.id));
         archive.projects.sort_by(|a, b| a.id.cmp(&b.id));
@@ -2033,6 +2308,15 @@ impl<'a> Builder<'a> {
             archive,
             entries: self.entries,
             reconciliation,
+            issue_keys: self.issue_keys,
+            reused_products: self.reused_products.into_iter().collect(),
+            reused_labels: self.reused_labels.into_iter().collect(),
+            reused_label_origins: self
+                .label_map
+                .iter()
+                .filter(|(_, (_, scope))| matches!(scope, LabelScope::Products(_)))
+                .map(|(origin, (id, _))| (origin.clone(), id.clone()))
+                .collect(),
         })
     }
 }
@@ -2256,34 +2540,64 @@ fn reconciliation(
         source_limitations.push(json!({"source": "importer", "detail": "Package root holds entries outside the capture format; they are not verified or bundled", "entries": package.unbundled_root_entries}));
     }
 
-    let mut blockers = vec![
-        json!({"code": "no_live_apply", "detail": "This increment only prepares an isolated rehearsal workspace. There is no live merge/apply command, and the owner's workspace is untouched."}),
-        json!({"code": "final_delta_capture_required", "detail": "A final Linear capture after intake is frozen must be reconciled against this rehearsal before cutover."}),
-        json!({"code": "owner_cutover_decision_required", "detail": "Cutover requires an explicit owner decision after reviewing this report."}),
-    ];
-    if !preserved_only.is_empty() {
-        blockers.push(json!({"code": "native_access_missing", "detail": NATIVE_ACCESS, "counts": preserved_only}));
-    }
-    if !unsupported_fields.is_empty() {
-        blockers.push(json!({"code": "unsupported_fields", "detail": "Populated source fields without a native Direct field are retained only in the source bundle; see unsupported_fields.", "count": unsupported_fields.len()}));
-    }
-    if !unresolved.is_empty() {
-        blockers.push(json!({"code": "unresolved_records", "detail": "Some source records or components could not be represented; see accounting.json entries classified unresolved.", "counts": unresolved}));
-    }
-    if !reports.relations_unsupported.is_empty() {
-        blockers.push(json!({"code": "unsupported_relation_semantics", "detail": "Linear relation types without a Direct link kind are retained unconverted.", "count": reports.relations_unsupported.len()}));
-    }
-    if !reports.cross_product.is_empty() {
-        blockers.push(json!({"code": "cross_product_mapping", "detail": "Some Linear structures span teams, which Direct products do not; see cross_product_mappings.", "count": reports.cross_product.len()}));
-    }
-    if !source_limitations.is_empty() {
-        blockers.push(json!({"code": "source_limitations", "detail": "The capture reports coverage it cannot prove; see source_limitations.", "count": source_limitations.len()}));
-    }
     let archived_or_trashed = count_where(ISSUES, &|issue| {
         issue.get("trashed").and_then(Value::as_bool) == Some(true)
     });
-    if archived_or_trashed > 0 {
-        blockers.push(json!({"code": "trashed_issues_review", "detail": "Linear marks some issues as trashed; decide whether they belong in the migrated workspace.", "count": archived_or_trashed}));
+    // Access: native Direct records, retained-only records readable in Direct, and missing bytes.
+    let mut access: BTreeMap<&str, usize> = BTreeMap::new();
+    for entry in entries.iter().filter(|entry| entry.level != "file") {
+        let key = if entry.kind == "uploaded_file" && entry.classification == Class::Unresolved {
+            "missing"
+        } else if matches!(entry.classification, Class::Native | Class::Transformed) {
+            "native"
+        } else {
+            "retained"
+        };
+        *access.entry(key).or_default() += 1;
+    }
+    let missing = access.get("missing").copied().unwrap_or(0);
+    let mut review_items = Vec::new();
+    for (code, detail, count) in [
+        ("unsupported_fields", "Populated source fields without a native Direct field; readable in each retained record.", unsupported_fields.len()),
+        ("unresolved_records", "Records or components not represented as Direct planning records; readable as retained records.", unresolved.values().sum::<usize>()),
+        ("unsupported_relation_semantics", "Linear relation types without a Direct link kind; retained unconverted.", reports.relations_unsupported.len()),
+        ("cross_product_mapping", "Linear structures spanning teams; see cross_product_mappings.", reports.cross_product.len()),
+        ("source_limitations", "Coverage the capture itself cannot prove; see source_limitations.", source_limitations.len()),
+        ("trashed_issues", "Linear marks these issues as trashed; decide whether they stay.", archived_or_trashed),
+    ] {
+        if count > 0 {
+            review_items.push(json!({"code": code, "detail": detail, "count": count}));
+        }
+    }
+    let gates = json!({
+        "preservation": {
+            "status": "verified",
+            "detail": "Every manifest-listed file matched its checksum and is retained byte for byte.",
+            "files": package.files.len(),
+        },
+        "access": {
+            "status": if missing == 0 { "available_in_direct" } else { "incomplete" },
+            "detail": "native = a Direct record exists and the original is readable; retained = readable only as an original source record in Direct; missing = bytes were never captured.",
+            "records": access,
+        },
+        "freshness": {
+            "status": "unverified",
+            "captured_at": package.manifest.captured_at,
+            "detail": "The importer cannot know whether Linear changed after this capture. Freeze Linear intake, take a final capture, and prepare from it.",
+        },
+        "application": {
+            "status": "not_applied",
+            "detail": "Apply a prepared artifact to the owner's workspace through the owner Migration panel; this report does not change any workspace.",
+        },
+        "owner_decision": {"status": "pending"},
+    });
+    let mut blockers = vec![
+        json!({"code": "final_capture_freshness", "detail": "Freshness of the capture against live Linear is not verified."}),
+        json!({"code": "live_application_pending", "detail": "Nothing has been applied to the owner's workspace."}),
+        json!({"code": "owner_cutover_decision_required", "detail": "Cutover requires an explicit owner decision after reviewing this report."}),
+    ];
+    if missing > 0 {
+        blockers.push(json!({"code": "missing_source_bytes", "detail": "Some uploaded files were never downloaded, so their contents exist only in Linear.", "count": missing}));
     }
 
     json!({
@@ -2323,9 +2637,9 @@ fn reconciliation(
         "unknown_state_types": reports.unknown_states,
         "source_limitations": source_limitations,
         "native_access": {
-            "status": if preserved_only.is_empty() { "complete" } else { "missing" },
+            "status": if missing == 0 { "available_in_direct" } else { "incomplete" },
             "statement": NATIVE_ACCESS,
-            "preserved_only": preserved_only,
+            "retained_only": preserved_only,
             "bundle": BUNDLE_DIR,
             "index": INDEX_FILE,
         },
@@ -2336,9 +2650,11 @@ fn reconciliation(
             "history": "Linear issue history is kept in each issue's external provenance. No Direct activity events are created from source payloads.",
         },
         "cutover_readiness": {
-            "status": "blocked",
+            "status": "not_complete",
             "ready": false,
+            "gates": gates,
             "blockers": blockers,
+            "review_items": review_items,
         },
         "archive": {
             "format": archive.format,
@@ -2710,6 +3026,7 @@ fn unique_names(
     items: impl Iterator<Item = (String, String, String)>,
     max: usize,
     fallback: &str,
+    reserved: &HashSet<(String, String)>,
 ) -> HashMap<String, String> {
     let mut items: Vec<_> = items.collect();
     items.sort_by(|left, right| {
@@ -2719,13 +3036,14 @@ fn unique_names(
     for (scope, name, _) in &items {
         *counts.entry((scope.clone(), normalized(name))).or_default() += 1;
     }
-    let mut taken: HashSet<(String, String)> = HashSet::new();
+    let mut taken: HashSet<(String, String)> = reserved.clone();
     // Reserve names that are already unique and valid so disambiguated names never displace them.
     for (scope, name, _) in &items {
         let trimmed = name.trim();
         if !trimmed.is_empty()
             && trimmed.len() <= max
             && counts[&(scope.clone(), normalized(name))] == 1
+            && !reserved.contains(&(scope.clone(), normalized(name)))
         {
             taken.insert((scope.clone(), normalized(trimmed)));
         }
@@ -2735,7 +3053,8 @@ fn unique_names(
         let trimmed = name.trim();
         let unique = !trimmed.is_empty()
             && trimmed.len() <= max
-            && counts[&(scope.clone(), normalized(&name))] == 1;
+            && counts[&(scope.clone(), normalized(&name))] == 1
+            && !reserved.contains(&(scope.clone(), normalized(&name)));
         let chosen = if unique {
             trimmed.to_owned()
         } else {
@@ -2800,6 +3119,7 @@ mod tests {
             .into_iter(),
             160,
             "Linear project",
+            &HashSet::new(),
         );
         assert_eq!(names["c-3"], "Other");
         assert_eq!(names["d-4"], "Launch");

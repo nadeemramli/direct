@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, connect } from "./api";
+  import { api, connect, migration, sourceFile } from "./api";
   import type {
     Snapshot,
     Issue,
@@ -18,6 +18,10 @@
     Milestone,
     ReleaseRecord,
     ReleaseEvidence,
+    SourceBundleDetail,
+    SourceRecordSummary,
+    SourceRecordView,
+    MigrationPreview,
   } from "./api";
   let data = $state<Snapshot>({
     workspace_id: "",
@@ -385,6 +389,8 @@
   let title = $derived(
     view === "theoria"
       ? "Theoria"
+      : view === "sources"
+      ? "Imported sources"
       : product !== "all"
       ? data.products.find((p) => p.id === product)?.name || "Product"
       : view === "needs"
@@ -1183,6 +1189,160 @@
         note: reviewNote,
       });
   }
+  // Imported sources: lazy, scoped reads. Source text is untrusted data and is
+  // only ever rendered as escaped text or downloaded as an opaque file.
+  let sourceBundles = $state<SourceBundleDetail[]>([]);
+  let sourceQuery = $state("");
+  let sourceKind = $state("");
+  let sourceClass = $state("");
+  let sourceIssue = $state("");
+  let sourceResults = $state<SourceRecordSummary[]>([]);
+  let sourceTotal = $state(0);
+  let sourceRecord = $state<SourceRecordView | null>(null);
+  let sourceBusy = $state(false);
+  let migrationFile = $state<File | null>(null);
+  let migrationBytes = $state<ArrayBuffer | null>(null);
+  let migrationPreview = $state<MigrationPreview | null>(null);
+  let migrationResult = $state<Record<string, any> | null>(null);
+  let sourceKinds = $derived(
+    [...new Set(sourceBundles.flatMap((bundle) => Object.keys(bundle.records_by_kind)))].sort(),
+  );
+  async function loadSources() {
+    try {
+      const described = await api<{ bundles: SourceBundleDetail[] }>({
+        op: "source_bundles",
+      });
+      sourceBundles = described.bundles;
+      await searchSources(true);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+  async function searchSources(reset = false) {
+    sourceBusy = true;
+    try {
+      const page = await api<{ total: number; records: SourceRecordSummary[] }>({
+        op: "search_sources",
+        query: sourceQuery,
+        kind: sourceKind || null,
+        classification: sourceClass || null,
+        issue_key: sourceIssue || null,
+        limit: 50,
+        offset: reset ? 0 : sourceResults.length,
+      });
+      sourceResults = reset ? page.records : [...sourceResults, ...page.records];
+      sourceTotal = page.total;
+    } catch (e) {
+      error = String(e);
+    } finally {
+      sourceBusy = false;
+    }
+  }
+  async function openSource(id: string) {
+    try {
+      sourceRecord = await api<SourceRecordView>({ op: "source_record", id });
+    } catch (e) {
+      error = String(e);
+    }
+  }
+  async function openSources(issueKey = "", recordId = "") {
+    view = "sources";
+    product = "all";
+    sourceIssue = issueKey;
+    sourceRecord = null;
+    await loadSources();
+    if (recordId) await openSource(recordId);
+  }
+  async function downloadSource(bundleId: string, path: string, name?: string | null) {
+    try {
+      const blob = await sourceFile(bundleId, path);
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = (name || path.split("/").pop() || "retained-file").replace(/[^A-Za-z0-9._-]/g, "_");
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    } catch (e) {
+      error = String(e);
+    }
+  }
+  async function previewMigration() {
+    const file = migrationFile;
+    if (!file) return;
+    busy = true;
+    error = "";
+    migrationResult = null;
+    migrationPreview = null;
+    migrationBytes = null;
+    try {
+      const bytes = await file.arrayBuffer();
+      const preview = await migration<MigrationPreview>(bytes);
+      // Only the file still selected may supply the bytes and preview that
+      // Apply sends; a result for an earlier selection is discarded.
+      if (migrationFile === file) {
+        migrationBytes = bytes;
+        migrationPreview = preview;
+      }
+    } catch (e) {
+      if (migrationFile === file) error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+  async function applyMigration() {
+    if (!migrationBytes || !migrationPreview) return;
+    if (
+      !confirm(
+        `Apply this migration to your workspace?\n\n${migrationPreview.counts.issues} issues, ${migrationPreview.counts.retained_records} retained source records. Direct writes a pre-import backup first and applies everything in one transaction.`,
+      )
+    )
+      return;
+    busy = true;
+    error = "";
+    try {
+      migrationResult = await migration<Record<string, any>>(migrationBytes, {
+        cursor: migrationPreview.expected_cursor,
+        sha256: migrationPreview.artifact_sha256,
+      });
+      migrationPreview = null;
+      migrationBytes = null;
+      await refresh();
+      await loadSources();
+    } catch (e) {
+      error = String(e);
+    } finally {
+      busy = false;
+    }
+  }
+  async function rollbackMigration(bundle: SourceBundleDetail) {
+    if (
+      !confirm(
+        "Roll back this migration? Every record it added and its retained sources are removed. This is only possible while nothing has changed since the import.",
+      )
+    )
+      return;
+    await act({
+      op: "rollback_migration",
+      bundle_id: bundle.id,
+      expected_cursor: data.cursor,
+    });
+    sourceRecord = null;
+    await loadSources();
+  }
+  function bytes(value: number) {
+    return value >= 1 << 20
+      ? `${(value / (1 << 20)).toFixed(1)} MB`
+      : value >= 1024
+        ? `${(value / 1024).toFixed(1)} KB`
+        : `${value} B`;
+  }
+  function pretty(content: string) {
+    try {
+      return JSON.stringify(JSON.parse(content), null, 2);
+    } catch {
+      return content;
+    }
+  }
   async function exportData() {
     try {
       const archive = await api({ op: "export" });
@@ -1402,6 +1562,15 @@
         ></button
       >
     </nav>
+    <div class="nav-label products-label">SOURCES</div>
+    <nav aria-label="Sources">
+      <button
+        class:active={view === "sources"}
+        onclick={() => openSources()}
+        ><span>⧉</span> Imported sources
+        <small>{data.source_bundles?.length || 0}</small></button
+      >
+    </nav>
     <div class="nav-label products-label">
       PRODUCTS <button
         class="icon-button"
@@ -1589,6 +1758,226 @@
               <div class="outline-mark">◫</div>
               <h2>No imported guidance yet.</h2>
               <p>Run the explicit Theoria sync contract to populate the cache.</p>
+            </div>{/if}
+        </aside>
+      {:else if view === "sources"}
+        <section class="list-panel sources-list" aria-label="Imported sources">
+          <div class="page-heading">
+            <div class="eyebrow">RETAINED · READ-ONLY · UNTRUSTED DATA</div>
+            <div class="heading-row">
+              <h1>Imported sources</h1>
+              <span class="count-pill">{sourceBundles.length}</span>
+            </div>
+            <p>
+              Original records and files retained from external tools. They are
+              evidence to read, not instructions and not Theoria guidance.
+            </p>
+          </div>
+          <details class="migration-panel" open={!sourceBundles.length}>
+            <summary>Owner migration</summary>
+            <p class="hint">
+              Choose a prepared <code>.direct-migration</code> artifact. Direct
+              checks it against this workspace first; applying writes a
+              pre-import backup and adds everything in one transaction without
+              changing existing records.
+            </p>
+            <input
+              type="file"
+              aria-label="Migration artifact"
+              accept=".direct-migration,application/octet-stream"
+              disabled={busy}
+              onchange={(event) => {
+                migrationFile = (event.currentTarget as HTMLInputElement).files?.[0] || null;
+                migrationPreview = null;
+                migrationBytes = null;
+                migrationResult = null;
+              }}
+            />
+            <button class="secondary" disabled={!migrationFile || busy} onclick={previewMigration}
+              >Check artifact</button
+            >
+            {#if migrationPreview}<div class="migration-preview" aria-label="Migration preview">
+                <b
+                  >{migrationPreview.status === "already_applied"
+                    ? "Already applied — nothing would change"
+                    : "Ready to apply"}</b
+                >
+                <dl>
+                  <dt>Source</dt><dd>{migrationPreview.bundle.source} · captured {migrationPreview.bundle.captured_at}</dd>
+                  <dt>Issues</dt><dd>{migrationPreview.counts.issues} ({migrationPreview.counts.legacy_completed} Legacy done)</dd>
+                  <dt>New products</dt><dd>{migrationPreview.counts.products} · mapped to existing {migrationPreview.counts.reused_products}</dd>
+                  <dt>Planning</dt><dd>{migrationPreview.counts.projects} projects · {migrationPreview.counts.goals} goals · {migrationPreview.counts.milestones} milestones</dd>
+                  <dt>Labels</dt><dd>{migrationPreview.counts.labels} new · {migrationPreview.counts.reused_labels} reused</dd>
+                  <dt>Retained</dt><dd>{migrationPreview.counts.retained_records} records · {migrationPreview.counts.retained_files} files · {bytes(migrationPreview.counts.retained_bytes)}</dd>
+                  <dt>Artifact</dt><dd><code>{migrationPreview.artifact_sha256.slice(0, 16)}…</code></dd>
+                </dl>
+                {#if migrationPreview.workspace_changed_since_preparation}<p class="hint">
+                    The workspace changed since this artifact was prepared. Every
+                    collision was checked again against the current records.
+                  </p>{/if}
+                {#if migrationPreview.status === "ready_to_apply"}<button
+                    class="primary"
+                    disabled={busy}
+                    onclick={applyMigration}>Apply migration</button
+                  >{/if}
+              </div>{/if}
+            {#if migrationResult}<p class="migration-result" role="status">
+                {migrationResult.status === "applied"
+                  ? `Applied. Pre-import backup: ${migrationResult.backup}`
+                  : "Already applied; nothing changed."}
+              </p>{/if}
+          </details>
+          {#each sourceBundles as bundle}<article class="bundle-card" aria-label="Source bundle">
+              <header>
+                <b>{bundle.label}</b>
+                <small>{bundle.source} · captured {bundle.captured_at}</small>
+              </header>
+              <div class="gates">
+                {#each Object.entries(bundle.summary?.cutover_readiness?.gates || {}).filter(([gate]) => gate !== "application") as [gate, info]}<span
+                    class="gate {(info as any).status}"
+                    title={(info as any).detail || ""}
+                    >{gate.replaceAll("_", " ")}: {String((info as any).status).replaceAll("_", " ")}</span
+                  >{/each}
+                <span class="gate {bundle.application ? 'applied' : 'not_applied'}"
+                  >live application: {bundle.application ? `applied at cursor ${bundle.application.applied_cursor}` : "not applied here"}</span
+                >
+              </div>
+              <small
+                >{bundle.record_count} records · {bundle.file_count} files · {bytes(bundle.total_bytes)} ·
+                {Object.entries(bundle.records_by_access).map(([access, count]) => `${count} ${access}`).join(" · ")}</small
+              >
+              {#if bundle.application?.rollback_available}<button
+                  class="text-button"
+                  disabled={busy}
+                  onclick={() => rollbackMigration(bundle)}>Roll back this import</button
+                >{:else if bundle.application}<small class="muted"
+                  >Rollback is unavailable because the workspace changed after the import. Use the pre-import backup {bundle.application.backup || ""} to recover.</small
+                >{/if}
+            </article>{/each}
+          <div class="toolbar">
+            <label class="search"
+              ><span>⌕</span><input
+                aria-label="Search imported sources"
+                bind:value={sourceQuery}
+                placeholder="Search titles, identifiers, text…"
+                onkeydown={(event) => {
+                  if (event.key === "Enter") searchSources(true);
+                }}
+              /></label
+            >
+          </div>
+          <div class="project-toolbar">
+            <label class="project-filter"
+              >Kind
+              <select aria-label="Filter sources by kind" bind:value={sourceKind} onchange={() => searchSources(true)}>
+                <option value="">All kinds</option>
+                {#each sourceKinds as kind}<option value={kind}>{kind.replaceAll("_", " ")}</option>{/each}
+              </select></label
+            >
+            <label class="project-filter"
+              >Class
+              <select aria-label="Filter sources by classification" bind:value={sourceClass} onchange={() => searchSources(true)}>
+                <option value="">All</option>
+                {#each ["native", "transformed", "preserved", "unresolved"] as value}<option {value}>{value}</option>{/each}
+              </select></label
+            >
+            {#if sourceIssue}<button
+                class="text-button"
+                onclick={() => {
+                  sourceIssue = "";
+                  searchSources(true);
+                }}>Linked to {sourceIssue} ×</button
+              >{/if}
+          </div>
+          <div class="list-label"><span>{sourceTotal} RECORDS</span><span>ACCESS</span></div>
+          <div class="source-results">
+            {#each sourceResults as record}<button
+                class="source-row"
+                class:selected={sourceRecord?.record.id === record.id}
+                onclick={() => openSource(record.id)}
+              >
+                <span class="source-kind">{record.kind.replaceAll("_", " ")}</span>
+                <span class="source-text"
+                  ><b>{record.label || record.source_id || record.kind}</b>
+                  {#if record.title}<small>{record.title}</small>{/if}</span
+                >
+                <span class="access {record.access}">{record.access}</span>
+              </button>{:else}<div class="empty compact">
+                <div class="empty-symbol">⧉</div>
+                <h3>{sourceBundles.length ? "No matching records" : "No imported sources"}</h3>
+                <p>{sourceBundles.length ? "Try another search." : "Apply a prepared migration to retain its sources here."}</p>
+              </div>{/each}
+            {#if sourceResults.length < sourceTotal}<button
+                class="text-button"
+                disabled={sourceBusy}
+                onclick={() => searchSources(false)}>Load more</button
+              >{/if}
+          </div>
+        </section>
+        <aside class="detail-panel source-detail" aria-label="Imported source detail">
+          {#if sourceRecord}
+            <div class="detail-top">
+              <span>{sourceRecord.record.kind.replaceAll("_", " ")}</span><span class="tiny"
+                >{sourceRecord.record.classification} · {sourceRecord.record.access}</span
+              >
+            </div>
+            <div class="detail-heading">
+              <span class="status-badge ready">⧉ Retained source</span>
+              <h2>{sourceRecord.record.label || sourceRecord.record.source_id}</h2>
+              {#if sourceRecord.record.title}<p class="prose">{sourceRecord.record.title}</p>{/if}
+            </div>
+            <div class="detail-body">
+              <div class="cache-banner available">
+                <b>Read-only original data</b>
+                <p>{sourceRecord.authority}</p>
+              </div>
+              {#if sourceRecord.record.issue_keys.length}<div class="section-label">LINKED ISSUES</div>
+                {#each sourceRecord.record.issue_keys as key}<button
+                    class="trace-row"
+                    onclick={async () => {
+                      view = "all";
+                      await choose(key);
+                    }}
+                    disabled={!data.issues.some((issue) => issue.key === key)}
+                    ><b>{key}</b> <small>{data.issues.find((issue) => issue.key === key)?.title || "Deleted after import; the retained original remains here"}</small></button
+                  >{/each}{/if}
+              {#if sourceRecord.record.reasons.length}<div class="section-label spaced">HOW DIRECT HOLDS IT</div>
+                <ul class="source-reasons">
+                  {#each sourceRecord.record.reasons as reason}<li>{reason}</li>{/each}
+                </ul>{/if}
+              {#if sourceRecord.record.preserved_fields.length}<p class="hint">
+                  Fields kept only here: {sourceRecord.record.preserved_fields.join(", ")}
+                </p>{/if}
+              {#each sourceRecord.readable as item}<div class="section-label spaced">{item.field.toUpperCase()}</div>
+                <pre class="guidance-content source-text-block">{item.text}</pre>{/each}
+              {#if sourceRecord.history_entries}<p class="hint">
+                  {sourceRecord.history_entries} Linear history entries are in the original record below.
+                </p>{/if}
+              {#if sourceRecord.component}<div class="section-label spaced">COMPONENT {sourceRecord.record.pointer}</div>
+                <pre class="guidance-content">{JSON.stringify(sourceRecord.component, null, 2)}</pre>{/if}
+              <div class="section-label spaced">FILES</div>
+              <div class="source-files">
+                {#if sourceRecord.download}<button
+                    class="secondary"
+                    onclick={() => downloadSource(sourceRecord!.download!.bundle_id, sourceRecord!.download!.path, sourceRecord!.download!.original_name)}
+                    >↧ Download {sourceRecord.download.original_name || sourceRecord.download.path} ({bytes(sourceRecord.download.bytes)})</button
+                  >{/if}
+                <button
+                  class="text-button"
+                  onclick={() => downloadSource(sourceRecord!.file.bundle_id, sourceRecord!.file.path)}
+                  >↧ Original file {sourceRecord.file.path} ({bytes(sourceRecord.file.bytes)})</button
+                >
+                <small class="muted">sha256 {sourceRecord.file.sha256}</small>
+              </div>
+              <details class="source-original">
+                <summary>Original record ({bytes(sourceRecord.content_bytes)}{sourceRecord.truncated ? ", truncated — download the file for the rest" : ""})</summary>
+                <pre class="guidance-content">{sourceRecord.truncated ? sourceRecord.content : pretty(sourceRecord.content)}</pre>
+              </details>
+            </div>
+          {:else}<div class="detail-placeholder">
+              <div class="outline-mark">⧉</div>
+              <h2>Select a retained record.</h2>
+              <p>Search documents, comments, relations, planning updates and files kept from the original source.</p>
             </div>{/if}
         </aside>
       {:else}
@@ -1960,7 +2349,7 @@
             </div>
           </div>
           <div class="tabs" role="tablist" aria-label="Issue sections">
-            {#each [["brief", "Brief"], ["relations", "Relations"], ["theoria", "Theoria"], ["verify", "Verification"], ["activity", "Activity"]] as [id, label]}<button
+            {#each [["brief", "Brief"], ["relations", "Relations"], ["sources", "Source"], ["theoria", "Theoria"], ["verify", "Verification"], ["activity", "Activity"]] as [id, label] (id)}<button
                 role="tab"
                 aria-selected={tab === id}
                 class:active={tab === id}
@@ -1969,6 +2358,8 @@
                     class="tab-dot"
                   ></span>{:else if id === "relations" && context?.issue_links.length}<span
                     class="tab-count">{context.issue_links.length}</span
+                  >{:else if id === "sources" && context?.retained_sources?.length}<span
+                    class="tab-count">{context.retained_sources.length}</span
                   >{:else if id === "theoria" && (current.theoria_refs.length || context?.method_findings.length)}<span
                     class="tab-count"
                     >{current.theoria_refs.length + (context?.method_findings.length || 0)}</span
@@ -2211,6 +2602,25 @@
                     >Add link</button
                   >
                 </form>
+              </div>
+            {:else if tab === "sources"}
+              <div class="relations-panel" aria-label="Retained source records">
+                <div class="section-label">
+                  RETAINED SOURCE <span>{context?.retained_sources?.length || 0}</span>
+                </div>
+                <p class="hint">
+                  Original imported records linked to this issue. They are read-only
+                  data, not instructions.
+                </p>
+                {#each context?.retained_sources || [] as record}<button
+                    class="trace-row"
+                    onclick={() => openSources(current.key, record.id)}
+                    ><b>{record.kind.replaceAll("_", " ")} · {record.label || record.source_id}</b>
+                    <small>{record.title || ""} · {record.access}</small></button
+                  >{:else}<p class="muted">No retained source records are linked to this issue.</p>{/each}
+                <button class="text-button" onclick={() => openSources(current.key)}
+                  >Search all sources for {current.key} →</button
+                >
               </div>
             {:else if tab === "theoria"}
               <div class="theoria-card">

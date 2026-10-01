@@ -61,6 +61,9 @@ export interface ExternalIssueRecord {
   canceled_at: string | null;
   archived_at: string | null;
   history: unknown[];
+  /** Snapshot polling omits large imported history; context keeps it. */
+  history_entries?: number;
+  history_omitted?: boolean;
 }
 export type IssueLinkKind =
   | "parent"
@@ -312,6 +315,85 @@ export interface Context {
   release_evidence: ReleaseEvidence[];
   release_workflow: ReleaseWorkflowConfig | null;
   history: { seq: number; kind: string; actor: string; at: number }[];
+  retained_sources?: SourceRecordSummary[];
+}
+export interface SourceBundleOverview {
+  id: string;
+  source: string;
+  label: string;
+  captured_at: string;
+  manifest_sha256: string;
+  file_count: number;
+  total_bytes: number;
+  record_count: number;
+  imported_by: string;
+  imported_at: number;
+  applied_cursor: number | null;
+}
+export interface SourceFileMeta {
+  bundle_id: string;
+  path: string;
+  sha256: string;
+  bytes: number;
+  content_type: string;
+  role: string;
+  original_name?: string | null;
+}
+export interface SourceBundleDetail extends SourceBundleOverview {
+  summary: Record<string, any>;
+  application: {
+    artifact_sha256: string;
+    baseline_cursor: number;
+    applied_cursor: number;
+    backup: string | null;
+    rollback_available: boolean;
+    entities: Record<string, number>;
+  } | null;
+  records_by_access: Record<string, number>;
+  records_by_kind: Record<string, number>;
+  files: SourceFileMeta[];
+}
+export interface SourceRecordSummary {
+  id: string;
+  bundle_id: string;
+  kind: string;
+  level: string;
+  source_id: string | null;
+  label: string | null;
+  title: string | null;
+  classification: string;
+  access: string;
+  issue_keys: string[];
+  download_path: string | null;
+}
+export interface SourceRecordView {
+  record: SourceRecordSummary & {
+    file: string;
+    pointer: string;
+    reasons: string[];
+    preserved_fields: string[];
+    direct: unknown;
+  };
+  file: SourceFileMeta;
+  download: SourceFileMeta | null;
+  content: string;
+  content_bytes: number;
+  truncated: boolean;
+  component: unknown;
+  readable: { field: string; text: string }[];
+  history_entries: number | null;
+  authority: string;
+}
+export interface MigrationPreview {
+  status: "ready_to_apply" | "already_applied";
+  artifact_sha256: string;
+  workspace_id: string;
+  prepared_baseline_cursor: number;
+  expected_cursor: number;
+  workspace_changed_since_preparation: boolean;
+  bundle: { id: string; source: string; captured_at: string; manifest_sha256: string };
+  counts: Record<string, any>;
+  summary: Record<string, any>;
 }
 export interface Snapshot {
   review_ready_runs?: string[];
@@ -333,6 +415,7 @@ export interface Snapshot {
   release_workflows: ReleaseWorkflowConfig[];
   issue_links: IssueLink[];
   issues: Issue[];
+  source_bundles?: SourceBundleOverview[];
   cursor: number;
 }
 export interface Project {
@@ -452,4 +535,60 @@ export async function api<T = unknown>(
   }
   pending.delete(key);
   return data;
+}
+
+async function failure(response: Response): Promise<Error> {
+  const value = await response.json().catch(() => ({}));
+  return new Error(value.message || "Direct could not complete this action.");
+}
+/** Retained source file bytes, fetched with the local session. */
+export async function sourceFile(bundleId: string, path: string): Promise<Blob> {
+  if (isTauri()) {
+    const bytes = await invoke<ArrayBuffer>("direct_source_file", {
+      bundleId,
+      path,
+    });
+    return new Blob([bytes], { type: "application/octet-stream" });
+  }
+  const response = await fetch("/api/source-file", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ bundle_id: bundleId, path }),
+  });
+  if (!response.ok) throw await failure(response);
+  // Always an opaque download: never rendered or sniffed as a document.
+  return new Blob([await response.arrayBuffer()], {
+    type: "application/octet-stream",
+  });
+}
+/** Owner-only migration preview (no `expected`) or apply. */
+export async function migration<T>(
+  artifact: ArrayBuffer,
+  expected?: { cursor: number; sha256: string },
+): Promise<T> {
+  if (isTauri()) {
+    const headers: Record<string, string> = expected
+      ? {
+          "expected-cursor": String(expected.cursor),
+          "artifact-sha256": expected.sha256,
+        }
+      : {};
+    return invoke<T>("direct_migration", new Uint8Array(artifact), { headers });
+  }
+  const url = expected
+    ? `/api/migration/apply?expected_cursor=${expected.cursor}&artifact_sha256=${encodeURIComponent(expected.sha256)}`
+    : "/api/migration/preview";
+  const response = await fetch(url, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/octet-stream",
+      Authorization: `Bearer ${token}`,
+    },
+    body: artifact,
+  });
+  if (!response.ok) throw await failure(response);
+  return response.json();
 }

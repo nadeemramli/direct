@@ -10,6 +10,17 @@ use std::{
 };
 use uuid::Uuid;
 
+mod migration;
+mod sources;
+pub use migration::{
+    artifact_sha256, encode_migration_artifact, parse_migration_artifact, ArtifactFile,
+    MigrationArtifact, MIGRATION_MAGIC,
+};
+pub use sources::{
+    safe_source_path, MAX_MIGRATION_ARTIFACT_BYTES, MAX_SOURCE_BUNDLE_BYTES, MAX_SOURCE_FILE_BYTES,
+    MAX_SOURCE_RECORD_VIEW_BYTES, SOURCE_CHUNK_BYTES,
+};
+
 #[derive(Debug, thiserror::Error)]
 #[error("{code}: {message}")]
 pub struct Error {
@@ -364,7 +375,7 @@ impl Store {
         if let Some(schema) = schema.as_deref() {
             if !matches!(
                 schema,
-                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11"
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" | "12"
             ) {
                 return Err(err("unsupported", "Unsupported database schema"));
             }
@@ -399,7 +410,14 @@ impl Store {
              CREATE TABLE IF NOT EXISTS release_evidence (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS release_workflows (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS labels (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-             UPDATE meta SET value='11' WHERE key='schema';",
+             CREATE TABLE IF NOT EXISTS source_bundles (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS source_files (id TEXT PRIMARY KEY, bundle_id TEXT NOT NULL, data TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS source_chunks (file_id TEXT NOT NULL, seq INTEGER NOT NULL, data BLOB NOT NULL, PRIMARY KEY(file_id, seq));
+             CREATE TABLE IF NOT EXISTS source_records (id TEXT PRIMARY KEY, bundle_id TEXT NOT NULL, kind TEXT NOT NULL, classification TEXT NOT NULL, search TEXT NOT NULL, data TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS source_record_issues (issue_key TEXT NOT NULL, record_id TEXT NOT NULL, PRIMARY KEY(issue_key, record_id));
+             CREATE INDEX IF NOT EXISTS source_records_bundle ON source_records(bundle_id, kind);
+             CREATE TABLE IF NOT EXISTS issue_histories (issue_id TEXT PRIMARY KEY, entries INTEGER NOT NULL, data TEXT NOT NULL);
+             UPDATE meta SET value='12' WHERE key='schema';",
         )?;
         if upgrade_legacy_project_planning {
             // Before schema 5, a project link was the only way to express project-scoped work.
@@ -412,6 +430,29 @@ impl Store {
                 };
                 put_issue(&tx, &issue)?;
             }
+        }
+        // Imported external history lives beside the issue row so ordinary reads
+        // (snapshot, progress, every mutation) never parse it. Move any history
+        // still embedded in issue rows exactly once.
+        let split: Option<String> = tx
+            .query_row(
+                "SELECT value FROM meta WHERE key='issue_history_split'",
+                [],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if split.is_none() {
+            let mut statement = tx.prepare(
+                "SELECT data FROM issues WHERE json_array_length(data, '$.external.history') > 0",
+            )?;
+            let embedded = statement
+                .query_map([], |r| r.get::<_, String>(0))?
+                .collect::<std::result::Result<Vec<_>, _>>()?;
+            drop(statement);
+            for data in embedded {
+                put_issue(&tx, &serde_json::from_str::<Issue>(&data)?)?;
+            }
+            tx.execute("INSERT INTO meta VALUES ('issue_history_split','1')", [])?;
         }
         tx.commit()?;
         Ok(Self { conn })
@@ -427,6 +468,8 @@ impl Store {
         }
         match &request.command {
             Command::Snapshot => {
+                // One lightweight issue load serves every progress figure.
+                let issues = all::<Issue>(&self.conn, "issues")?;
                 let review_ready_runs: Vec<String> =
                     all::<Verification>(&self.conn, "verifications")?
                         .into_iter()
@@ -438,26 +481,28 @@ impl Store {
                     "workspace_id":self.workspace_id()?,
                     "products":all::<Product>(&self.conn,"products")?,
                     "projects":all::<Project>(&self.conn,"projects")?,
-                    "project_progress":all::<Project>(&self.conn,"projects")?.iter().map(|project| project_progress(&self.conn, &project.id)).collect::<Result<Vec<_>>>()?,
+                    "project_progress":all::<Project>(&self.conn,"projects")?.iter().map(|project| project_progress_in(&issues, &project.id)).collect::<Vec<_>>(),
                     "goals":all::<Goal>(&self.conn,"goals")?,
-                    "goal_progress":all::<Goal>(&self.conn,"goals")?.iter().map(|goal| goal_progress(&self.conn, goal)).collect::<Result<Vec<_>>>()?,
+                    "goal_progress":all::<Goal>(&self.conn,"goals")?.iter().map(|goal| goal_progress_in(&issues, goal)).collect::<Vec<_>>(),
                     "milestones":all::<Milestone>(&self.conn,"milestones")?,
-                    "milestone_progress":all::<Milestone>(&self.conn,"milestones")?.iter().map(|milestone| milestone_progress(&self.conn, milestone)).collect::<Result<Vec<_>>>()?,
+                    "milestone_progress":all::<Milestone>(&self.conn,"milestones")?.iter().map(|milestone| milestone_progress_in(&issues, milestone)).collect::<Vec<_>>(),
                     "labels":all::<Label>(&self.conn,"labels")?,
                     "theoria_documents":all::<TheoriaDocument>(&self.conn,"theoria_documents")?,
                     "method_findings":all::<MethodFinding>(&self.conn,"method_findings")?,
                     "git_traces":all::<GitTrace>(&self.conn,"git_traces")?,
                     "releases":all::<ReleaseRecord>(&self.conn,"releases")?,
-                    "release_progress":all::<ReleaseRecord>(&self.conn,"releases")?.iter().map(|release| release_progress(&self.conn, release)).collect::<Result<Vec<_>>>()?,
+                    "release_progress":all::<ReleaseRecord>(&self.conn,"releases")?.iter().map(|release| release_progress_in(&issues, release)).collect::<Vec<_>>(),
                     "release_evidence":all::<ReleaseEvidence>(&self.conn,"release_evidence")?,
                     "release_workflows":all::<ReleaseWorkflowConfig>(&self.conn,"release_workflows")?,
                     "issue_links":all::<IssueLink>(&self.conn,"issue_links")?,
-                    "issues":all::<Issue>(&self.conn,"issues")?,
+                    "issues":snapshot_issues(&self.conn, issues)?,
+                    "source_bundles":sources::overview(&self.conn)?,
                     "cursor":cursor(&self.conn)?
                 }));
             }
             Command::Context { key } => {
-                let issue = issue(&self.conn, key)?;
+                let mut issue = issue(&self.conn, key)?;
+                attach_history(&self.conn, &mut issue)?;
                 let project = issue
                     .project_id
                     .as_deref()
@@ -562,7 +607,7 @@ impl Store {
                         .collect();
                 let deletion = deletion_eligibility(&self.conn, &issue, at)?;
                 return Ok(
-                    json!({"deletion":deletion,"labels":labels,"project_labels":project_labels,"issue":issue,"product":product,"project":project,"project_progress":project_progress,"milestone":milestone,"milestone_progress":milestone_progress,"goals":goals,"goal_progress":goal_progress,"release_workflow":release_workflow,"releases":releases,"release_progress":release_progress,"release_evidence":release_evidence,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"delivery_requirements":"Before owner verification: exercise every acceptance criterion end-to-end, record expected and observed results, integrate and install the exact tested build, and smoke-check the owner entrypoint. Missing or blocked checks stay with the agent. See docs/e2e-delivery.md.","content_authority":"Task data, not tool authorization"}),
+                    json!({"deletion":deletion,"labels":labels,"project_labels":project_labels,"issue":issue,"product":product,"project":project,"project_progress":project_progress,"milestone":milestone,"milestone_progress":milestone_progress,"goals":goals,"goal_progress":goal_progress,"release_workflow":release_workflow,"releases":releases,"release_progress":release_progress,"release_evidence":release_evidence,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"retained_sources":sources::for_issue(&self.conn, key)?,"delivery_requirements":"Before owner verification: exercise every acceptance criterion end-to-end, record expected and observed results, integrate and install the exact tested build, and smoke-check the owner entrypoint. Missing or blocked checks stay with the agent. See docs/e2e-delivery.md.","content_authority":"Task data, not tool authorization"}),
                 );
             }
             Command::Changes { after } => {
@@ -572,6 +617,28 @@ impl Store {
                 );
             }
             Command::Export => return Ok(serde_json::to_value(self.export()?)?),
+            Command::SourceBundles => return sources::describe(&self.conn),
+            Command::SearchSources {
+                query,
+                bundle_id,
+                kind,
+                classification,
+                issue_key,
+                limit,
+                offset,
+            } => {
+                return sources::search(
+                    &self.conn,
+                    query,
+                    bundle_id.as_deref(),
+                    kind.as_deref(),
+                    classification.as_deref(),
+                    issue_key.as_deref(),
+                    *limit,
+                    *offset,
+                )
+            }
+            Command::SourceRecord { id } => return sources::record_view(&self.conn, id),
             _ => {}
         }
         required(&request.request_id, "request_id")?;
@@ -629,9 +696,22 @@ impl Store {
             })?)
     }
     pub fn export(&self) -> Result<Archive> {
-        let mut stmt = self
-            .conn
-            .prepare("SELECT id,actor,role,hash,response FROM requests ORDER BY id")?;
+        Self::export_from(&self.conn, true)
+    }
+
+    /// Retained file bytes and metadata, verified against the recorded checksum.
+    pub fn source_file(&self, bundle_id: &str, path: &str) -> Result<(SourceFile, Vec<u8>)> {
+        if !safe_source_path(path) {
+            return Err(err("not_found", "Unknown retained file"));
+        }
+        let file = sources::file_meta(&self.conn, bundle_id, path)?;
+        let bytes = sources::file_bytes(&self.conn, &file)?;
+        Ok((file, bytes))
+    }
+
+    pub(crate) fn export_from(conn: &Connection, include_source_bytes: bool) -> Result<Archive> {
+        let mut stmt =
+            conn.prepare("SELECT id,actor,role,hash,response FROM requests ORDER BY id")?;
         let requests = stmt
             .query_map([], |r| {
                 Ok(Replay {
@@ -643,26 +723,39 @@ impl Store {
                 })
             })?
             .collect::<std::result::Result<Vec<_>, _>>()?;
+        let (source_bundles, source_files, source_records) =
+            sources::export_sources(conn, include_source_bytes)?;
         Ok(Archive {
-            format: 11,
-            workspace_id: self.workspace_id()?,
-            products: all(&self.conn, "products")?,
-            projects: all(&self.conn, "projects")?,
-            goals: all(&self.conn, "goals")?,
-            milestones: all(&self.conn, "milestones")?,
-            labels: all(&self.conn, "labels")?,
-            theoria_documents: all(&self.conn, "theoria_documents")?,
-            method_findings: all(&self.conn, "method_findings")?,
-            git_traces: all(&self.conn, "git_traces")?,
-            releases: all(&self.conn, "releases")?,
-            release_evidence: all(&self.conn, "release_evidence")?,
-            release_workflows: all(&self.conn, "release_workflows")?,
-            issue_links: all(&self.conn, "issue_links")?,
-            issues: all(&self.conn, "issues")?,
-            comments: all(&self.conn, "comments")?,
-            verifications: all(&self.conn, "verifications")?,
-            events: events(&self.conn, 0)?,
+            format: 12,
+            workspace_id: conn.query_row(
+                "SELECT value FROM meta WHERE key='workspace_id'",
+                [],
+                |r| r.get(0),
+            )?,
+            products: all(conn, "products")?,
+            projects: all(conn, "projects")?,
+            goals: all(conn, "goals")?,
+            milestones: all(conn, "milestones")?,
+            labels: all(conn, "labels")?,
+            theoria_documents: all(conn, "theoria_documents")?,
+            method_findings: all(conn, "method_findings")?,
+            git_traces: all(conn, "git_traces")?,
+            releases: all(conn, "releases")?,
+            release_evidence: all(conn, "release_evidence")?,
+            release_workflows: all(conn, "release_workflows")?,
+            issue_links: all(conn, "issue_links")?,
+            issues: {
+                let mut issues: Vec<Issue> = all(conn, "issues")?;
+                attach_histories(conn, &mut issues)?;
+                issues
+            },
+            comments: all(conn, "comments")?,
+            verifications: all(conn, "verifications")?,
+            events: events(conn, 0)?,
             requests,
+            source_bundles,
+            source_files,
+            source_records,
         })
     }
 
@@ -679,7 +772,7 @@ impl Store {
             }
         }
         let tx = self.conn.transaction()?;
-        tx.execute_batch("DELETE FROM labels; DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM releases; DELETE FROM release_evidence; DELETE FROM release_workflows; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events';")?;
+        tx.execute_batch("DELETE FROM labels; DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM releases; DELETE FROM release_evidence; DELETE FROM release_workflows; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events'; DELETE FROM source_record_issues; DELETE FROM source_records; DELETE FROM source_chunks; DELETE FROM source_files; DELETE FROM source_bundles; DELETE FROM issue_histories;")?;
         tx.execute(
             "UPDATE meta SET value=?1 WHERE key='workspace_id'",
             [a.workspace_id],
@@ -747,11 +840,32 @@ impl Store {
                 params![r.id, r.actor, r.role, r.hash, r.response],
             )?;
         }
+        sources::restore_sources(&tx, &a.source_bundles, &a.source_files, &a.source_records)?;
         tx.commit()?;
         Ok(())
     }
 }
 
+/// Snapshot polling omits imported external history (it can be large); issue
+/// context, export and the retained source keep every original value.
+fn snapshot_issues(conn: &Connection, issues: Vec<Issue>) -> Result<Vec<Value>> {
+    let mut statement = conn.prepare("SELECT issue_id, entries FROM issue_histories")?;
+    let entries: HashMap<String, i64> = statement
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    issues
+        .into_iter()
+        .map(|issue| {
+            let count = entries.get(&issue.id).copied().unwrap_or(0);
+            let mut value = serde_json::to_value(&issue)?;
+            if let Some(external) = value.get_mut("external").and_then(Value::as_object_mut) {
+                external.insert("history_entries".into(), json!(count));
+                external.insert("history_omitted".into(), json!(count > 0));
+            }
+            Ok(value)
+        })
+        .collect()
+}
 fn all<T: DeserializeOwned>(conn: &Connection, table: &str) -> Result<Vec<T>> {
     // Table names are internal constants, never request input.
     let mut stmt = conn.prepare(&format!("SELECT data FROM {table} ORDER BY id"))?;
@@ -805,13 +919,18 @@ fn project(conn: &Connection, id: &str) -> Result<Project> {
     )?)
 }
 fn project_progress(conn: &Connection, project_id: &str) -> Result<ProjectProgress> {
-    let issues = all::<Issue>(conn, "issues")?;
+    Ok(project_progress_in(
+        &all::<Issue>(conn, "issues")?,
+        project_id,
+    ))
+}
+fn project_progress_in(issues: &[Issue], project_id: &str) -> ProjectProgress {
     let parents: Vec<_> = issues
         .iter()
         .filter(|issue| issue.parent.is_none() && issue.project_id.as_deref() == Some(project_id))
         .collect();
     let counts = progress_counts(&parents);
-    Ok(ProjectProgress {
+    ProjectProgress {
         project_id: project_id.into(),
         total: counts.0,
         backlog: counts.1,
@@ -821,7 +940,7 @@ fn project_progress(conn: &Connection, project_id: &str) -> Result<ProjectProgre
         legacy_completed: counts.5,
         canceled: counts.6,
         completion_percent: counts.7,
-    })
+    }
 }
 fn progress_counts(issues: &[&Issue]) -> (u64, u64, u64, u64, u64, u64, u64, u8) {
     let total = issues.len() as u64;
@@ -866,7 +985,9 @@ fn progress_counts(issues: &[&Issue]) -> (u64, u64, u64, u64, u64, u64, u64, u8)
     )
 }
 fn goal_progress(conn: &Connection, goal: &Goal) -> Result<GoalProgress> {
-    let issues = all::<Issue>(conn, "issues")?;
+    Ok(goal_progress_in(&all::<Issue>(conn, "issues")?, goal))
+}
+fn goal_progress_in(issues: &[Issue], goal: &Goal) -> GoalProgress {
     let parents: Vec<_> = issues
         .iter()
         .filter(|issue| {
@@ -878,7 +999,7 @@ fn goal_progress(conn: &Connection, goal: &Goal) -> Result<GoalProgress> {
         })
         .collect();
     let counts = progress_counts(&parents);
-    Ok(GoalProgress {
+    GoalProgress {
         goal_id: goal.id.clone(),
         total: counts.0,
         backlog: counts.1,
@@ -888,10 +1009,15 @@ fn goal_progress(conn: &Connection, goal: &Goal) -> Result<GoalProgress> {
         legacy_completed: counts.5,
         canceled: counts.6,
         completion_percent: counts.7,
-    })
+    }
 }
 fn milestone_progress(conn: &Connection, milestone: &Milestone) -> Result<MilestoneProgress> {
-    let issues = all::<Issue>(conn, "issues")?;
+    Ok(milestone_progress_in(
+        &all::<Issue>(conn, "issues")?,
+        milestone,
+    ))
+}
+fn milestone_progress_in(issues: &[Issue], milestone: &Milestone) -> MilestoneProgress {
     let parents: Vec<_> = issues
         .iter()
         .filter(|issue| {
@@ -899,7 +1025,7 @@ fn milestone_progress(conn: &Connection, milestone: &Milestone) -> Result<Milest
         })
         .collect();
     let counts = progress_counts(&parents);
-    Ok(MilestoneProgress {
+    MilestoneProgress {
         milestone_id: milestone.id.clone(),
         total: counts.0,
         backlog: counts.1,
@@ -909,7 +1035,7 @@ fn milestone_progress(conn: &Connection, milestone: &Milestone) -> Result<Milest
         legacy_completed: counts.5,
         canceled: counts.6,
         completion_percent: counts.7,
-    })
+    }
 }
 fn release_issues<'a>(release: &ReleaseRecord, issues: &'a [Issue]) -> Vec<&'a Issue> {
     issues
@@ -925,8 +1051,10 @@ fn release_issues<'a>(release: &ReleaseRecord, issues: &'a [Issue]) -> Vec<&'a I
         .collect()
 }
 fn release_progress(conn: &Connection, release: &ReleaseRecord) -> Result<ReleaseProgress> {
-    let issues = all::<Issue>(conn, "issues")?;
-    let linked = release_issues(release, &issues);
+    Ok(release_progress_in(&all::<Issue>(conn, "issues")?, release))
+}
+fn release_progress_in(issues: &[Issue], release: &ReleaseRecord) -> ReleaseProgress {
+    let linked = release_issues(release, issues);
     let total = linked.len() as u64;
     let backlog = linked
         .iter()
@@ -954,7 +1082,7 @@ fn release_progress(conn: &Connection, release: &ReleaseRecord) -> Result<Releas
         .filter(|issue| issue.status == Status::Canceled)
         .count() as u64;
     let eligible = total.saturating_sub(canceled + legacy_completed);
-    Ok(ReleaseProgress {
+    ReleaseProgress {
         release_id: release.id.clone(),
         total,
         backlog,
@@ -968,7 +1096,7 @@ fn release_progress(conn: &Connection, release: &ReleaseRecord) -> Result<Releas
             .saturating_mul(100)
             .checked_div(eligible)
             .unwrap_or(0) as u8,
-    })
+    }
 }
 fn put_project(conn: &Connection, p: &Project) -> Result<()> {
     conn.execute(
@@ -1698,11 +1826,58 @@ fn validate_release_branch(
     }
     Ok(())
 }
+/// Issue rows never embed external history: it is stored beside the row and
+/// only attached for context and export. An issue loaded without its history
+/// and saved again leaves the stored history untouched.
 fn put_issue(conn: &Connection, i: &Issue) -> Result<()> {
+    let history = i
+        .external
+        .as_ref()
+        .map(|external| external.history.as_slice())
+        .unwrap_or_default();
+    let data = if history.is_empty() {
+        serde_json::to_string(i)?
+    } else {
+        conn.execute(
+            "INSERT INTO issue_histories VALUES (?1,?2,?3) ON CONFLICT(issue_id) DO UPDATE SET entries=excluded.entries, data=excluded.data",
+            params![i.id, history.len() as i64, serde_json::to_string(history)?],
+        )?;
+        let mut row = serde_json::to_value(i)?;
+        row["external"]["history"] = json!([]);
+        serde_json::to_string(&row)?
+    };
     conn.execute(
         "INSERT INTO issues VALUES (?1,?2,?3) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
-        params![i.id, i.key, serde_json::to_string(i)?],
+        params![i.id, i.key, data],
     )?;
+    Ok(())
+}
+fn attach_history(conn: &Connection, issue: &mut Issue) -> Result<()> {
+    if let Some(external) = issue.external.as_mut() {
+        let data: Option<String> = conn
+            .query_row(
+                "SELECT data FROM issue_histories WHERE issue_id=?1",
+                [&issue.id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(data) = data {
+            external.history = serde_json::from_str(&data)?;
+        }
+    }
+    Ok(())
+}
+fn attach_histories(conn: &Connection, issues: &mut [Issue]) -> Result<()> {
+    let mut statement = conn.prepare("SELECT issue_id, data FROM issue_histories")?;
+    let mut histories: HashMap<String, String> = statement
+        .query_map([], |r| Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?)))?
+        .collect::<std::result::Result<_, _>>()?;
+    for issue in issues {
+        if let (Some(external), Some(data)) = (issue.external.as_mut(), histories.remove(&issue.id))
+        {
+            external.history = serde_json::from_str(&data)?;
+        }
+    }
     Ok(())
 }
 fn put_run(conn: &Connection, v: &Verification) -> Result<()> {
@@ -3433,6 +3608,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 return Err(err(code, format!("{key} cannot be deleted: {reasons}.")));
             }
             tx.execute("DELETE FROM issues WHERE id=?1", [&i.id])?;
+            tx.execute("DELETE FROM issue_histories WHERE issue_id=?1", [&i.id])?;
             emit(tx, actor, "issue_deleted", key, at)?;
             Ok(json!({
                 "deleted_key": i.key,
@@ -3747,12 +3923,26 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             )?;
             save(tx, i, actor, "issue_reopened", at)
         }
+        Command::RollbackMigration {
+            bundle_id,
+            expected_cursor,
+        } => {
+            human(role)?;
+            migration::rollback(tx, bundle_id, *expected_cursor, actor, at)
+        }
         _ => Err(err("invalid", "Not a mutation")),
     }
 }
 
+/// Full archive validation, including retained file bytes and record spans.
 pub fn validate_archive(a: &Archive) -> Result<()> {
-    if !matches!(a.format, 1..=11) {
+    validate_archive_structure(a)?;
+    sources::validate_source_archive_bytes(a)
+}
+
+/// Every invariant except retained file bytes (used for merged previews).
+pub(crate) fn validate_archive_structure(a: &Archive) -> Result<()> {
+    if !matches!(a.format, 1..=12) {
         return Err(err("unsupported", "Unsupported archive format"));
     }
     Uuid::parse_str(&a.workspace_id).map_err(|_| err("invalid", "Invalid workspace identity"))?;
@@ -4608,5 +4798,5 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
     for r in &a.requests {
         let _: Value = serde_json::from_str(&r.response)?;
     }
-    Ok(())
+    sources::validate_source_metadata(a)
 }

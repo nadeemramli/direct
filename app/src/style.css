@@ -1754,3 +1754,36 @@ dialog.modal {
 dialog::backdrop {
   background: #080c1090;
 }
+
+/* Imported sources */
+.migration-panel {
+  border: 1px solid var(--line, #d8dce3);
+  border-radius: 8px;
+  padding: 8px 12px;
+  margin: 0 0 12px;
+}
+.migration-panel summary { cursor: pointer; font-weight: 600; }
+.migration-panel input[type="file"] { margin: 6px 0; max-width: 100%; }
+.migration-preview dl { display: grid; grid-template-columns: max-content 1fr; gap: 2px 12px; margin: 8px 0; }
+.migration-preview dt { color: var(--muted, #5b6270); }
+.migration-result { font-weight: 600; overflow-wrap: anywhere; }
+.bundle-card { border: 1px solid var(--line, #d8dce3); border-radius: 8px; padding: 10px 12px; margin: 0 0 12px; display: grid; gap: 6px; }
+.bundle-card header { display: grid; }
+.gates { display: flex; flex-wrap: wrap; gap: 4px; }
+.gate { font-size: 12px; padding: 2px 8px; border-radius: 999px; border: 1px solid currentColor; opacity: 0.9; }
+.gate.verified, .gate.available_in_direct, .gate.applied { color: #1a7f37; }
+.gate.unverified, .gate.pending, .gate.prepared, .gate.not_applied { color: #9a6700; }
+.gate.incomplete { color: #cf222e; }
+.source-results { display: grid; gap: 2px; overflow: auto; }
+.source-row { display: grid; grid-template-columns: 110px 1fr auto; gap: 8px; align-items: start; text-align: left; padding: 6px 8px; border-radius: 6px; background: none; border: 0; cursor: pointer; }
+.source-row.selected, .source-row:hover { background: color-mix(in srgb, currentColor 8%, transparent); }
+.source-row small { display: block; opacity: 0.75; }
+.source-text { min-width: 0; overflow-wrap: anywhere; }
+.source-kind { font-size: 12px; opacity: 0.75; text-transform: capitalize; }
+.access { font-size: 12px; }
+.access.missing { color: #cf222e; }
+.access.retained { color: #0969da; }
+.source-reasons { margin: 4px 0 8px 18px; padding: 0; }
+.source-files { display: grid; gap: 4px; justify-items: start; }
+.source-files small { overflow-wrap: anywhere; }
+.source-text-block, .source-original pre { max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }

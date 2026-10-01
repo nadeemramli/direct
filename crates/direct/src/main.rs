@@ -220,6 +220,21 @@ enum Cli {
         #[arg(long)]
         output: PathBuf,
     },
+    /// Prepare a migration artifact that merges a verified Linear capture into an EXISTING
+    /// workspace, bound to a fresh export of that workspace, and rehearse it offline.
+    LinearMigrationPrepare {
+        #[arg(long)]
+        source: PathBuf,
+        /// A fresh export (`direct export` or backup archive) of the workspace to merge into.
+        #[arg(long)]
+        target_export: PathBuf,
+        #[arg(long)]
+        output: PathBuf,
+        /// Import a Linear team into an existing Direct product: LINEAR_TEAM_ID=DIRECT_PRODUCT_ID.
+        /// Issue keys are renumbered (and reported) only if the product's key space is taken.
+        #[arg(long = "map-team")]
+        map_team: Vec<String>,
+    },
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -341,8 +356,8 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             };
         }
     }
-    if expected.format < 11 {
-        expected.format = 11;
+    if expected.format < 12 {
+        expected.format = 12;
     }
     fs::create_dir(restore_dir)
         .context("Create the recovery workspace beneath an existing parent")?;
@@ -403,12 +418,16 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             "theoria_documents": archive.theoria_documents.len(),
             "theoria_findings": archive.method_findings.len(),
             "events": archive.events.len(),
-            "request_replays": archive.requests.len()
+            "request_replays": archive.requests.len(),
+            "source_bundles": archive.source_bundles.len(),
+            "source_files": archive.source_files.len(),
+            "source_records": archive.source_records.len()
         },
-            "attachments": {
-                "supported": false,
-                "count": 0,
-                "note": "Archive format 11 has no attachment record type"
+        "retained_sources": {
+            "bundles": archive.source_bundles.len(),
+            "files": archive.source_files.len(),
+            "bytes": archive.source_files.iter().map(|file| file.bytes).sum::<u64>(),
+            "note": "Retained file bytes and record spans were verified during archive validation"
         }
     }))
 }
@@ -634,6 +653,22 @@ fn run() -> Result<()> {
                 }
                 _ => linear_import::whole_workspace(&source, &output, Some(&dir))?,
             };
+            println!("{}", serde_json::to_string_pretty(&report)?);
+            Ok(())
+        }
+        Cli::LinearMigrationPrepare {
+            source,
+            target_export,
+            output,
+            map_team,
+        } => {
+            let report = linear_import::prepare_migration(
+                &source,
+                &target_export,
+                &output,
+                &map_team,
+                Some(&dir),
+            )?;
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }
@@ -1053,7 +1088,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(report["source_format"], format);
-            assert_eq!(report["restored_format"], 11);
+            assert_eq!(report["restored_format"], 12);
             assert_eq!(report["records"]["labels"], 0);
             assert_eq!(report["compatibility_upgrade_applied"], true);
             assert_eq!(report["semantic_archive_match"], true);
