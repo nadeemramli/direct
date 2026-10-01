@@ -1,6 +1,25 @@
 <script lang="ts">
-  import { onMount } from "svelte";
+  import { onMount, tick } from "svelte";
+  import type { Snippet } from "svelte";
   import { api, connect, migration, sourceFile } from "./api";
+  import {
+    BIG_STEP,
+    LEFT_MIN,
+    LEFT_RAIL,
+    RIGHT_MIN,
+    STEP,
+    captureAnchor,
+    clamp,
+    defaultLeftWidth,
+    defaultRightWidth,
+    leftMaxWidth,
+    listMinWidth,
+    loadLayout,
+    restoreAnchor,
+    rightMaxWidth,
+    saveLayout,
+  } from "./layout";
+  import type { ScrollAnchor, Section } from "./layout";
   import type {
     Snapshot,
     Issue,
@@ -235,6 +254,119 @@
   let clock = $state(Date.now() / 1000);
   let activeRunId = "";
   let selectedGuidanceId = $state("");
+  // Pane layout (DIR-53, DIR-37): stored per device, clamped to the window.
+  let layout = $state(loadLayout());
+  let viewport = $state(typeof window === "undefined" ? 1366 : window.innerWidth);
+  let leftMax = $derived(leftMaxWidth(viewport));
+  let leftPreferred = $derived(
+    clamp(layout.leftWidth ?? defaultLeftWidth(viewport), LEFT_MIN, leftMax),
+  );
+  let leftWidth = $derived(layout.leftCollapsed ? LEFT_RAIL : leftPreferred);
+  let listMin = $derived(listMinWidth(viewport));
+  let rightMax = $derived(rightMaxWidth(viewport, leftWidth));
+  let rightWidth = $derived(
+    layout.rightExpanded
+      ? rightMax
+      : clamp(
+          layout.rightWidth ?? defaultRightWidth(viewport, view === "theoria"),
+          RIGHT_MIN,
+          rightMax,
+        ),
+  );
+  $effect(() => saveLayout(layout));
+  let resizing = $state<null | {
+    pane: "left" | "right";
+    pointer: number;
+    startX: number;
+    startWidth: number;
+  }>(null);
+  function setPaneWidth(pane: "left" | "right", width: number) {
+    if (pane === "left") {
+      layout.leftWidth = clamp(width, LEFT_MIN, leftMax);
+      layout.leftCollapsed = false;
+    } else {
+      layout.rightWidth = clamp(width, RIGHT_MIN, rightMax);
+      layout.rightExpanded = false;
+    }
+  }
+  function startResize(pane: "left" | "right", event: PointerEvent) {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    (event.currentTarget as HTMLElement).setPointerCapture(event.pointerId);
+    resizing = {
+      pane,
+      pointer: event.pointerId,
+      startX: event.clientX,
+      startWidth: pane === "left" ? leftWidth : rightWidth,
+    };
+  }
+  function moveResize(event: PointerEvent) {
+    if (!resizing || event.pointerId !== resizing.pointer) return;
+    const delta = event.clientX - resizing.startX;
+    setPaneWidth(
+      resizing.pane,
+      resizing.pane === "left"
+        ? resizing.startWidth + delta
+        : resizing.startWidth - delta,
+    );
+  }
+  function endResize(event: PointerEvent) {
+    if (resizing && event.pointerId === resizing.pointer) resizing = null;
+  }
+  function resizeKey(pane: "left" | "right", event: KeyboardEvent) {
+    const current = pane === "left" ? leftWidth : rightWidth;
+    const step = event.shiftKey ? BIG_STEP : STEP;
+    // The detail pane grows to the left, so its arrows are mirrored.
+    const grow = pane === "left" ? "ArrowRight" : "ArrowLeft";
+    const shrink = pane === "left" ? "ArrowLeft" : "ArrowRight";
+    if (event.key === grow) setPaneWidth(pane, current + step);
+    else if (event.key === shrink) setPaneWidth(pane, current - step);
+    else if (event.key === "Home") setPaneWidth(pane, pane === "left" ? LEFT_MIN : RIGHT_MIN);
+    else if (event.key === "End") setPaneWidth(pane, pane === "left" ? leftMax : rightMax);
+    else if (event.key === "Enter") {
+      if (pane === "left") toggleSidebar();
+      else toggleDetailExpanded();
+    } else return;
+    event.preventDefault();
+  }
+  function resetPane(pane: "left" | "right") {
+    if (pane === "left") {
+      layout.leftWidth = null;
+      layout.leftCollapsed = false;
+    } else {
+      layout.rightWidth = null;
+      layout.rightExpanded = false;
+    }
+  }
+  function toggleSidebar() {
+    layout.leftCollapsed = !layout.leftCollapsed;
+  }
+  function toggleDetailExpanded() {
+    layout.rightExpanded = !layout.rightExpanded;
+  }
+  function sectionOpen(section: Section) {
+    return layout.leftCollapsed || !layout.collapsed[section];
+  }
+  function toggleSection(section: Section) {
+    layout.collapsed[section] = !layout.collapsed[section];
+  }
+  // Return point for guidance opened from an issue (DIR-40).
+  let returnTo = $state<null | {
+    key: string;
+    view: string;
+    product: string;
+    projectFilter: string;
+    labelFilter: string;
+    search: string;
+    listMode: "flat" | "project";
+    sortMode: "updated" | "key";
+    tab: string;
+    list: ScrollAnchor;
+    rowVisible: boolean;
+    detail: ScrollAnchor;
+  }>(null);
+  let listPane = $state<HTMLElement>();
+  let detailBody = $state<HTMLElement>();
   let guidanceDocumentId = $state("");
   let guidanceVersion = $state("");
   let relationTarget = $state("");
@@ -586,12 +718,9 @@
   async function refresh() {
     const snapshot = await api<Snapshot>({ op: "snapshot" });
     data = snapshot;
-    if (
-      !selectedGuidanceId ||
-      !snapshot.theoria_documents.some(
-        (document) => document.id === selectedGuidanceId,
-      )
-    )
+    // A guidance ID that is no longer cached stays selected and is shown as
+    // missing rather than silently replaced by an unrelated document.
+    if (!selectedGuidanceId)
       selectedGuidanceId = snapshot.theoria_documents[0]?.id || "";
     connected = true;
     if (selected) await loadContext();
@@ -609,6 +738,64 @@
       error = String(e);
     }
   }
+  function openGuidance(documentId: string) {
+    if (current)
+      returnTo = {
+        key: current.key,
+        view,
+        product,
+        projectFilter,
+        labelFilter,
+        search,
+        listMode,
+        sortMode,
+        tab,
+        list: captureAnchor(listPane),
+        rowVisible: rowInView(),
+        detail: captureAnchor(detailBody),
+      };
+    selectedGuidanceId = documentId;
+    selected = "";
+    context = null;
+    view = "theoria";
+  }
+  async function returnFromGuidance() {
+    const point = returnTo;
+    if (!point) return;
+    returnTo = null;
+    view = point.view;
+    product = point.product;
+    projectFilter = point.projectFilter;
+    labelFilter = point.labelFilter;
+    search = point.search;
+    listMode = point.listMode;
+    sortMode = point.sortMode;
+    if (!data.issues.some((issue) => issue.key === point.key)) {
+      error = `${point.key} is no longer in this workspace.`;
+      return;
+    }
+    await choose(point.key);
+    if (selected !== point.key) return;
+    tab = point.tab;
+    await tick();
+    restoreAnchor(listPane, point.list);
+    // A resize can reflow the list; keep the issue in sight if it was.
+    if (point.rowVisible && !rowInView())
+      selectedRow()?.scrollIntoView({ block: "nearest" });
+    restoreAnchor(detailBody, point.detail);
+  }
+  function selectedRow() {
+    return listPane?.querySelector<HTMLElement>(".issue-row.selected");
+  }
+  function rowInView() {
+    const row = selectedRow()?.getBoundingClientRect();
+    const pane = listPane?.getBoundingClientRect();
+    return !!row && !!pane && row.top >= pane.top && row.bottom <= pane.bottom;
+  }
+  $effect(() => {
+    // The return point belongs to this one trip into Theoria.
+    if (view !== "theoria" && returnTo) returnTo = null;
+  });
   async function act(command: Record<string, unknown>) {
     if (busy) return;
     busy = true;
@@ -1365,6 +1552,17 @@
     let timer: ReturnType<typeof setTimeout>;
     function shortcut(e: KeyboardEvent) {
       if (
+        e.altKey &&
+        e.key === "ArrowLeft" &&
+        returnTo &&
+        view === "theoria" &&
+        !modal
+      ) {
+        e.preventDefault();
+        returnFromGuidance();
+        return;
+      }
+      if (
         e.key.toLowerCase() === "n" &&
         !e.ctrlKey &&
         !e.metaKey &&
@@ -1380,6 +1578,8 @@
       }
     }
     window.addEventListener("keydown", shortcut);
+    const measure = () => (viewport = window.innerWidth);
+    window.addEventListener("resize", measure);
     async function poll() {
       if (stopped) return;
       clock = Date.now() / 1000;
@@ -1416,6 +1616,7 @@
       stopped = true;
       clearTimeout(timer);
       window.removeEventListener("keydown", shortcut);
+      window.removeEventListener("resize", measure);
     };
   });
 </script>
@@ -1427,7 +1628,7 @@
         class="label-chip"
         title={label.description || label.name}
         style={label.color ? `--label-color: ${label.color}` : ""}
-        ><i></i>{label.name}{#if remove}<button
+        ><i></i><span class="label-name">{label.name}</span>{#if remove}<button
             type="button"
             aria-label={`Remove label ${label.name}`}
             disabled={busy || !connected}
@@ -1488,111 +1689,160 @@
   >
 {/snippet}
 
+{#snippet addProductButton()}
+  <button
+    class="icon-button"
+    aria-label="Add product"
+    onclick={() => (modal = "product")}
+    disabled={!connected}>＋</button
+  >
+{/snippet}
+
+{#snippet sectionToggle(section: Section, name: string, extra?: Snippet)}
+  <div class="nav-label section-row" class:products-label={section !== "praxis"}>
+    <button
+      class="section-toggle"
+      aria-expanded={!layout.collapsed[section]}
+      onclick={() => toggleSection(section)}
+      ><span class="section-caret" aria-hidden="true"
+        >{layout.collapsed[section] ? "▸" : "▾"}</span
+      >{name}</button
+    >{#if extra}{@render extra()}{/if}
+  </div>
+{/snippet}
+
+{#snippet detailControls()}
+  <button
+    class="icon-button pane-expand"
+    aria-label={layout.rightExpanded ? "Restore detail panel width" : "Expand detail panel"}
+    title={layout.rightExpanded ? "Restore previous width" : "Expand for reading"}
+    onclick={toggleDetailExpanded}>{layout.rightExpanded ? "⇥" : "⇤"}</button
+  >
+{/snippet}
+
 <svelte:head><title>Direct · {title}</title></svelte:head>
 
-<div class="shell">
-  <aside class="sidebar">
-    <a class="brand" href="/" onclick={(e) => e.preventDefault()}
-      ><span class="brand-mark">↗</span> Direct
-      <span class="version">LOCAL</span></a
-    >
-    <div class="workspace-label">
-      <span class="avatar">Y</span>
-      <div>Your workspace<small>Human + agents</small></div>
-      <span class="tiny">⌄</span>
-    </div>
-    <button class="compose" onclick={newIssue} disabled={!connected}
-      ><span>＋</span> New issue <kbd>N</kbd></button
-    >
-    <div class="nav-label">PRAXIS</div>
-    <nav aria-label="Praxis">
-      <button
-        class:active={view === "all" && product === "all"}
-        onclick={() => {
-          view = "all";
-          product = "all";
-        }}><span>▤</span> All work <small>{parents.length}</small></button
-      >
-      <button
-        class:active={view === "needs" && product === "all"}
-        onclick={() => {
-          view = "needs";
-          product = "all";
-        }}
-        ><span>◈</span> Needs me
-        <small class:highlight={attention > 0}>{attention}</small></button
-      >
-      <button
-        class:active={view === "backlog" && product === "all"}
-        onclick={() => {
-          view = "backlog";
-          product = "all";
-        }}
-        ><span>▧</span> Inbox
-        <small>{parents.filter((i) => i.status === "backlog").length}</small
-        ></button
-      >
-      <button
-        class:active={view === "active" && product === "all"}
-        onclick={() => {
-          view = "active";
-          product = "all";
-        }}><span>◐</span> Ready & doing</button
-      >
-      <button
-        class:active={view === "done" && product === "all"}
-        onclick={() => {
-          view = "done";
-          product = "all";
-        }}><span>✓</span> Completed</button
-      >
-    </nav>
-    <div class="nav-label products-label">THEORIA</div>
-    <nav aria-label="Theoria">
-      <button
-        class:active={view === "theoria"}
-        onclick={() => {
-          view = "theoria";
-          product = "all";
-          selected = "";
-          context = null;
-          if (!selectedGuidanceId)
-            selectedGuidanceId = data.theoria_documents[0]?.id || "";
-        }}><span>◫</span> Guidance & findings <small>{data.method_findings.length}</small
-        ></button
-      >
-    </nav>
-    <div class="nav-label products-label">SOURCES</div>
-    <nav aria-label="Sources">
-      <button
-        class:active={view === "sources"}
-        onclick={() => openSources()}
-        ><span>⧉</span> Imported sources
-        <small>{data.source_bundles?.length || 0}</small></button
-      >
-    </nav>
-    <div class="nav-label products-label">
-      PRODUCTS <button
-        class="icon-button"
-        aria-label="Add product"
-        onclick={() => (modal = "product")}
-        disabled={!connected}>＋</button
+<div class="shell" class:resizing={!!resizing}>
+  <aside
+    class="sidebar"
+    class:collapsed={layout.leftCollapsed}
+    style:width={`${leftWidth}px`}
+    aria-label="Sidebar"
+  >
+    <div class="sidebar-top">
+      <div class="brand-row">
+        <a class="brand" href="/" onclick={(e) => e.preventDefault()}
+          ><span class="brand-mark">↗</span> Direct
+          <span class="version">LOCAL</span></a
+        ><button
+          class="icon-button rail-toggle"
+          aria-label={layout.leftCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          title={layout.leftCollapsed ? "Expand sidebar" : "Collapse sidebar"}
+          onclick={toggleSidebar}>{layout.leftCollapsed ? "»" : "«"}</button
+        >
+      </div>
+      <div class="workspace-label">
+        <span class="avatar">Y</span>
+        <div>Your workspace<small>Human + agents</small></div>
+        <span class="tiny">⌄</span>
+      </div>
+      <button class="compose" title="New issue (N)" onclick={newIssue} disabled={!connected}
+        ><span>＋</span> New issue <kbd>N</kbd></button
       >
     </div>
-    <nav aria-label="Products">
-      {#each data.products as p}<button
-          class:active={product === p.id}
+    <div class="sidebar-scroll">
+      {@render sectionToggle("praxis", "PRAXIS")}
+      {#if sectionOpen("praxis")}<nav aria-label="Praxis">
+        <button
+          title="All work"
+          class:active={view === "all" && product === "all"}
           onclick={() => {
-            product = p.id;
             view = "all";
+            product = "all";
+          }}><span>▤</span> All work <small>{parents.length}</small></button
+        >
+        <button
+          title="Needs me"
+          class:active={view === "needs" && product === "all"}
+          onclick={() => {
+            view = "needs";
+            product = "all";
           }}
-          ><span class="product-icon">{p.key.slice(0, 1)}</span>{p.name}<small
-            >{parents.filter((i) => i.product_id === p.id).length}</small
+          ><span>◈</span> Needs me
+          <small class:highlight={attention > 0}>{attention}</small></button
+        >
+        <button
+          title="Inbox"
+          class:active={view === "backlog" && product === "all"}
+          onclick={() => {
+            view = "backlog";
+            product = "all";
+          }}
+          ><span>▧</span> Inbox
+          <small>{parents.filter((i) => i.status === "backlog").length}</small
           ></button
-        >{/each}
-    </nav>
+        >
+        <button
+          title="Ready & doing"
+          class:active={view === "active" && product === "all"}
+          onclick={() => {
+            view = "active";
+            product = "all";
+          }}><span>◐</span> Ready & doing</button
+        >
+        <button
+          title="Completed"
+          class:active={view === "done" && product === "all"}
+          onclick={() => {
+            view = "done";
+            product = "all";
+          }}><span>✓</span> Completed</button
+        >
+      </nav>{/if}
+      {@render sectionToggle("theoria", "THEORIA")}
+      {#if sectionOpen("theoria")}<nav aria-label="Theoria">
+        <button
+          title="Guidance & findings"
+          class:active={view === "theoria"}
+          onclick={() => {
+            returnTo = null;
+            view = "theoria";
+            product = "all";
+            selected = "";
+            context = null;
+            if (!selectedGuidanceId)
+              selectedGuidanceId = data.theoria_documents[0]?.id || "";
+          }}><span>◫</span> Guidance & findings <small>{data.method_findings.length}</small
+          ></button
+        >
+      </nav>{/if}
+      {@render sectionToggle("sources", "SOURCES")}
+      {#if sectionOpen("sources")}<nav aria-label="Sources">
+        <button
+          title="Imported sources"
+          class:active={view === "sources"}
+          onclick={() => openSources()}
+          ><span>⧉</span> Imported sources
+          <small>{data.source_bundles?.length || 0}</small></button
+        >
+      </nav>{/if}
+      {@render sectionToggle("products", "PRODUCTS", addProductButton)}
+      {#if sectionOpen("products")}<nav aria-label="Products">
+        {#each data.products as p}<button
+            title={p.name}
+            class:active={product === p.id}
+            onclick={() => {
+              product = p.id;
+              view = "all";
+            }}
+            ><span class="product-icon">{p.key.slice(0, 1)}</span><span class="nav-text"
+              >{p.name}</span
+            ><small>{parents.filter((i) => i.product_id === p.id).length}</small></button
+          >{/each}
+      </nav>{/if}
+    </div>
     <div class="sidebar-bottom">
-      <div class="local-note">
+      <div class="local-note" title={connected ? "Connected locally" : "Service disconnected"}>
         <span class:online={connected} class="connection-dot"></span>
         <div>
           {connected ? "Connected locally" : "Service disconnected"}<small
@@ -1602,12 +1852,31 @@
           >
         </div>
       </div>
-      <button class="backup-button" onclick={exportData} disabled={!connected}
-        >↧ Export workspace</button
+      <button class="backup-button" title="Export workspace" onclick={exportData} disabled={!connected}
+        ><span aria-hidden="true">↧</span> <span class="nav-text">Export workspace</span></button
       >
       <div class="foundation">Direct · Foundation preview</div>
     </div>
   </aside>
+  <!-- A focusable separator with a value is an ARIA window-splitter widget. -->
+  <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+  {#if !layout.leftCollapsed}<div
+      class="pane-resizer left"
+      role="separator"
+      aria-label="Resize sidebar"
+      aria-orientation="vertical"
+      aria-valuemin={LEFT_MIN}
+      aria-valuemax={leftMax}
+      aria-valuenow={leftWidth}
+      tabindex="0"
+      title="Drag to resize · double-click to reset · Enter to collapse"
+      onpointerdown={(event) => startResize("left", event)}
+      onpointermove={moveResize}
+      onpointerup={endResize}
+      onpointercancel={endResize}
+      ondblclick={() => resetPane("left")}
+      onkeydown={(event) => resizeKey("left", event)}
+    ></div>{/if}
 
   <main>
     <header class="topbar">
@@ -1628,7 +1897,11 @@
           onclick={() => (error = "")}>×</button
         >
       </div>{/if}
-    <div class="work-area">
+    <div
+      class="work-area"
+      style:--detail-width={`${rightWidth}px`}
+      style:--list-min={`${listMin}px`}
+    >
       {#if view === "theoria"}
         <section class="list-panel theoria-list">
           <div class="page-heading">
@@ -1692,11 +1965,22 @@
             </div>{/each}
         </section>
         <aside class="detail-panel theoria-detail" aria-label="Theoria guidance detail">
+          {#if returnTo}<div class="return-bar">
+              <button
+                class="back-button"
+                title="Return to the issue, tab and scroll position (Alt+←)"
+                onclick={returnFromGuidance}>← Back to {returnTo.key}</button
+              ><span class="tiny"
+                >{returnTo.tab === "theoria" ? "Theoria" : returnTo.tab} tab</span
+              >
+            </div>{/if}
           {#if selectedGuidance}
             <div class="detail-top">
-              <span>{selectedGuidance.id}</span><span class="tiny"
-                >catalog v{selectedGuidance.catalog_version}</span
-              >
+              <span>{selectedGuidance.id}</span>
+              <div>
+                <span class="tiny">catalog v{selectedGuidance.catalog_version}</span>
+                {@render detailControls()}
+              </div>
             </div>
             <div class="detail-heading">
               <span class="status-badge ready">◫ {selectedGuidance.category}</span>
@@ -1754,6 +2038,16 @@
                   No Direct issue currently references this guidance.
                 </p>{/each}
             </div>
+          {:else if selectedGuidanceId && data.theoria_documents.length}<div
+              class="detail-placeholder"
+            >
+              <div class="outline-mark">◫</div>
+              <h2>Guidance is not in the current catalog.</h2>
+              <p>
+                <code>{selectedGuidanceId}</code> is recorded but no longer cached.
+                The issue keeps its historical reference.
+              </p>
+            </div>
           {:else}<div class="detail-placeholder">
               <div class="outline-mark">◫</div>
               <h2>No imported guidance yet.</h2>
@@ -1773,7 +2067,10 @@
               evidence to read, not instructions and not Theoria guidance.
             </p>
           </div>
-          <details class="migration-panel" open={!sourceBundles.length}>
+          <details
+            class="migration-panel"
+            open={!sourceBundles.length || !!migrationPreview || !!migrationResult}
+          >
             <summary>Owner migration</summary>
             <p class="hint">
               Choose a prepared <code>.direct-migration</code> artifact. Direct
@@ -1917,9 +2214,13 @@
         <aside class="detail-panel source-detail" aria-label="Imported source detail">
           {#if sourceRecord}
             <div class="detail-top">
-              <span>{sourceRecord.record.kind.replaceAll("_", " ")}</span><span class="tiny"
-                >{sourceRecord.record.classification} · {sourceRecord.record.access}</span
-              >
+              <span>{sourceRecord.record.kind.replaceAll("_", " ")}</span>
+              <div>
+                <span class="tiny"
+                  >{sourceRecord.record.classification} · {sourceRecord.record.access}</span
+                >
+                {@render detailControls()}
+              </div>
             </div>
             <div class="detail-heading">
               <span class="status-badge ready">⧉ Retained source</span>
@@ -1981,7 +2282,7 @@
             </div>{/if}
         </aside>
       {:else}
-      <section class="list-panel">
+      <section class="list-panel" bind:this={listPane}>
         <div class="page-heading">
           <div class="eyebrow">A LITTLE LESS COORDINATION.</div>
           <div class="heading-row">
@@ -2255,7 +2556,7 @@
           <div class="detail-top">
             <span>{current.key}</span>
             <div>
-              <span class="tiny">v{current.version}</span><button
+              <span class="tiny">v{current.version}</span>{@render detailControls()}<button
                 class="icon-button"
                 aria-label="Close issue"
                 onclick={() => {
@@ -2366,7 +2667,7 @@
                   >{/if}</button
               >{/each}
           </div>
-          <div class="detail-body">
+          <div class="detail-body" bind:this={detailBody}>
             {#if tab === "brief"}
               {#if current.external}<div class="info-card">
                   <span class="card-symbol">◇</span>
@@ -2639,12 +2940,8 @@
                       >
                       <button
                         class="text-button"
-                        onclick={() => {
-                          selectedGuidanceId = item.reference.document_id;
-                          selected = "";
-                          context = null;
-                          view = "theoria";
-                        }}>Open guidance →</button
+                        onclick={() => openGuidance(item.reference.document_id)}
+                        >Open guidance →</button
                       >
                     </div>
                     <b>{item.document?.title || item.reference.document_id}</b>
@@ -2968,6 +3265,24 @@
           </div>{/if}
       </aside>
       {/if}
+      <!-- svelte-ignore a11y_no_noninteractive_tabindex, a11y_no_noninteractive_element_interactions -->
+      <div
+        class="pane-resizer right"
+        role="separator"
+        aria-label="Resize detail panel"
+        aria-orientation="vertical"
+        aria-valuemin={RIGHT_MIN}
+        aria-valuemax={rightMax}
+        aria-valuenow={rightWidth}
+        tabindex="0"
+        title="Drag to resize · double-click to reset · Enter to expand or restore"
+        onpointerdown={(event) => startResize("right", event)}
+        onpointermove={moveResize}
+        onpointerup={endResize}
+        onpointercancel={endResize}
+        ondblclick={() => resetPane("right")}
+        onkeydown={(event) => resizeKey("right", event)}
+      ></div>
     </div>
   </main>
 </div>

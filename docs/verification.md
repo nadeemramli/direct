@@ -27,6 +27,15 @@ After rebuilding, the browser launch script restarted the service, and the same 
 
 ![Direct foundation interface](screenshots/foundation-preview.png)
 
+## Navigation and layout browser E2E
+
+`scripts/e2e/navigation.browser.mjs` (DIR-53, DIR-37, DIR-40) creates a fresh isolated workspace, seeds 13 products, 32 projects, a long issue and synthetic Theoria guidance (one unavailable) through the running service, then drives the built UI at 1366×768, 1024×640 and 1920×1080: no page overflow, every product and project group reachable, pane resize/collapse/expand with mouse and keyboard, bounds, reload and corrupt/stale stored layout recovery, and issue → guidance → Back restoration of issue, filters, tab and scroll (including after a window resize and for unavailable guidance). Synthetic data only.
+
+```sh
+cargo build -p direct && (cd app && npm run build)
+node scripts/e2e/navigation.browser.mjs target/debug/direct <new-dir> app/dist <evidence-dir>
+```
+
 ## Acceptance still needed
 
 Launch the native desktop on the owner's normal workspace, create a real small task, complete it with an actual coding agent, and verify the delivered change. Test packaging, restore on a second machine, and large imported datasets before replacing Linear. Migration and project planning remain separate milestones.

@@ -18,11 +18,18 @@
   align-items: center;
   gap: 12px;
   color: #9ba6ad;
+  /* Long project/label names must not push the select past a narrow list. */
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
 }
 .project-filter select {
   width: auto;
+  min-width: 0;
   max-width: 280px;
+  flex: 0 1 auto;
   padding: 7px 10px;
+  text-overflow: ellipsis;
 }
 .project-description {
   margin: 0;
@@ -76,6 +83,18 @@
 }
 .project-progress-copy {
   text-align: right;
+}
+/* A list squeezed by a wide detail pane stacks the project summary so the
+   outcome text keeps the full width. */
+@container list-pane (max-width: 520px) {
+  .project-summary {
+    grid-template-columns: minmax(0, 1fr);
+    margin-left: 20px;
+    margin-right: 20px;
+  }
+  .project-progress-copy {
+    text-align: left;
+  }
 }
 .project-progress-copy b {
   color: #8fd1b0;
@@ -275,6 +294,11 @@
   white-space: nowrap;
   max-width: 160px;
 }
+.label-chip .label-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
 .label-chip i {
   width: 7px;
   height: 7px;
@@ -429,10 +453,16 @@ button {
   background: none;
   color: inherit;
 }
+/* Panes are bounded by the window; each pane scrolls on its own (DIR-53). */
 .shell {
   display: flex;
   height: 100vh;
-  min-height: 640px;
+  height: 100dvh;
+  overflow: hidden;
+}
+.shell.resizing {
+  cursor: col-resize;
+  user-select: none;
 }
 .sidebar {
   width: 224px;
@@ -442,6 +472,173 @@ button {
   padding: 27px 15px 16px;
   display: flex;
   flex-direction: column;
+  min-height: 0;
+  overflow: hidden;
+}
+.sidebar-top {
+  flex-shrink: 0;
+}
+.brand-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.brand-row .brand {
+  flex: 1;
+  min-width: 0;
+}
+.rail-toggle {
+  font-size: 15px;
+  padding: 4px 6px;
+  border-radius: 5px;
+}
+.rail-toggle:hover,
+.pane-expand:hover {
+  background: #1f2427;
+  color: #d6e4dc;
+}
+.sidebar-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  margin: 0 -8px;
+  padding: 0 8px 12px;
+  scrollbar-width: thin;
+}
+.section-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+}
+.section-toggle {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  padding: 2px 0;
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+}
+.section-toggle:hover {
+  color: #c4ccd0;
+}
+.section-caret {
+  font-size: 9px;
+  width: 9px;
+}
+nav button > .nav-text {
+  width: auto;
+  flex: 1;
+  min-width: 0;
+  font-size: inherit;
+  color: inherit;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+nav button.active > .nav-text {
+  color: inherit;
+}
+/* Slack-like resize handles: a wide hit area over the pane border. */
+.pane-resizer {
+  flex: 0 0 8px;
+  margin: 0 -4px;
+  position: relative;
+  z-index: 3;
+  cursor: col-resize;
+  touch-action: none;
+}
+.pane-resizer::after {
+  content: "";
+  position: absolute;
+  inset: 0 3px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 0.12s ease;
+}
+.pane-resizer:hover::after,
+.pane-resizer:focus-visible::after,
+.shell.resizing .pane-resizer::after {
+  background: #6f9e86;
+}
+.pane-resizer:focus-visible {
+  outline: none;
+}
+.pane-resizer.right {
+  order: 1;
+}
+/* Collapsed sidebar: an icon rail that keeps every destination reachable. */
+.sidebar.collapsed {
+  padding: 18px 6px 12px;
+}
+.sidebar.collapsed .brand-row {
+  flex-direction: column;
+  gap: 10px;
+}
+.sidebar.collapsed .brand {
+  font-size: 0;
+  padding: 0;
+  justify-content: center;
+}
+.sidebar.collapsed .brand .version,
+.sidebar.collapsed .workspace-label > div,
+.sidebar.collapsed .workspace-label > .tiny,
+.sidebar.collapsed .compose kbd,
+.sidebar.collapsed .nav-label,
+.sidebar.collapsed nav small,
+.sidebar.collapsed .local-note > div,
+.sidebar.collapsed .foundation {
+  display: none;
+}
+.sidebar.collapsed .workspace-label {
+  justify-content: center;
+  padding: 18px 0 14px;
+}
+.sidebar.collapsed .compose {
+  font-size: 0;
+  justify-content: center;
+  padding: 8px 0;
+  margin-bottom: 14px;
+}
+.sidebar.collapsed nav {
+  border-top: 1px solid #24292c;
+  padding-top: 8px;
+  margin-top: 8px;
+}
+.sidebar.collapsed nav button,
+.sidebar.collapsed .backup-button {
+  /* Contains the visually hidden label inside the scrolling rail. */
+  position: relative;
+}
+.sidebar.collapsed nav button {
+  font-size: 0;
+  gap: 0;
+  justify-content: center;
+  padding: 9px 0;
+}
+.sidebar.collapsed nav button > .nav-text,
+.sidebar.collapsed .backup-button > .nav-text {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.sidebar.collapsed .product-icon {
+  width: 20px !important;
+}
+.sidebar.collapsed .local-note {
+  justify-content: center;
+  padding: 10px 0;
+}
+.sidebar.collapsed .backup-button {
+  width: 100%;
+  text-align: center;
+  padding: 12px 0;
+  font-size: 14px;
 }
 .brand {
   display: flex;
@@ -639,6 +836,7 @@ nav small {
 main {
   flex: 1;
   min-width: 0;
+  min-height: 0;
   display: flex;
   flex-direction: column;
 }
@@ -678,12 +876,23 @@ main {
   flex: 1;
   display: flex;
   min-height: 0;
+  min-width: 0;
 }
 .list-panel {
   flex: 1;
-  min-width: 320px;
+  min-width: var(--list-min, 320px);
+  min-height: 0;
   display: flex;
   flex-direction: column;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  container: list-pane / inline-size;
+}
+/* The list pane is the scroller: its sections keep their natural height
+   instead of shrinking (an inner overflow:auto list would collapse to 0). */
+.list-panel > * {
+  flex-shrink: 0;
 }
 .page-heading {
   padding: 37px 31px 24px;
@@ -808,8 +1017,7 @@ p {
   letter-spacing: 1px;
 }
 .issue-list {
-  flex: 1;
-  overflow: auto;
+  flex: 1 0 auto;
 }
 .issue-group {
   border-bottom: 1px solid #2b3032;
@@ -930,6 +1138,9 @@ p {
   text-overflow: ellipsis;
 }
 .list-footer {
+  position: sticky;
+  bottom: 0;
+  background: #151719;
   display: flex;
   justify-content: space-between;
   padding: 15px 29px;
@@ -942,13 +1153,44 @@ p {
   gap: 8px;
 }
 .detail-panel {
-  width: 410px;
+  order: 2;
+  width: var(--detail-width, 410px);
   background: #191c1f;
   border-left: 1px solid #2e3437;
   display: flex;
   flex-direction: column;
   flex-shrink: 0;
   min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+}
+.return-bar {
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  padding: 10px 24px;
+  border-bottom: 1px solid #2e3437;
+  background: #1d2420;
+}
+.back-button {
+  color: #b9dcc8;
+  font-size: 12px;
+  padding: 5px 8px;
+  margin-left: -8px;
+  border-radius: 6px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.back-button:hover {
+  background: #26302b;
+}
+.pane-expand {
+  font-size: 15px;
+  padding: 3px 6px;
+  border-radius: 5px;
 }
 .detail-placeholder {
   display: flex;
@@ -999,6 +1241,8 @@ p {
   color: #49564f;
 }
 .detail-top {
+  flex-shrink: 0;
+  gap: 12px;
   display: flex;
   justify-content: space-between;
   padding: 19px 24px;
@@ -1013,6 +1257,11 @@ p {
 }
 .detail-heading {
   padding: 8px 24px 24px;
+  flex: 0 1 auto;
+  min-height: 0;
+  max-height: 45%;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
 }
 .detail-heading h2 {
   font-size: 21px;
@@ -1023,6 +1272,8 @@ p {
 }
 .properties {
   display: flex;
+  flex-wrap: wrap;
+  row-gap: 6px;
   gap: 23px;
   color: #73818a;
   font-size: 10px;
@@ -1035,11 +1286,17 @@ p {
 }
 .tabs {
   display: flex;
+  flex-shrink: 0;
   border-bottom: 1px solid #30373b;
   padding: 0 24px;
   gap: 23px;
+  overflow-x: auto;
+  scroll-padding-inline: 24px;
+  scrollbar-width: none;
 }
 .tabs button {
+  flex-shrink: 0;
+  white-space: nowrap;
   padding: 11px 0 13px;
   color: #85929a;
   font-size: 11px;
@@ -1060,7 +1317,9 @@ p {
 .detail-body {
   padding: 26px 24px;
   overflow: auto;
-  flex: 1;
+  flex: 1 1 0;
+  min-height: 0;
+  overscroll-behavior: contain;
 }
 .section-label {
   display: flex;
@@ -1553,7 +1812,6 @@ summary {
 .theoria-list > .section-label { padding: 0 28px; }
 .proposal-row { padding: 14px 28px; border-top: 1px solid #292f32; }
 .proposal-row b { margin-top: 8px; }
-.theoria-detail { width: 500px; }
 .cache-banner {
   border: 1px solid #405448;
   background: #202b25;
@@ -1675,9 +1933,6 @@ summary {
   border-radius: 5px;
 }
 @media (min-width: 1600px) {
-  .detail-panel {
-    width: 470px;
-  }
   .page-heading {
     padding-top: 45px;
   }
@@ -1687,13 +1942,9 @@ summary {
   }
 }
 @media (max-width: 1150px) {
-  .sidebar {
-    width: 195px;
+  .sidebar:not(.collapsed) {
     padding-left: 10px;
     padding-right: 10px;
-  }
-  .detail-panel {
-    width: 360px;
   }
   .page-heading,
   .toolbar {
@@ -1715,15 +1966,6 @@ summary {
   }
 }
 @media (max-width: 900px) {
-  .sidebar {
-    width: 170px;
-  }
-  .detail-panel {
-    width: 330px;
-  }
-  .list-panel {
-    min-width: 260px;
-  }
   .issue-row {
     gap: 8px;
   }
@@ -1787,3 +2029,23 @@ dialog::backdrop {
 .source-files { display: grid; gap: 4px; justify-items: start; }
 .source-files small { overflow-wrap: anywhere; }
 .source-text-block, .source-original pre { max-height: 420px; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+/* Short windows keep the sidebar's fixed chrome compact. */
+@media (max-height: 760px) {
+  .sidebar:not(.collapsed) {
+    padding-top: 18px;
+  }
+  .sidebar:not(.collapsed) .workspace-label {
+    padding: 18px 10px 14px;
+  }
+  .sidebar:not(.collapsed) .compose {
+    margin-bottom: 18px;
+  }
+  .sidebar:not(.collapsed) .products-label {
+    margin-top: 20px;
+  }
+  .page-heading {
+    padding-top: 24px;
+    padding-bottom: 16px;
+  }
+}

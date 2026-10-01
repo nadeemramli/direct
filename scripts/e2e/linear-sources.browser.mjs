@@ -92,11 +92,13 @@ try {
   check("owner preview reports ready to apply", true, await page.getByLabel("Migration preview").innerText());
   page.once("dialog", (dialog) => dialog.accept());
   await page.getByRole("button", { name: "Apply migration" }).click();
+  // Wait for the post-apply source reload first: the confirmation (with the
+  // backup path) must still be readable after the bundle list appears.
+  await page.getByLabel("Source bundle").first().waitFor();
   const status = page.getByRole("status");
-  await status.waitFor();
+  await status.waitFor({ timeout: 5000 });
   const applied = await status.innerText();
   check("owner apply succeeds with a pre-import backup", applied.includes("Applied. Pre-import backup"), applied);
-  await page.getByLabel("Source bundle").first().waitFor();
   const card = await page.getByLabel("Source bundle").first().innerText();
   check("bundle card separates preservation, access, freshness and application",
     ["preservation: verified", "freshness: unverified", "live application: applied"].every((text) => card.includes(text)), card.replaceAll("\n", " | "));
