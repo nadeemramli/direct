@@ -68,7 +68,25 @@ try {
   await page.getByRole("button", { name: /Imported sources/ }).click();
   check("empty sources view before import", await page.getByText("No imported sources").isVisible());
 
-  await page.getByLabel("Migration artifact").setInputFiles(artifact);
+  // While a (deliberately slowed) preview is pending, the artifact cannot be
+  // swapped; choosing another file afterwards discards the previewed bytes.
+  const input = page.getByLabel("Migration artifact");
+  await page.route("**/api/migration/preview", async (route) => {
+    await sleep(1500);
+    await route.continue();
+  });
+  await input.setInputFiles(artifact);
+  await page.getByRole("button", { name: "Check artifact" }).click();
+  check("file selector is locked while preview is pending",
+    (await input.isDisabled()) && (await page.getByRole("button", { name: "Check artifact" }).isDisabled()));
+  await page.getByText("Ready to apply").waitFor();
+  await page.unroute("**/api/migration/preview");
+  await input.setInputFiles(join(fixture, "capture", "manifest.json"));
+  check("choosing another file clears the previewed artifact",
+    (await page.getByRole("button", { name: "Apply migration" }).count()) === 0
+      && (await page.getByText("Ready to apply").count()) === 0);
+
+  await input.setInputFiles(artifact);
   await page.getByRole("button", { name: "Check artifact" }).click();
   await page.getByText("Ready to apply").waitFor();
   check("owner preview reports ready to apply", true, await page.getByLabel("Migration preview").innerText());

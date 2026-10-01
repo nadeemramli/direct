@@ -1267,16 +1267,24 @@
     }
   }
   async function previewMigration() {
-    if (!migrationFile) return;
+    const file = migrationFile;
+    if (!file) return;
     busy = true;
     error = "";
     migrationResult = null;
+    migrationPreview = null;
+    migrationBytes = null;
     try {
-      migrationBytes = await migrationFile.arrayBuffer();
-      migrationPreview = await migration<MigrationPreview>(migrationBytes);
+      const bytes = await file.arrayBuffer();
+      const preview = await migration<MigrationPreview>(bytes);
+      // Only the file still selected may supply the bytes and preview that
+      // Apply sends; a result for an earlier selection is discarded.
+      if (migrationFile === file) {
+        migrationBytes = bytes;
+        migrationPreview = preview;
+      }
     } catch (e) {
-      migrationPreview = null;
-      error = String(e);
+      if (migrationFile === file) error = String(e);
     } finally {
       busy = false;
     }
@@ -1777,9 +1785,11 @@
               type="file"
               aria-label="Migration artifact"
               accept=".direct-migration,application/octet-stream"
+              disabled={busy}
               onchange={(event) => {
                 migrationFile = (event.currentTarget as HTMLInputElement).files?.[0] || null;
                 migrationPreview = null;
+                migrationBytes = null;
                 migrationResult = null;
               }}
             />
