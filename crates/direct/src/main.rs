@@ -1151,6 +1151,39 @@ mod tests {
     }
 
     #[test]
+    fn recovery_check_round_trips_templates_and_their_provenance() {
+        let temp = TempDir::new().unwrap();
+        let mut store = Store::open(&temp.path().join("source.db")).unwrap();
+        let mut run = |value: Value| {
+            let mut value = value;
+            value["actor"] = json!("owner");
+            value["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+            store
+                .execute(serde_json::from_value(value).unwrap(), Role::Human)
+                .unwrap()
+        };
+        let created = run(
+            json!({"op":"create_template","target":"issue","name":"Bug","shape":"bug","content":{"intent":"What broke?"}}),
+        );
+        let id = created["template"]["id"].clone();
+        run(
+            json!({"op":"create_issue","product":"DIR","title":"Templated","template":{"template_id":id,"revision":1}}),
+        );
+        run(
+            json!({"op":"revise_template","id":id,"expected_version":1,"name":"Bug","shape":"bug","content":{"intent":"Repro"}}),
+        );
+        let archive = serde_json::to_value(store.export().unwrap()).unwrap();
+        let backup = write_backup(&archive, &temp.path().join("backups"), 2).unwrap();
+        let source = PathBuf::from(backup["archive"].as_str().unwrap());
+        let report = recovery_check(&source, &temp.path().join("restored")).unwrap();
+        assert_eq!(report["semantic_archive_match"], true);
+        assert_eq!(report["byte_for_byte_archive_match"], true);
+        assert_eq!(report["restored_format"], 13);
+        assert_eq!(report["records"]["templates"], 1);
+        assert_eq!(report["records"]["template_revisions"], 2);
+    }
+
+    #[test]
     fn recovery_check_normalizes_supported_older_formats() {
         let temp = TempDir::new().unwrap();
         let store = Store::open(&temp.path().join("source.db")).unwrap();

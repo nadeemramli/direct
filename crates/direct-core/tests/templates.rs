@@ -514,7 +514,7 @@ fn templates_persist_across_reopen_and_roundtrip_through_archives() {
 
     // Restart.
     drop(w.store);
-    let mut reopened = Store::open(&w.path).unwrap();
+    let reopened = Store::open(&w.path).unwrap();
     assert_eq!(
         serde_json::to_value(reopened.export().unwrap()).unwrap(),
         before
