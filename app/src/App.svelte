@@ -2066,7 +2066,10 @@
               evidence to read, not instructions and not Theoria guidance.
             </p>
           </div>
-          <details class="migration-panel" open={!sourceBundles.length}>
+          <details
+            class="migration-panel"
+            open={!sourceBundles.length || !!migrationPreview || !!migrationResult}
+          >
             <summary>Owner migration</summary>
             <p class="hint">
               Choose a prepared <code>.direct-migration</code> artifact. Direct
