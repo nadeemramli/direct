@@ -1,0 +1,192 @@
+{
+  "format": 12,
+  "workspace_id": "9a242bd3-d8b8-47a2-9a6a-63d936e60349",
+  "products": [
+    {
+      "id": "61ab40ed-984b-4e1e-a7d5-3fae6dea7027",
+      "key": "DIR",
+      "name": "Direct",
+      "repo_windows": "",
+      "repo_wsl": "",
+      "vault_windows": "",
+      "vault_wsl": ""
+    },
+    {
+      "id": "8c39bbb2-2e12-4bfa-b0aa-32b1287b75ec",
+      "key": "ALP",
+      "name": "Synthetic Alpha",
+      "repo_windows": "",
+      "repo_wsl": "",
+      "vault_windows": "",
+      "vault_wsl": ""
+    },
+    {
+      "id": "9382b856-6f7e-4e6a-b54c-44489f222dd3",
+      "key": "BET",
+      "name": "Synthetic Beta",
+      "repo_windows": "",
+      "repo_wsl": "",
+      "vault_windows": "",
+      "vault_wsl": ""
+    }
+  ],
+  "projects": [
+    {
+      "id": "c805bd9c-4fab-4766-8318-f06ada4818fe",
+      "product_id": "8c39bbb2-2e12-4bfa-b0aa-32b1287b75ec",
+      "name": "Alpha intake",
+      "description": "Synthetic project",
+      "status": "planned",
+      "priority": "medium",
+      "sort_order": 0,
+      "external_source": null,
+      "external_id": null,
+      "external_url": null,
+      "labels": [],
+      "version": 1,
+      "created_at": 1002,
+      "updated_at": 1002
+    }
+  ],
+  "goals": [],
+  "milestones": [],
+  "labels": [],
+  "theoria_documents": [],
+  "method_findings": [],
+  "git_traces": [],
+  "releases": [],
+  "release_evidence": [],
+  "release_workflows": [],
+  "issue_links": [],
+  "issues": [
+    {
+      "id": "1f6dd931-b4ac-4fa8-bff4-1efd60f247eb",
+      "key": "BET-1",
+      "product_id": "9382b856-6f7e-4e6a-b54c-44489f222dd3",
+      "project_id": null,
+      "milestone_id": null,
+      "planning_scope": "inbox",
+      "theoria_refs": [],
+      "labels": [],
+      "title": "Legacy inbox capture",
+      "body": "Synthetic body",
+      "acceptance": "",
+      "owner": "",
+      "priority": "medium",
+      "status": "backlog",
+      "version": 1,
+      "created_at": 1003,
+      "updated_at": 1003,
+      "claim": null,
+      "needs_fix": false,
+      "parent": null,
+      "verification_key": null,
+      "current_run": null,
+      "external": null
+    },
+    {
+      "id": "8b555cf7-7022-49cf-8d9b-7dc31776b759",
+      "key": "ALP-1",
+      "product_id": "8c39bbb2-2e12-4bfa-b0aa-32b1287b75ec",
+      "project_id": null,
+      "milestone_id": null,
+      "planning_scope": "inbox",
+      "theoria_refs": [],
+      "labels": [],
+      "title": "Legacy project brief",
+      "body": "Outcome",
+      "acceptance": "Proof",
+      "owner": "synthetic-owner",
+      "priority": "high",
+      "status": "backlog",
+      "version": 1,
+      "created_at": 1004,
+      "updated_at": 1004,
+      "claim": null,
+      "needs_fix": false,
+      "parent": null,
+      "verification_key": null,
+      "current_run": null,
+      "external": null
+    }
+  ],
+  "comments": [],
+  "verifications": [],
+  "events": [
+    {
+      "seq": 1,
+      "at": 1000,
+      "actor": "legacy-owner",
+      "kind": "product_created",
+      "entity": "ALP"
+    },
+    {
+      "seq": 2,
+      "at": 1001,
+      "actor": "legacy-owner",
+      "kind": "product_created",
+      "entity": "BET"
+    },
+    {
+      "seq": 3,
+      "at": 1002,
+      "actor": "legacy-owner",
+      "kind": "project_created",
+      "entity": "c805bd9c-4fab-4766-8318-f06ada4818fe"
+    },
+    {
+      "seq": 4,
+      "at": 1003,
+      "actor": "legacy-agent",
+      "kind": "issue_created",
+      "entity": "BET-1"
+    },
+    {
+      "seq": 5,
+      "at": 1004,
+      "actor": "legacy-owner",
+      "kind": "issue_created",
+      "entity": "ALP-1"
+    }
+  ],
+  "requests": [
+    {
+      "id": "legacy-issue-alp",
+      "actor": "legacy-owner",
+      "role": "human",
+      "hash": "cd45cc1f5d006ef9f3fcf08939a197b30500d698179c327e26c1b8666a42e74a",
+      "response": "{\"acceptance\":\"Proof\",\"body\":\"Outcome\",\"claim\":null,\"created_at\":1004,\"current_run\":null,\"external\":null,\"id\":\"8b555cf7-7022-49cf-8d9b-7dc31776b759\",\"key\":\"ALP-1\",\"labels\":[],\"milestone_id\":null,\"needs_fix\":false,\"owner\":\"synthetic-owner\",\"parent\":null,\"planning_scope\":\"inbox\",\"priority\":\"high\",\"product_id\":\"8c39bbb2-2e12-4bfa-b0aa-32b1287b75ec\",\"project_id\":null,\"status\":\"backlog\",\"theoria_refs\":[],\"title\":\"Legacy project brief\",\"updated_at\":1004,\"verification_key\":null,\"version\":1}"
+    },
+    {
+      "id": "legacy-issue-bet",
+      "actor": "legacy-agent",
+      "role": "agent",
+      "hash": "89387e562fbc8621d5485c4c3ae5f98532cf5bf291db5e23a27ce2539b8dc76f",
+      "response": "{\"acceptance\":\"\",\"body\":\"Synthetic body\",\"claim\":null,\"created_at\":1003,\"current_run\":null,\"external\":null,\"id\":\"1f6dd931-b4ac-4fa8-bff4-1efd60f247eb\",\"key\":\"BET-1\",\"labels\":[],\"milestone_id\":null,\"needs_fix\":false,\"owner\":\"\",\"parent\":null,\"planning_scope\":\"inbox\",\"priority\":\"medium\",\"product_id\":\"9382b856-6f7e-4e6a-b54c-44489f222dd3\",\"project_id\":null,\"status\":\"backlog\",\"theoria_refs\":[],\"title\":\"Legacy inbox capture\",\"updated_at\":1003,\"verification_key\":null,\"version\":1}"
+    },
+    {
+      "id": "legacy-product-alp",
+      "actor": "legacy-owner",
+      "role": "human",
+      "hash": "aa13da0028be5468217a5a381b37e03570259ef3e0ca853bb8dd2c0a4f0b9a6e",
+      "response": "{\"id\":\"8c39bbb2-2e12-4bfa-b0aa-32b1287b75ec\",\"key\":\"ALP\",\"name\":\"Synthetic Alpha\",\"repo_windows\":\"\",\"repo_wsl\":\"\",\"vault_windows\":\"\",\"vault_wsl\":\"\"}"
+    },
+    {
+      "id": "legacy-product-bet",
+      "actor": "legacy-owner",
+      "role": "human",
+      "hash": "9d45fbe7420eec0f670cfc9210c37b240501b36bc130152394212db81b9b9865",
+      "response": "{\"id\":\"9382b856-6f7e-4e6a-b54c-44489f222dd3\",\"key\":\"BET\",\"name\":\"Synthetic Beta\",\"repo_windows\":\"\",\"repo_wsl\":\"\",\"vault_windows\":\"\",\"vault_wsl\":\"\"}"
+    },
+    {
+      "id": "legacy-project-alp",
+      "actor": "legacy-owner",
+      "role": "human",
+      "hash": "d21f65194c15b311b9c8942a75600b8f3443b84efaa033eafe4c1a8195af7917",
+      "response": "{\"created_at\":1002,\"description\":\"Synthetic project\",\"external_id\":null,\"external_source\":null,\"external_url\":null,\"id\":\"c805bd9c-4fab-4766-8318-f06ada4818fe\",\"labels\":[],\"name\":\"Alpha intake\",\"priority\":\"medium\",\"product_id\":\"8c39bbb2-2e12-4bfa-b0aa-32b1287b75ec\",\"sort_order\":0,\"status\":\"planned\",\"updated_at\":1002,\"version\":1}"
+    }
+  ],
+  "source_bundles": [],
+  "source_files": [],
+  "source_records": []
+}

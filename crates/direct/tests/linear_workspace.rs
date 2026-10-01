@@ -402,7 +402,7 @@ fn whole_workspace_rehearsal_reconciles_preserves_restores_and_replays() {
     assert_eq!(gates["application"]["status"], "not_applied");
     assert_eq!(report["native_access"]["status"], "incomplete");
     // The isolated workspace carries the retained bundle natively.
-    assert_eq!(archive["format"], 12);
+    assert_eq!(archive["format"], 13);
     assert_eq!(archive["source_bundles"].as_array().unwrap().len(), 1);
     assert_eq!(
         archive["source_files"].as_array().unwrap().len(),
@@ -543,6 +543,7 @@ fn whole_workspace_rehearsal_reconciles_preserves_restores_and_replays() {
                         priority: "medium".into(),
                         planning_scope: direct_core::PlanningScope::Inbox,
                         project_id: None,
+                        template: None,
                     },
                 },
                 Role::Human,

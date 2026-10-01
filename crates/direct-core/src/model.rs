@@ -70,6 +70,9 @@ pub struct Project {
     pub external_url: Option<String>,
     #[serde(default)]
     pub labels: Vec<String>,
+    /// Intake template provenance (format 13). Absent for untemplated records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<TemplateUse>,
     pub version: u64,
     pub created_at: i64,
     pub updated_at: i64,
@@ -210,6 +213,156 @@ pub enum PlanningScope {
     Project,
     #[default]
     Inbox,
+}
+
+/// The record kind a workspace template shapes. Fixed for the template's lifetime.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TemplateTarget {
+    Issue,
+    Project,
+}
+
+/// The intake shape a template revision describes.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum TemplateShape {
+    Delivery,
+    DiscoveryProbe,
+    Bug,
+    Release,
+}
+
+/// How the work is expected to be carried out. `prototype` keeps the
+/// prototype-as-planning route: a bounded probe whose outcome is learning.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum ExecutionMode {
+    Agent,
+    Owner,
+    Paired,
+    Prototype,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum TemplateStatus {
+    #[default]
+    Active,
+    Retired,
+}
+
+/// The shared base of one template revision: concise prompts and suggestions only.
+/// Nothing here grants authority, makes work Ready, or counts as verification.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateContent {
+    #[serde(default)]
+    pub intent: String,
+    #[serde(default)]
+    pub execution_mode: Option<ExecutionMode>,
+    #[serde(default)]
+    pub boundaries: String,
+    #[serde(default)]
+    pub verification: String,
+    #[serde(default)]
+    pub checklist: Vec<String>,
+    #[serde(default)]
+    pub suggested_priority: Option<String>,
+    /// Issue templates only.
+    #[serde(default)]
+    pub suggested_planning_scope: Option<PlanningScope>,
+    /// Workspace label IDs.
+    #[serde(default)]
+    pub suggested_labels: Vec<String>,
+}
+
+/// An explicit, bounded, additive product supplement. It cannot replace any
+/// base field; it only appends guidance, checklist items and label suggestions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateSupplement {
+    pub product_id: String,
+    #[serde(default)]
+    pub note: String,
+    #[serde(default)]
+    pub checklist: Vec<String>,
+    #[serde(default)]
+    pub suggested_labels: Vec<String>,
+}
+
+/// Mutable head of an owner-managed template. Definitions live in immutable revisions.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct WorkspaceTemplate {
+    pub id: String,
+    pub target: TemplateTarget,
+    /// Mirrors the current revision for listing.
+    pub name: String,
+    pub shape: TemplateShape,
+    pub status: TemplateStatus,
+    pub current_revision: u32,
+    #[serde(default)]
+    pub retired_reason: Option<String>,
+    #[serde(default)]
+    pub retired_by: Option<String>,
+    #[serde(default)]
+    pub retired_at: Option<i64>,
+    pub version: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// One immutable template revision. Never rewritten or deleted.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TemplateRevision {
+    pub template_id: String,
+    pub revision: u32,
+    pub target: TemplateTarget,
+    pub name: String,
+    #[serde(default)]
+    pub description: String,
+    pub shape: TemplateShape,
+    pub content: TemplateContent,
+    #[serde(default)]
+    pub supplements: Vec<TemplateSupplement>,
+    #[serde(default)]
+    pub note: String,
+    pub created_by: String,
+    pub created_at: i64,
+}
+
+/// What a creator asks for when applying a template at intake.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct TemplateSelection {
+    pub template_id: String,
+    /// Must be the template's current revision; a stale form is refused.
+    pub revision: u32,
+    /// Omit to accept the template's suggestion.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub execution_mode: Option<ExecutionMode>,
+    /// Suggested labels (base or product supplement) the creator keeps.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub labels: Vec<String>,
+}
+
+/// Exact provenance recorded on an issue or project created from a template.
+/// Later revisions never rewrite it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TemplateUse {
+    pub template_id: String,
+    pub revision: u32,
+    /// Set when the revision carried a supplement for the record's product.
+    #[serde(default)]
+    pub supplement_product_id: Option<String>,
+    #[serde(default)]
+    pub execution_mode: Option<ExecutionMode>,
+    /// Suggested fields the creator explicitly changed: `priority`,
+    /// `planning_scope`, `execution_mode`, `labels`.
+    #[serde(default)]
+    pub overrides: Vec<String>,
+    pub applied_by: String,
+    pub applied_at: i64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -489,6 +642,9 @@ pub struct Issue {
     pub current_run: Option<String>,
     #[serde(default)]
     pub external: Option<ExternalIssueRecord>,
+    /// Intake template provenance (format 13). Absent for untemplated records.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub template: Option<TemplateUse>,
 }
 
 /// Why an issue cannot be deleted right now. Issue `context` and the atomic
@@ -699,6 +855,9 @@ pub enum Command {
         priority: String,
         #[serde(default)]
         sort_order: i64,
+        /// Omitted from the request hash when absent so legacy retries replay exactly.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        template: Option<TemplateSelection>,
     },
     UpdateProject {
         id: String,
@@ -961,6 +1120,9 @@ pub enum Command {
         planning_scope: PlanningScope,
         #[serde(default)]
         project_id: Option<String>,
+        /// Omitted from the request hash when absent so legacy retries replay exactly.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        template: Option<TemplateSelection>,
     },
     UpdateIssue {
         key: String,
@@ -1059,6 +1221,41 @@ pub enum Command {
         bundle_id: String,
         expected_cursor: u64,
     },
+    /// Read-only: every template head and immutable revision, including retired ones.
+    Templates,
+    /// Owner only: define a template; its first immutable revision is 1.
+    CreateTemplate {
+        target: TemplateTarget,
+        name: String,
+        #[serde(default)]
+        description: String,
+        shape: TemplateShape,
+        content: TemplateContent,
+        #[serde(default)]
+        supplements: Vec<TemplateSupplement>,
+        #[serde(default)]
+        note: String,
+    },
+    /// Owner only: append the next immutable revision. Existing records keep theirs.
+    ReviseTemplate {
+        id: String,
+        expected_version: u64,
+        name: String,
+        #[serde(default)]
+        description: String,
+        shape: TemplateShape,
+        content: TemplateContent,
+        #[serde(default)]
+        supplements: Vec<TemplateSupplement>,
+        #[serde(default)]
+        note: String,
+    },
+    /// Owner only: stop offering a template for new work. Nothing is deleted.
+    RetireTemplate {
+        id: String,
+        expected_version: u64,
+        reason: String,
+    },
 }
 fn source_page() -> u32 {
     50
@@ -1103,6 +1300,11 @@ pub struct Archive {
     pub release_workflows: Vec<ReleaseWorkflowConfig>,
     #[serde(default)]
     pub issue_links: Vec<IssueLink>,
+    /// Workspace intake templates and their immutable revisions (format 13).
+    #[serde(default)]
+    pub templates: Vec<WorkspaceTemplate>,
+    #[serde(default)]
+    pub template_revisions: Vec<TemplateRevision>,
     pub issues: Vec<Issue>,
     pub comments: Vec<Comment>,
     pub verifications: Vec<Verification>,
