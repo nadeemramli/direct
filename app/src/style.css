@@ -18,11 +18,18 @@
   align-items: center;
   gap: 12px;
   color: #9ba6ad;
+  /* Long project/label names must not push the select past a narrow list. */
+  min-width: 0;
+  max-width: 100%;
+  white-space: nowrap;
 }
 .project-filter select {
   width: auto;
+  min-width: 0;
   max-width: 280px;
+  flex: 0 1 auto;
   padding: 7px 10px;
+  text-overflow: ellipsis;
 }
 .project-description {
   margin: 0;
@@ -76,6 +83,18 @@
 }
 .project-progress-copy {
   text-align: right;
+}
+/* A list squeezed by a wide detail pane stacks the project summary so the
+   outcome text keeps the full width. */
+@container list-pane (max-width: 520px) {
+  .project-summary {
+    grid-template-columns: minmax(0, 1fr);
+    margin-left: 20px;
+    margin-right: 20px;
+  }
+  .project-progress-copy {
+    text-align: left;
+  }
 }
 .project-progress-copy b {
   color: #8fd1b0;
@@ -274,6 +293,11 @@
   line-height: 16px;
   white-space: nowrap;
   max-width: 160px;
+}
+.label-chip .label-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 .label-chip i {
   width: 7px;
@@ -863,6 +887,7 @@ main {
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;
+  container: list-pane / inline-size;
 }
 /* The list pane is the scroller: its sections keep their natural height
    instead of shrinking (an inner overflow:auto list would collapse to 0). */

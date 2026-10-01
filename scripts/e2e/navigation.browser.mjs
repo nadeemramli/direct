@@ -154,9 +154,17 @@ async function seed(page) {
     const updated = await owner(page, { op: "link_theoria", key: long.key, expected_version: version, document_id: id, playbook_version: null });
     version = updated.version;
   }
+  // Labels at the 80-byte name limit stress the list toolbars at minimum width.
+  const longLabel = await owner(page, {
+    op: "create_label",
+    name: "Label at the maximum length for filtering and migration — synthetic ABCDEFGH",
+    description: sentence,
+  });
+  await owner(page, { op: "create_label", name: "Short label" });
+  await owner(page, { op: "attach_issue_label", key: long.key, expected_version: version, label_id: longLabel.id });
   const snapshot = await owner(page, { op: "snapshot" });
   const dirName = snapshot.products.find((product) => product.key === "DIR").name;
-  return { products, projects, target, longKey: long.key, dirName };
+  return { products, projects, target, longKey: long.key, dirName, longLabel };
 }
 
 // ---------------------------------------------------------------- probes
@@ -404,6 +412,106 @@ try {
     await page.screenshot({ path: join(evidence, "dir37-failure.png") }).catch(() => {});
     await page.getByLabel("Search issues").fill("").catch(() => {});
   }
+
+  // ============================== DIR-37 persisted width at a wide window
+  try {
+    await page.setViewportSize({ width: 1920, height: 1080 });
+    await page.getByRole("button", { name: /All work/ }).click();
+    const detail = page.getByLabel("Issue detail");
+    const handle = page.getByRole("separator", { name: "Resize detail panel" });
+    const openLong = async () => {
+      await page.getByLabel("Search issues").fill(fixture.longKey);
+      await page.getByLabel("Search issues").press("Enter");
+      await detail.getByRole("tab", { name: "Brief" }).waitFor();
+    };
+    const stored = () => page.evaluate((key) => JSON.parse(localStorage.getItem(key) || "null"), LAYOUT_KEY);
+    await openLong();
+    await drag(page, handle, -3000);
+    const max = Number(await handle.getAttribute("aria-valuemax"));
+    const dragged = await width(detail);
+    const saved = (await stored())?.right?.width;
+    check("[DIR-37 1920] manual resize reaches the runtime maximum and is saved as shown",
+      dragged === max && saved === dragged, `width ${dragged}, max ${max}, stored ${saved}`);
+    await page.reload();
+    await page.getByText("Connected locally").waitFor();
+    await openLong();
+    check("[DIR-37 1920] manually resized width survives reload unchanged",
+      (await width(detail)) === dragged && Number(await handle.getAttribute("aria-valuenow")) === dragged && (await stored())?.right?.width === dragged,
+      `before ${dragged}, after ${await width(detail)}, stored ${(await stored())?.right?.width}`);
+    await drag(page, handle, 200);
+    const chosen = await width(detail);
+    await page.getByRole("button", { name: "Expand detail panel" }).click();
+    const expanded = await width(detail);
+    await page.reload();
+    await page.getByText("Connected locally").waitFor();
+    await openLong();
+    check("[DIR-37 1920] expanded mode survives reload at the same width",
+      (await width(detail)) === expanded && expanded === Number(await handle.getAttribute("aria-valuemax")) && (await stored())?.right?.expanded === true,
+      `expanded ${expanded}, after reload ${await width(detail)}`);
+    await page.getByRole("button", { name: "Restore detail panel width" }).click();
+    check("[DIR-37 1920] restore after reload returns to the manual width", (await width(detail)) === chosen, `${await width(detail)} vs ${chosen}`);
+    await handle.dblclick();
+    await page.getByRole("button", { name: "Close issue" }).click();
+    await page.getByLabel("Search issues").fill("");
+  } catch (error) {
+    check("[DIR-37 1920] persisted width scenario completed", false, error.message.split("\n")[0]);
+    await page.getByLabel("Search issues").fill("").catch(() => {});
+  }
+
+  // ================= DIR-37 list controls with the list at its minimum width
+  for (const viewport of [{ width: 1366, height: 768 }, { width: 1024, height: 640 }]) {
+    const label = `${viewport.width}x${viewport.height}`;
+    try {
+      await page.setViewportSize(viewport);
+      await page.locator("aside.sidebar nav[aria-label='Products'] button", { hasText: fixture.dirName }).click();
+      await page.getByLabel("Filter by project").selectOption(fixture.target.id);
+      await page.getByLabel("Filter by label").selectOption(fixture.longLabel.id);
+      await page.locator(".issue-row", { hasText: fixture.longKey }).click();
+      await page.getByRole("button", { name: "Expand detail panel" }).click();
+      await sleep(150);
+      const list = page.locator("section.list-panel");
+      const clipped = await list.evaluate((panel) => {
+        const box = panel.getBoundingClientRect();
+        const controls = panel.querySelectorAll(".page-heading ~ * :is(button, select, input, label, a)");
+        return [...controls]
+          .filter((el) => el.getClientRects().length && !el.closest(".issue-list"))
+          .map((el) => ({ el, r: el.getBoundingClientRect() }))
+          .filter(({ r }) => r.left < box.left - 0.5 || r.right > box.right + 0.5)
+          .map(({ el, r }) => `${el.tagName.toLowerCase()}${el.getAttribute("aria-label") ? `[${el.getAttribute("aria-label")}]` : ""} ${Math.round(r.left)}–${Math.round(r.right)} vs ${Math.round(box.left)}–${Math.round(box.right)}`);
+      });
+      check(`[DIR-37 ${label}] list controls are not clipped with the list at ${await width(list)}px`, clipped.length === 0, clipped.join("; ") || `list ${await width(list)}px`);
+      const chipSpill = await page.locator("aside.detail-panel .issue-labels").evaluate((row) =>
+        [...row.querySelectorAll(".label-chip")].flatMap((chip) => {
+          const c = chip.getBoundingClientRect();
+          // The visible (clipped) name box; the old markup has no name element,
+          // so fall back to the laid-out text extent.
+          const name = chip.querySelector(".label-name");
+          const range = document.createRange();
+          range.selectNodeContents(chip);
+          const text = (name || range).getBoundingClientRect();
+          const next = chip.nextElementSibling?.getBoundingClientRect();
+          return text.right > c.right + 0.5 || (next && next.left < c.right - 0.5 && next.top < c.bottom && next.bottom > c.top)
+            ? [`chip ${Math.round(c.left)}–${Math.round(c.right)}, text to ${Math.round(text.right)}, next from ${next ? Math.round(next.left) : "-"}`]
+            : [];
+        }));
+      check(`[DIR-37 ${label}] long label chips stay inside their chip and do not overlap controls`, chipSpill.length === 0, chipSpill.join("; "));
+      const outcome = await page.locator(".project-summary strong").first().evaluate((el) => Math.round(el.getBoundingClientRect().width));
+      const summary = await width(page.locator(".project-summary").first());
+      check(`[DIR-37 ${label}] project outcome text keeps the summary width`, outcome >= summary * 0.75, `outcome ${outcome}px of summary ${summary}px`);
+      check(`[DIR-37 ${label}] no page overflow with the list at minimum width`, noPageOverflow(await pageOverflow(page)));
+      await list.evaluate((panel) => (panel.scrollTop = 0));
+      await page.screenshot({ path: join(evidence, `dir37-list-minimum-${label}.png`) });
+      await page.getByRole("button", { name: "Restore detail panel width" }).click();
+      await page.getByLabel("Filter by label").selectOption("all");
+      await page.getByLabel("Filter by project").selectOption("all");
+      await page.getByRole("button", { name: "Close issue" }).click();
+    } catch (error) {
+      check(`[DIR-37 ${label}] list-minimum scenario completed`, false, error.message.split("\n")[0]);
+      await page.screenshot({ path: join(evidence, `dir37-list-minimum-${label}-failure.png`) }).catch(() => {});
+    }
+  }
+  await page.setViewportSize({ width: 1366, height: 768 });
+  await page.getByRole("button", { name: /All work/ }).click();
 
   // ============================================================ DIR-40
   try {

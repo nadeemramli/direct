@@ -9,6 +9,7 @@ export const LEFT_MIN = 168;
 export const LEFT_MAX = 360;
 export const LEFT_RAIL = 56;
 export const RIGHT_MIN = 300;
+/** Upper bound for the detail pane, shared by the runtime and storage. */
 export const RIGHT_MAX = 1100;
 export const STEP = 16;
 export const BIG_STEP = 64;
@@ -114,6 +115,14 @@ export function listMinWidth(viewport: number) {
 }
 export function leftMaxWidth(viewport: number) {
   return clamp(Math.floor(viewport * 0.3), LEFT_MIN, LEFT_MAX);
+}
+/**
+ * The widest the detail pane may be right now: what the list can spare, but
+ * never beyond the bound that stored layouts are validated against, so any
+ * width the UI saves loads back unchanged.
+ */
+export function rightMaxWidth(viewport: number, leftWidth: number) {
+  return clamp(viewport - leftWidth - listMinWidth(viewport), RIGHT_MIN, RIGHT_MAX);
 }
 
 /**

@@ -16,6 +16,7 @@
     listMinWidth,
     loadLayout,
     restoreAnchor,
+    rightMaxWidth,
     saveLayout,
   } from "./layout";
   import type { ScrollAnchor, Section } from "./layout";
@@ -262,7 +263,7 @@
   );
   let leftWidth = $derived(layout.leftCollapsed ? LEFT_RAIL : leftPreferred);
   let listMin = $derived(listMinWidth(viewport));
-  let rightMax = $derived(Math.max(RIGHT_MIN, viewport - leftWidth - listMin));
+  let rightMax = $derived(rightMaxWidth(viewport, leftWidth));
   let rightWidth = $derived(
     layout.rightExpanded
       ? rightMax
@@ -1627,7 +1628,7 @@
         class="label-chip"
         title={label.description || label.name}
         style={label.color ? `--label-color: ${label.color}` : ""}
-        ><i></i>{label.name}{#if remove}<button
+        ><i></i><span class="label-name">{label.name}</span>{#if remove}<button
             type="button"
             aria-label={`Remove label ${label.name}`}
             disabled={busy || !connected}
