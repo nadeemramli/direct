@@ -75,6 +75,7 @@ Schema and archive format 13 add the `templates` and `template_revisions` tables
 
 - Applying a template requires its current revision. Rejecting a stale form is safer than silently applying a newer definition than the one the creator saw.
 - Overrides are computed by the service from typed suggestions; edits to the free-text starter are expected and are not counted as overrides.
-- In the intake form, a suggestion fills a field only while the field still holds the value the form or the template last put there. A priority, route or label the creator changed survives later execution-mode, product (supplement) and template refreshes.
+- In the intake form, priority and work route follow the active template only until the creator edits them; untouched fields take the new template's suggestion, or the form default when it suggests nothing or the template is cleared. An edit is explicit intent even when it returns to the suggested or default value, and it survives later execution-mode, product (supplement) and template refreshes for that form.
+- A suggested label the creator unchecks stays unchecked for that template for the rest of the form, including when the label disappears for another product and reappears (product A→B→A) and across template switches. Suggestions start kept.
 - Retirement is one-way. To reuse a shape, create a new template, which keeps provenance unambiguous.
 - Supplements live inside a revision. Changing one product's supplement creates a new revision of the shared template, so every use states exactly which base and supplement it saw.

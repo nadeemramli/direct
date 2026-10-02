@@ -325,6 +325,114 @@ try {
   await page.getByRole("button", { name: /New issue/ }).first().waitFor();
   });
 
+  // ------------------------------------------------------------ second QC pass: touched state, not equality
+  // Second templates so a creator can switch templates inside one form.
+  await owner(page, { op: "create_template", target: "issue", name: "Hotfix", shape: "bug",
+    content: { intent: "What broke, for whom?", suggested_priority: "urgent", suggested_planning_scope: "inbox" } });
+  await owner(page, { op: "create_template", target: "project", name: "Probe plan", shape: "discovery_probe",
+    content: { intent: "Question the probe answers", suggested_priority: "high" } });
+  await page.reload();
+  await page.getByRole("button", { name: /New issue/ }).first().waitFor();
+  const priorityOf = () => dialog.getByLabel("Priority").inputValue();
+  const routeOf = () => dialog.getByLabel(/Work route/).inputValue();
+
+  await scenario("template switch without edits", async () => {
+    // No user edits: switching templates follows the active template's suggestions.
+    await newIssue({ product: "ALP", title: "unused", template: "Delivery · Delivery · v1" });
+    await dialog.getByLabel("Intake template").selectOption({ label: "Hotfix · Bug · v1" });
+    check("without edits, switching templates applies the new suggestions",
+      (await priorityOf()) === "urgent" && (await routeOf()) === "inbox", `${await priorityOf()} / ${await routeOf()}`);
+    await dialog.getByLabel("Intake template").selectOption({ index: 0 });
+    check("without edits, clearing the template restores form defaults and removes starter text",
+      (await priorityOf()) === "medium" && (await routeOf()) === "project"
+        && (await dialog.getByLabel("Problem & expected outcome").inputValue()) === "",
+      `${await priorityOf()} / ${await routeOf()}`);
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "detached" });
+  });
+
+  await scenario("returned to suggestion", async () => {
+    // QC order: template A suggests high/project; set low/inbox; explicitly back to
+    // high/project; select template B suggesting urgent/inbox. The explicit values stay.
+    await newIssue({ product: "ALP", title: "Explicitly returned", template: "Delivery · Delivery · v1" });
+    await dialog.getByLabel("Priority").selectOption("low");
+    await dialog.getByLabel("Priority").selectOption("high");
+    await dialog.getByLabel(/Work route/).selectOption("inbox");
+    await dialog.getByLabel(/Work route/).selectOption("project");
+    await dialog.getByLabel("Intake template").selectOption({ label: "Hotfix · Bug · v1" });
+    check("an explicitly re-chosen priority and route survive a template switch",
+      (await priorityOf()) === "high" && (await routeOf()) === "project", `${await priorityOf()} / ${await routeOf()}`);
+    await dialog.locator("label.field", { hasText: "Choose the delivery scope" }).locator("select").selectOption({ label: "Alpha intake" });
+    await dialog.getByRole("button", { name: /Create issue/ }).click();
+    await dialog.waitFor({ state: "detached" });
+    await page.reload();
+    snapshot = await owner(page, { op: "snapshot" });
+    const returned = snapshot.issues.find((issue) => issue.title === "Explicitly returned");
+    const hotfix = snapshot.templates.find((template) => template.name === "Hotfix");
+    check("explicitly re-chosen values persist with exact provenance after reload",
+      returned?.priority === "high" && returned?.planning_scope === "project" && returned?.template?.template_id === hotfix.id
+        && JSON.stringify(returned?.template?.overrides) === JSON.stringify(["priority", "planning_scope"]),
+      JSON.stringify({ priority: returned?.priority, scope: returned?.planning_scope, template: returned?.template }));
+  });
+
+  await scenario("project returned to suggestion", async () => {
+    await allWork();
+    await page.getByRole("button", { name: "＋ New project" }).click();
+    await dialog.waitFor();
+    await dialog.locator("select").first().selectOption("ALP");
+    await dialog.getByLabel("Intake template").selectOption({ label: "Release train · Release · v1" });
+    await dialog.getByLabel("Intake template").selectOption({ label: "Probe plan · Discovery probe · v1" });
+    check("without edits, switching project templates applies the new priority", (await priorityOf()) === "high", await priorityOf());
+    await dialog.getByLabel("Intake template").selectOption({ label: "Release train · Release · v1" });
+    await dialog.getByLabel("Priority").selectOption("low");
+    await dialog.getByLabel("Priority").selectOption("urgent");
+    await dialog.getByLabel("Intake template").selectOption({ label: "Probe plan · Discovery probe · v1" });
+    check("an explicitly re-chosen project priority survives a template switch",
+      (await priorityOf()) === "urgent", await priorityOf());
+    await dialog.getByLabel("Project name").fill("Delta probe");
+    await dialog.getByRole("button", { name: "Create project" }).click();
+    await dialog.waitFor({ state: "detached" });
+    await page.reload();
+    snapshot = await owner(page, { op: "snapshot" });
+    const delta = snapshot.projects.find((project) => project.name === "Delta probe");
+    const probe = snapshot.templates.find((template) => template.name === "Probe plan");
+    check("explicit project priority persists with exact provenance after reload",
+      delta?.priority === "urgent" && delta?.template?.template_id === probe.id
+        && JSON.stringify(delta?.template?.overrides) === JSON.stringify(["priority"]),
+      JSON.stringify({ priority: delta?.priority, template: delta?.template }));
+  });
+
+  await scenario("label A-B-A", async () => {
+    // QC order: product A's supplement suggests L; uncheck L; switch to B (L absent);
+    // switch back to A. L stays unchecked, and so it does across a template A-B-A.
+    await page.getByRole("button", { name: /New issue/ }).first().waitFor();
+    await newIssue({ product: "ALP", title: "Label kept off", template: "Delivery · Delivery · v1" });
+    const alphaOnlyBox = () => dialog.locator(".template-labels").getByLabel("Alpha only");
+    await alphaOnlyBox().uncheck();
+    await dialog.locator("select").first().selectOption("BET");
+    check("supplement label is absent for the other product", (await alphaOnlyBox().count()) === 0);
+    await dialog.locator("select").first().selectOption("ALP");
+    check("an unchecked supplement label stays unchecked after product A-B-A",
+      (await alphaOnlyBox().count()) === 1 && !(await alphaOnlyBox().isChecked()));
+    await dialog.getByLabel("Intake template").selectOption({ label: "Hotfix · Bug · v1" });
+    await dialog.getByLabel("Intake template").selectOption({ label: "Delivery · Delivery · v1" });
+    check("the explicit label choice is kept for its template across a template switch",
+      !(await alphaOnlyBox().isChecked()) && (await dialog.locator(".template-labels").getByLabel("Triage").isChecked()));
+    await dialog.getByLabel(/Work route/).selectOption("project");
+    await dialog.locator("label.field", { hasText: "Choose the delivery scope" }).locator("select").selectOption({ label: "Alpha intake" });
+    await dialog.getByRole("button", { name: /Create issue/ }).click();
+    await dialog.waitFor({ state: "detached" });
+    await page.reload();
+    snapshot = await owner(page, { op: "snapshot" });
+    const offIssue = snapshot.issues.find((issue) => issue.title === "Label kept off");
+    const triageId = snapshot.labels.find((label) => label.name === "Triage").id;
+    check("explicit label choice persists with exact provenance after reload",
+      JSON.stringify(offIssue?.labels) === JSON.stringify([triageId])
+        && offIssue?.template?.supplement_product_id === alp.id
+        && JSON.stringify(offIssue?.template?.overrides) === JSON.stringify(["labels"]),
+      JSON.stringify({ labels: offIssue?.labels, template: offIssue?.template }));
+  });
+
   // ------------------------------------------------------------ agent applies through the CLI
   const agentIssue = agentCli("create", "--product", "BET", "Agent applied", "--template-id", alpIssue.template.template_id, "--template-revision", "1");
   check("agent applies an allowed intake shape through the native CLI",
@@ -372,7 +480,7 @@ try {
   await page.keyboard.press("Escape");
   snapshot = await owner(page, { op: "snapshot" });
   check("retiring left project provenance intact",
-    snapshot.projects.filter((project) => project.template?.revision === 1).length === 3);
+    snapshot.projects.filter((project) => project.template?.revision === 1).length === 4);
 
   // ------------------------------------------------------------ readiness is still an owner decision
   snapshot = await owner(page, { op: "snapshot" });
@@ -384,7 +492,7 @@ try {
   const before = await owner(page, { op: "export" });
   await page.reload();
   await openTemplates();
-  check("templates persist after reload", (await page.locator(".template-row").count()) === 2);
+  check("templates persist after reload", (await page.locator(".template-row").count()) === 4);
   await stop(service.child);
   service = await start();
   await page.goto(service.url);

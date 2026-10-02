@@ -79,7 +79,11 @@
     };
   }
   function apply() {
-    if (!revision) return;
+    // No template: nothing is suggested, so untouched fields return to the form defaults.
+    if (!revision) {
+      onapply({ brief: "", verification: "", priority: null, planning_scope: null });
+      return;
+    }
     onapply({
       brief: composeBrief(revision, productId, mode || null),
       verification: composeVerification(revision, productId),
@@ -87,16 +91,31 @@
       planning_scope: revision.content.suggested_planning_scope,
     });
   }
-  // Label suggestions offered when `kept` was last decided, so a refresh can tell
-  // an explicit un-check from a suggestion that is new for this product.
-  let offered: string[] = [];
+  // Suggested labels the creator explicitly unchecked, per template, for the life of
+  // this form. Suggestions start kept; an explicit un-check survives product changes
+  // (including A→B→A, where the label is absent for B) and template switches.
+  const declined = new Map<string, Set<string>>();
+  function declinedFor(templateId: string) {
+    if (!declined.has(templateId)) declined.set(templateId, new Set());
+    return declined.get(templateId)!;
+  }
+  function keptSuggestions() {
+    const off = declinedFor(chosenId);
+    return labels.map((label) => label.id).filter((id) => !off.has(id));
+  }
+  function toggle(labelId: string, checked: boolean) {
+    const off = declinedFor(chosenId);
+    if (checked) off.delete(labelId);
+    else off.add(labelId);
+    kept = keptSuggestions();
+    sync();
+  }
   function choose(id: string) {
     chosenId = id;
     const next = options.find((item) => item.id === id);
     const nextRevision = next ? revisionOf(data, next.id, next.current_revision) : undefined;
     mode = nextRevision?.content.execution_mode || "";
-    kept = labels.map((label) => label.id);
-    offered = [...kept];
+    kept = id ? keptSuggestions() : [];
     sync();
     apply();
   }
@@ -107,10 +126,7 @@
     lastProduct = productId;
     if (previous === null || previous === productId) return;
     if (!revision) return;
-    // Keep explicit choices; only suggestions new to this product start kept.
-    const now = labels.map((label) => label.id);
-    kept = now.filter((id) => kept.includes(id) || !offered.includes(id));
-    offered = now;
+    kept = keptSuggestions();
     sync();
     apply();
   });
@@ -171,12 +187,7 @@
               ><input
                 type="checkbox"
                 checked={kept.includes(label.id)}
-                onchange={(event) => {
-                  kept = event.currentTarget.checked
-                    ? [...kept, label.id]
-                    : kept.filter((id) => id !== label.id);
-                  sync();
-                }}
+                onchange={(event) => toggle(label.id, event.currentTarget.checked)}
               />{label.name}</label
             >{/each}
         </fieldset>{/if}

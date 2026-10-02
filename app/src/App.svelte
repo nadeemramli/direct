@@ -24,7 +24,7 @@
   import type { Applied as TemplateApplied } from "./TemplatePicker.svelte";
   import TemplatesView from "./TemplatesView.svelte";
   import { provenanceLabel } from "./templates";
-  import type { TemplateSelection } from "./api";
+  import type { PlanningScope, TemplateSelection } from "./api";
   import type {
     Snapshot,
     Issue,
@@ -227,30 +227,30 @@
   let issueTemplate = $state<TemplateSelection | null>(null);
   let projectTemplate = $state<TemplateSelection | null>(null);
   let templateStarter = { brief: "", verification: "" };
-  // Values the form or a template last put in each suggested field. A suggestion
-  // replaces a field only while it still holds that value; anything else is the
-  // creator's explicit choice and survives mode, product and template refreshes.
-  let templateSet: { priority: string; planning_scope: string } = {
-    priority: "",
-    planning_scope: "",
+  // Suggested fields the creator actually edited in this form (reset per form).
+  // An edited field is explicit intent, even when it was returned to a suggested or
+  // default value, and survives mode, product and template refreshes. Untouched
+  // fields follow the active template, or the form default when it suggests nothing.
+  let touched = { priority: false, planning_scope: false };
+  let formDefaults: { priority: string; planning_scope: PlanningScope } = {
+    priority: "medium",
+    planning_scope: "project",
   };
   function applyIssueTemplate(applied: TemplateApplied) {
     if (!draft.body.trim() || draft.body === templateStarter.brief) draft.body = applied.brief;
     if (!draft.acceptance.trim() || draft.acceptance === templateStarter.verification)
       draft.acceptance = applied.verification;
     templateStarter = { brief: applied.brief, verification: applied.verification };
-    if (applied.priority && draft.priority === templateSet.priority)
-      draft.priority = templateSet.priority = applied.priority;
-    if (applied.planning_scope && draft.planning_scope === templateSet.planning_scope)
-      draft.planning_scope = templateSet.planning_scope = applied.planning_scope;
+    if (!touched.priority) draft.priority = applied.priority || formDefaults.priority;
+    if (!touched.planning_scope)
+      draft.planning_scope = applied.planning_scope || formDefaults.planning_scope;
   }
   function applyProjectTemplate(applied: TemplateApplied) {
     const starter = [applied.brief, applied.verification].filter(Boolean).join("\n\n");
     if (!projectDraft.description.trim() || projectDraft.description === templateStarter.brief)
       projectDraft.description = starter;
     templateStarter = { brief: starter, verification: "" };
-    if (applied.priority && projectDraft.priority === templateSet.priority)
-      projectDraft.priority = templateSet.priority = applied.priority;
+    if (!touched.priority) projectDraft.priority = applied.priority || formDefaults.priority;
   }
   let draft = $state({
     title: "",
@@ -882,7 +882,8 @@
     };
     issueTemplate = null;
     templateStarter = { brief: "", verification: "" };
-    templateSet = { priority: draft.priority, planning_scope: draft.planning_scope };
+    touched = { priority: false, planning_scope: false };
+    formDefaults = { priority: draft.priority, planning_scope: draft.planning_scope };
     modal = "issue";
   }
   async function saveDraft(event: SubmitEvent) {
@@ -1010,7 +1011,8 @@
         };
     projectTemplate = null;
     templateStarter = { brief: "", verification: "" };
-    templateSet = { priority: projectDraft.priority, planning_scope: "" };
+    touched = { priority: false, planning_scope: false };
+    formDefaults = { priority: projectDraft.priority, planning_scope: "project" };
     modal = "project";
   }
   async function saveProject(event: SubmitEvent) {
@@ -3514,7 +3516,9 @@
                   ><option value="canceled">Canceled</option></select
                 ></label
               >{/if}<label class="field"
-              >Priority<select bind:value={projectDraft.priority}
+              >Priority<select
+                bind:value={projectDraft.priority}
+                onchange={() => (touched.priority = true)}
                 ><option value="urgent">Urgent</option><option value="high"
                   >High</option
                 ><option value="medium">Medium</option><option value="low"
@@ -3879,7 +3883,9 @@
               bind:selection={issueTemplate}
               onapply={applyIssueTemplate}
             />{/if}<label class="field"
-            >Work route<select bind:value={draft.planning_scope}
+            >Work route<select
+              bind:value={draft.planning_scope}
+              onchange={() => (touched.planning_scope = true)}
               ><option value="project">Project work · feature or change</option><option
                 value="inbox">Inbox / exceptional maintenance</option
               ></select
@@ -3935,7 +3941,9 @@
                     >{/if}</select
                 ></label
               ><label class="field"
-                >Priority<select bind:value={draft.priority}
+                >Priority<select
+                  bind:value={draft.priority}
+                  onchange={() => (touched.priority = true)}
                   ><option value="low">Low</option><option value="medium"
                     >Medium</option
                   ><option value="high">High</option><option value="urgent"
