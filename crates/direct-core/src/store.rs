@@ -4061,6 +4061,14 @@ fn validate_verification_relationships(a: &Archive) -> Result<()> {
                 v.issue_key
             )));
         }
+        // Review closes a run and reopen cancels a pending one, so an open
+        // (pending) run is only ever its parent's current run.
+        if v.outcome == Outcome::Pending && owner.current_run.as_ref() != Some(&v.id) {
+            return Err(inconsistent(format!(
+                "run {} for {} is still pending but is not its current run; a reopened or resubmitted run must be closed",
+                v.id, v.issue_key
+            )));
+        }
     }
     for i in a.issues.iter().filter(|i| i.parent.is_none()) {
         let child = i.verification_key.as_deref().map(|k| issues[k]);

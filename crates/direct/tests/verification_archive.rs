@@ -161,6 +161,23 @@ fn lifecycle(dir: &Path) -> Value {
     assert_eq!(reopened["status"], "doing");
     assert!(reopened["current_run"].is_null());
 
+    // Done, then reopened: the passed run stays in history with no current run.
+    let accepted = ready_issue(&client, "Accepted then reopened");
+    let accepted = claim(&client, &accepted);
+    let accepted = submit(
+        &client,
+        accepted["key"].as_str().unwrap(),
+        accepted["version"].as_u64().unwrap(),
+        "accepted run",
+    );
+    let accepted = review(&client, &accepted, "passed", ["passed", "passed"], "");
+    let accepted = owner(
+        &client,
+        json!({"op":"reopen","key":accepted["key"],"expected_version":accepted["version"],"reason":"Regression found"}),
+    );
+    assert_eq!(accepted["status"], "doing");
+    assert!(accepted["current_run"].is_null());
+
     owner(&client, json!({"op":"export"}))
 }
 
@@ -209,6 +226,17 @@ fn keys(archive: &Value) -> Keys {
     let done = find(archive, "Submit, fail, resubmit, pass");
     let pending = find(archive, "Left awaiting review");
     let reopened = find(archive, "Submitted then reopened");
+    let accepted = find(archive, "Accepted then reopened");
+    let accepted_runs = runs_for(archive, accepted["key"].as_str().unwrap());
+    assert_eq!(accepted_runs.len(), 1);
+    assert_eq!(
+        accepted_runs[0]["outcome"], "passed",
+        "reopen keeps a passed run"
+    );
+    assert_eq!(
+        runs_for(archive, reopened["key"].as_str().unwrap())[0]["outcome"],
+        "canceled"
+    );
     let done_runs = runs_for(archive, done["key"].as_str().unwrap());
     assert_eq!(done_runs.len(), 2);
     let first_done_run = done_runs
@@ -353,6 +381,18 @@ fn malformed_cases() -> Vec<(&'static str, Corruption, &'static str)> {
                 a["verifications"][index]["issue_key"] = json!(k.done_child);
             },
             "run",
+        ),
+        (
+            // QC finding on bc782cd: a reopen that left its pending run open.
+            "reopened parent retaining a pending run",
+            |a, k| {
+                let parent = issue(a, &k.pending);
+                parent["status"] = json!("doing");
+                parent["current_run"] = Value::Null;
+                parent["needs_fix"] = json!(true);
+                issue(a, &k.pending_child)["status"] = json!("canceled");
+            },
+            "pending",
         ),
         (
             "run history without a verification child",
