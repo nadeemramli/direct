@@ -904,6 +904,34 @@ fn issue(conn: &Connection, key: &str) -> Result<Issue> {
     )
     .map_err(Into::into)
 }
+/// The parent's generated verification child. An inconsistent store (a
+/// missing, dangling or foreign child) is refused with an error instead of a
+/// panic, so the service keeps serving every other request.
+fn verification_child(conn: &Connection, parent: &Issue) -> Result<Issue> {
+    let inconsistent = |detail: String| {
+        err(
+            "invalid",
+            format!("{detail}; the workspace is inconsistent and nothing was changed. Restore a consistent backup before continuing this verification."),
+        )
+    };
+    let key = parent
+        .verification_key
+        .as_deref()
+        .ok_or_else(|| inconsistent(format!("{}'s verification child is missing", parent.key)))?;
+    let child = issue(conn, key).map_err(|_| {
+        inconsistent(format!(
+            "{}'s verification child {key} does not exist",
+            parent.key
+        ))
+    })?;
+    if child.parent.as_deref() != Some(parent.key.as_str()) {
+        return Err(inconsistent(format!(
+            "{key} is not {}'s verification child",
+            parent.key
+        )));
+    }
+    Ok(child)
+}
 fn run(conn: &Connection, id: &str) -> Result<Verification> {
     let data: String = conn.query_row("SELECT data FROM verifications WHERE id=?1", [id], |r| {
         r.get(0)
@@ -3746,9 +3774,9 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             let p = all::<Product>(tx, "products")?
                 .into_iter()
                 .find(|p| p.id == i.product_id)
-                .unwrap();
+                .ok_or_else(|| err("invalid", format!("{key}'s product is missing")))?;
             let mut child = match &i.verification_key {
-                Some(k) => issue(tx, k)?,
+                Some(_) => verification_child(tx, &i)?,
                 None => new_issue(
                     tx,
                     &p,
@@ -3852,7 +3880,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             v.review_note = note.clone();
             v.reviewed_by = Some(actor.into());
             v.reviewed_at = Some(at);
-            let mut child = issue(tx, i.verification_key.as_deref().unwrap())?;
+            let mut child = verification_child(tx, &i)?;
             if *outcome == Outcome::Passed {
                 i.status = Status::Done;
                 child.status = Status::Done;
@@ -3896,8 +3924,8 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                     put_run(tx, &v)?;
                 }
             }
-            if let Some(k) = &i.verification_key {
-                let mut c = issue(tx, k)?;
+            if i.verification_key.is_some() {
+                let mut c = verification_child(tx, &i)?;
                 c.status = Status::Canceled;
                 c.version += 1;
                 c.updated_at = at;
@@ -3935,6 +3963,195 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
 }
 
 /// Full archive validation, including retained file bytes and record spans.
+/// The status a generated verification child holds while `outcome` is its
+/// parent's current run (set by submit and review; reopen clears the run and
+/// cancels the child).
+fn child_status_for(outcome: &Outcome) -> Status {
+    match outcome {
+        Outcome::Pending => Status::Ready,
+        Outcome::Passed => Status::Done,
+        Outcome::Failed => Status::Doing,
+        Outcome::Canceled => Status::Canceled,
+    }
+}
+
+fn inconsistent(message: String) -> Error {
+    err(
+        "invalid",
+        format!("Inconsistent verification relationship: {message}"),
+    )
+}
+
+/// Complete reciprocal parent ↔ verification child ↔ run validation, so a
+/// restored workspace can never reach submit, review or reopen with a
+/// relationship those commands cannot resolve.
+fn validate_verification_relationships(a: &Archive) -> Result<()> {
+    let issues: HashMap<_, _> = a.issues.iter().map(|i| (i.key.as_str(), i)).collect();
+    let runs: HashMap<_, _> = a.verifications.iter().map(|v| (v.id.as_str(), v)).collect();
+    if runs.len() != a.verifications.len() {
+        return Err(err("invalid", "Duplicate verification IDs"));
+    }
+    for i in &a.issues {
+        if i.parent
+            .as_ref()
+            .is_some_and(|k| !issues.contains_key(k.as_str()) || k == &i.key)
+            || i.verification_key
+                .as_ref()
+                .is_some_and(|k| !issues.contains_key(k.as_str()) || k == &i.key)
+            || i.current_run
+                .as_ref()
+                .is_some_and(|r| !runs.contains_key(r.as_str()))
+        {
+            return Err(err(
+                "invalid",
+                format!(
+                    "Unresolved issue relationship on {}: its parent, verification child or current run does not exist",
+                    i.key
+                ),
+            ));
+        }
+    }
+    for i in &a.issues {
+        let Some(parent_key) = &i.parent else {
+            continue;
+        };
+        // A generated verification child.
+        let parent = issues[parent_key.as_str()];
+        if parent.parent.is_some() {
+            return Err(inconsistent(format!(
+                "{} names {parent_key} as its parent, but {parent_key} is itself a verification child",
+                i.key
+            )));
+        }
+        if parent.verification_key.as_deref() != Some(i.key.as_str()) {
+            return Err(inconsistent(format!(
+                "verification child {} names {parent_key} as its parent, but {parent_key}'s verification child is {}",
+                i.key,
+                parent.verification_key.as_deref().unwrap_or("missing")
+            )));
+        }
+        if i.verification_key.is_some() {
+            return Err(inconsistent(format!(
+                "verification child {} cannot have its own verification child",
+                i.key
+            )));
+        }
+        if let Some(run) = &i.current_run {
+            if runs[run.as_str()].issue_key != *parent_key {
+                return Err(inconsistent(format!(
+                    "verification child {}'s current run belongs to {}, not its parent {parent_key}",
+                    i.key, runs[run.as_str()].issue_key
+                )));
+            }
+        }
+    }
+    for v in &a.verifications {
+        let Some(owner) = issues.get(v.issue_key.as_str()) else {
+            return Err(err("invalid", "Orphan comment or verification"));
+        };
+        if owner.parent.is_some() {
+            return Err(inconsistent(format!(
+                "run {} is recorded against verification child {} instead of its parent",
+                v.id, v.issue_key
+            )));
+        }
+        if owner.verification_key.is_none() {
+            return Err(inconsistent(format!(
+                "{} has verification run history but no verification child",
+                v.issue_key
+            )));
+        }
+    }
+    for i in a.issues.iter().filter(|i| i.parent.is_none()) {
+        let child = i.verification_key.as_deref().map(|k| issues[k]);
+        if let Some(child) = child {
+            if child.parent.as_ref() != Some(&i.key) {
+                return Err(inconsistent(format!(
+                    "{}'s verification child {} belongs to {}",
+                    i.key,
+                    child.key,
+                    child.parent.as_deref().unwrap_or("no parent")
+                )));
+            }
+            if child.product_id != i.product_id
+                || child.project_id != i.project_id
+                || child.milestone_id != i.milestone_id
+            {
+                return Err(inconsistent(format!(
+                    "{}'s verification child {} has a different product, project or milestone",
+                    i.key, child.key
+                )));
+            }
+        }
+        let Some(run_id) = &i.current_run else {
+            if matches!(i.status, Status::Verify | Status::Done) {
+                return Err(err(
+                    "invalid",
+                    format!("Missing required verification evidence for {}", i.key),
+                ));
+            }
+            if let Some(child) = child.filter(|c| c.status != Status::Canceled) {
+                return Err(inconsistent(format!(
+                    "{} has no current run, but its verification child {} has status {:?} instead of Canceled",
+                    i.key, child.key, child.status
+                )));
+            }
+            continue;
+        };
+        let v = runs[run_id.as_str()];
+        if v.issue_key != i.key {
+            return Err(inconsistent(format!(
+                "{}'s current run {run_id} belongs to {}",
+                i.key, v.issue_key
+            )));
+        }
+        let Some(child) = child else {
+            return Err(inconsistent(format!(
+                "{} has a current run but no verification child",
+                i.key
+            )));
+        };
+        if child.current_run.as_ref() != Some(run_id) {
+            return Err(inconsistent(format!(
+                "{}'s verification child {} records a different current run",
+                i.key, child.key
+            )));
+        }
+        let expected_parent = match v.outcome {
+            Outcome::Pending => Some(Status::Verify),
+            Outcome::Passed => Some(Status::Done),
+            Outcome::Failed | Outcome::Canceled => None,
+        };
+        if expected_parent.as_ref().is_some_and(|s| *s != i.status)
+            || (expected_parent.is_none() && matches!(i.status, Status::Verify | Status::Done))
+        {
+            return Err(err(
+                "invalid",
+                format!(
+                    "Status disagrees with verification evidence: {} is {:?} but its current run is {:?}",
+                    i.key, i.status, v.outcome
+                ),
+            ));
+        }
+        if i.status == Status::Done
+            && (v.results.len() != v.steps.len()
+                || v.results.iter().any(|r| r.outcome != Outcome::Passed))
+        {
+            return Err(err(
+                "invalid",
+                format!("Status disagrees with verification evidence: {} is Done without every step passing", i.key),
+            ));
+        }
+        if child.status != child_status_for(&v.outcome) {
+            return Err(inconsistent(format!(
+                "verification child {} has status {:?} but {}'s current run is {:?}",
+                child.key, child.status, i.key, v.outcome
+            )));
+        }
+    }
+    Ok(())
+}
+
 pub fn validate_archive(a: &Archive) -> Result<()> {
     validate_archive_structure(a)?;
     sources::validate_source_archive_bytes(a)
@@ -4453,50 +4670,7 @@ pub(crate) fn validate_archive_structure(a: &Archive) -> Result<()> {
             validate_e2e(evidence, &verification.build_ref)?;
         }
     }
-    let run_ids: HashSet<_> = a.verifications.iter().map(|v| v.id.clone()).collect();
-    if run_ids.len() != a.verifications.len() {
-        return Err(err("invalid", "Duplicate verification IDs"));
-    }
-    for i in &a.issues {
-        if i.parent
-            .as_ref()
-            .is_some_and(|k| !keys.contains(k) || k == &i.key)
-            || i.verification_key
-                .as_ref()
-                .is_some_and(|k| !keys.contains(k))
-            || i.current_run.as_ref().is_some_and(|r| !run_ids.contains(r))
-        {
-            return Err(err("invalid", "Unresolved issue relationship"));
-        }
-        if let Some(k) = &i.verification_key {
-            let child = a.issues.iter().find(|c| c.key == *k).unwrap();
-            if child.parent.as_ref() != Some(&i.key)
-                || child.product_id != i.product_id
-                || child.project_id != i.project_id
-                || child.milestone_id != i.milestone_id
-            {
-                return Err(err("invalid", "Broken verification child link"));
-            }
-        }
-        if i.parent.is_none() && matches!(i.status, Status::Verify | Status::Done) {
-            let v = a
-                .verifications
-                .iter()
-                .find(|v| Some(&v.id) == i.current_run.as_ref() && v.issue_key == i.key)
-                .ok_or_else(|| err("invalid", "Missing required verification evidence"))?;
-            if (i.status == Status::Done
-                && (v.outcome != Outcome::Passed
-                    || v.results.len() != v.steps.len()
-                    || v.results.iter().any(|r| r.outcome != Outcome::Passed)))
-                || (i.status == Status::Verify && v.outcome != Outcome::Pending)
-            {
-                return Err(err(
-                    "invalid",
-                    "Status disagrees with verification evidence",
-                ));
-            }
-        }
-    }
+    validate_verification_relationships(a)?;
     let mut comment_ids = HashSet::new();
     let mut comment_sources = HashSet::new();
     for comment in &a.comments {
