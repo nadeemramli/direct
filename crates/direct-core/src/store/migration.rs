@@ -482,7 +482,7 @@ fn check<'a>(conn: &Connection, bytes: &'a [u8]) -> Result<Checked<'a>> {
     }
 
     // The merged workspace must satisfy every archive invariant.
-    current.format = 12;
+    current.format = 13;
     current.products.extend(artifact.products.iter().cloned());
     current.projects.extend(artifact.projects.iter().cloned());
     current.goals.extend(artifact.goals.iter().cloned());

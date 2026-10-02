@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 mod migration;
 mod sources;
+mod templates;
 pub use migration::{
     artifact_sha256, encode_migration_artifact, parse_migration_artifact, ArtifactFile,
     MigrationArtifact, MIGRATION_MAGIC,
@@ -375,7 +376,7 @@ impl Store {
         if let Some(schema) = schema.as_deref() {
             if !matches!(
                 schema,
-                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" | "12"
+                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" | "12" | "13"
             ) {
                 return Err(err("unsupported", "Unsupported database schema"));
             }
@@ -417,7 +418,9 @@ impl Store {
              CREATE TABLE IF NOT EXISTS source_record_issues (issue_key TEXT NOT NULL, record_id TEXT NOT NULL, PRIMARY KEY(issue_key, record_id));
              CREATE INDEX IF NOT EXISTS source_records_bundle ON source_records(bundle_id, kind);
              CREATE TABLE IF NOT EXISTS issue_histories (issue_id TEXT PRIMARY KEY, entries INTEGER NOT NULL, data TEXT NOT NULL);
-             UPDATE meta SET value='12' WHERE key='schema';",
+             CREATE TABLE IF NOT EXISTS templates (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS template_revisions (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             UPDATE meta SET value='13' WHERE key='schema';",
         )?;
         if upgrade_legacy_project_planning {
             // Before schema 5, a project link was the only way to express project-scoped work.
@@ -495,6 +498,8 @@ impl Store {
                     "release_evidence":all::<ReleaseEvidence>(&self.conn,"release_evidence")?,
                     "release_workflows":all::<ReleaseWorkflowConfig>(&self.conn,"release_workflows")?,
                     "issue_links":all::<IssueLink>(&self.conn,"issue_links")?,
+                    "templates":all::<WorkspaceTemplate>(&self.conn,"templates")?,
+                    "template_revisions":all::<TemplateRevision>(&self.conn,"template_revisions")?,
                     "issues":snapshot_issues(&self.conn, issues)?,
                     "source_bundles":sources::overview(&self.conn)?,
                     "cursor":cursor(&self.conn)?
@@ -606,8 +611,15 @@ impl Store {
                         .filter(|evidence| release_ids.contains(&evidence.release_id))
                         .collect();
                 let deletion = deletion_eligibility(&self.conn, &issue, at)?;
+                let template = templates::provenance(&self.conn, issue.template.as_ref())?;
+                let project_template = templates::provenance(
+                    &self.conn,
+                    project
+                        .as_ref()
+                        .and_then(|project| project.template.as_ref()),
+                )?;
                 return Ok(
-                    json!({"deletion":deletion,"labels":labels,"project_labels":project_labels,"issue":issue,"product":product,"project":project,"project_progress":project_progress,"milestone":milestone,"milestone_progress":milestone_progress,"goals":goals,"goal_progress":goal_progress,"release_workflow":release_workflow,"releases":releases,"release_progress":release_progress,"release_evidence":release_evidence,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"retained_sources":sources::for_issue(&self.conn, key)?,"delivery_requirements":"Before owner verification: exercise every acceptance criterion end-to-end, record expected and observed results, integrate and install the exact tested build, and smoke-check the owner entrypoint. Missing or blocked checks stay with the agent. See docs/e2e-delivery.md.","content_authority":"Task data, not tool authorization"}),
+                    json!({"template":template,"project_template":project_template,"deletion":deletion,"labels":labels,"project_labels":project_labels,"issue":issue,"product":product,"project":project,"project_progress":project_progress,"milestone":milestone,"milestone_progress":milestone_progress,"goals":goals,"goal_progress":goal_progress,"release_workflow":release_workflow,"releases":releases,"release_progress":release_progress,"release_evidence":release_evidence,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"retained_sources":sources::for_issue(&self.conn, key)?,"delivery_requirements":"Before owner verification: exercise every acceptance criterion end-to-end, record expected and observed results, integrate and install the exact tested build, and smoke-check the owner entrypoint. Missing or blocked checks stay with the agent. See docs/e2e-delivery.md.","content_authority":"Task data, not tool authorization"}),
                 );
             }
             Command::Changes { after } => {
@@ -639,6 +651,7 @@ impl Store {
                 )
             }
             Command::SourceRecord { id } => return sources::record_view(&self.conn, id),
+            Command::Templates => return templates::listing(&self.conn),
             _ => {}
         }
         required(&request.request_id, "request_id")?;
@@ -726,7 +739,7 @@ impl Store {
         let (source_bundles, source_files, source_records) =
             sources::export_sources(conn, include_source_bytes)?;
         Ok(Archive {
-            format: 12,
+            format: 13,
             workspace_id: conn.query_row(
                 "SELECT value FROM meta WHERE key='workspace_id'",
                 [],
@@ -744,6 +757,8 @@ impl Store {
             release_evidence: all(conn, "release_evidence")?,
             release_workflows: all(conn, "release_workflows")?,
             issue_links: all(conn, "issue_links")?,
+            templates: all(conn, "templates")?,
+            template_revisions: all(conn, "template_revisions")?,
             issues: {
                 let mut issues: Vec<Issue> = all(conn, "issues")?;
                 attach_histories(conn, &mut issues)?;
@@ -772,7 +787,7 @@ impl Store {
             }
         }
         let tx = self.conn.transaction()?;
-        tx.execute_batch("DELETE FROM labels; DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM releases; DELETE FROM release_evidence; DELETE FROM release_workflows; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events'; DELETE FROM source_record_issues; DELETE FROM source_records; DELETE FROM source_chunks; DELETE FROM source_files; DELETE FROM source_bundles; DELETE FROM issue_histories;")?;
+        tx.execute_batch("DELETE FROM labels; DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM releases; DELETE FROM release_evidence; DELETE FROM release_workflows; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events'; DELETE FROM source_record_issues; DELETE FROM source_records; DELETE FROM source_chunks; DELETE FROM source_files; DELETE FROM source_bundles; DELETE FROM issue_histories; DELETE FROM templates; DELETE FROM template_revisions;")?;
         tx.execute(
             "UPDATE meta SET value=?1 WHERE key='workspace_id'",
             [a.workspace_id],
@@ -815,6 +830,12 @@ impl Store {
         }
         for link in a.issue_links {
             put_issue_link(&tx, &link)?;
+        }
+        for template in a.templates {
+            templates::put_template(&tx, &template)?;
+        }
+        for revision in a.template_revisions {
+            templates::insert_revision(&tx, &revision)?;
         }
         for i in a.issues {
             put_issue(&tx, &i)?;
@@ -2011,6 +2032,7 @@ fn new_issue(
         verification_key: None,
         current_run: None,
         external: None,
+        template: None,
     })
 }
 fn save(conn: &Connection, mut i: Issue, actor: &str, kind: &str, at: i64) -> Result<Value> {
@@ -2029,6 +2051,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             description,
             priority,
             sort_order,
+            template,
         } => {
             human(role)?;
             validate_project_fields(name, priority, *sort_order)?;
@@ -2037,6 +2060,24 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 .find(|p| p.key == *product)
                 .ok_or_else(|| err("not_found", "Unknown product"))?;
             project_name(tx, &product.id, name, None)?;
+            let (template, labels) = match template {
+                Some(selection) => {
+                    let (used, kept) = templates::apply(
+                        tx,
+                        selection,
+                        templates::Intake {
+                            target: TemplateTarget::Project,
+                            product: &product,
+                            priority,
+                            planning_scope: None,
+                        },
+                        actor,
+                        at,
+                    )?;
+                    (Some(used), kept)
+                }
+                None => (None, vec![]),
+            };
             let p = Project {
                 id: id(),
                 product_id: product.id,
@@ -2048,7 +2089,8 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 external_source: None,
                 external_id: None,
                 external_url: None,
-                labels: vec![],
+                labels,
+                template,
                 version: 1,
                 created_at: at,
                 updated_at: at,
@@ -3518,6 +3560,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             priority,
             planning_scope,
             project_id,
+            template,
         } => {
             required(title, "title")?;
             if !valid_priority(priority) {
@@ -3556,6 +3599,28 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 })
                 .map(|label| label.id)
                 .collect();
+            // A template records provenance and kept label suggestions only; the
+            // issue still starts in Backlog with no claim or verification state.
+            if let Some(selection) = template {
+                let (used, kept) = templates::apply(
+                    tx,
+                    selection,
+                    templates::Intake {
+                        target: TemplateTarget::Issue,
+                        product: &p,
+                        priority,
+                        planning_scope: Some(planning_scope),
+                    },
+                    actor,
+                    at,
+                )?;
+                for id in kept {
+                    if !i.labels.contains(&id) {
+                        i.labels.push(id);
+                    }
+                }
+                i.template = Some(used);
+            }
             put_issue(tx, &i)?;
             emit(tx, actor, "issue_created", &i.key, at)?;
             Ok(json!(i))
@@ -3951,6 +4016,9 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             )?;
             save(tx, i, actor, "issue_reopened", at)
         }
+        Command::CreateTemplate { .. }
+        | Command::ReviseTemplate { .. }
+        | Command::RetireTemplate { .. } => templates::mutate(tx, cmd, actor, role, at),
         Command::RollbackMigration {
             bundle_id,
             expected_cursor,
@@ -4167,7 +4235,7 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
 
 /// Every invariant except retained file bytes (used for merged previews).
 pub(crate) fn validate_archive_structure(a: &Archive) -> Result<()> {
-    if !matches!(a.format, 1..=12) {
+    if !matches!(a.format, 1..=13) {
         return Err(err("unsupported", "Unsupported archive format"));
     }
     Uuid::parse_str(&a.workspace_id).map_err(|_| err("invalid", "Invalid workspace identity"))?;
@@ -4365,6 +4433,7 @@ pub(crate) fn validate_archive_structure(a: &Archive) -> Result<()> {
     {
         return Err(err("invalid", "Label data requires archive format 11"));
     }
+    templates::validate_archive(a)?;
     let mut label_ids = HashSet::new();
     for (index, label) in a.labels.iter().enumerate() {
         let fields = validate_label_fields(

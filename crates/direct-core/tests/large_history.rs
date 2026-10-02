@@ -51,6 +51,7 @@ fn workspace() -> Archive {
             external_id: None,
             external_url: None,
             labels: vec![],
+            template: None,
             version: 1,
             created_at: 1,
             updated_at: 1,
@@ -129,10 +130,11 @@ fn workspace() -> Archive {
                 archived_at: None,
                 history: history(index),
             }),
+            template: None,
         })
         .collect();
     Archive {
-        format: 12,
+        format: 13,
         workspace_id: "00000000-0000-4000-8000-00000000bbbb".into(),
         products: vec![product],
         projects,
@@ -146,6 +148,8 @@ fn workspace() -> Archive {
         release_evidence: vec![],
         release_workflows: vec![],
         issue_links: vec![],
+        templates: vec![],
+        template_revisions: vec![],
         issues,
         comments: vec![],
         verifications: vec![],

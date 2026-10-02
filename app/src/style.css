@@ -2098,3 +2098,120 @@ dialog::backdrop {
     padding-bottom: 16px;
   }
 }
+
+/* Intake templates (DIR-22) */
+.template-picker {
+  display: grid;
+  gap: 6px;
+  margin-bottom: 4px;
+}
+.template-meta {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+}
+.template-meta small {
+  color: #8d979f;
+}
+.template-chip {
+  display: inline-block;
+  font-size: 10px;
+  padding: 3px 7px;
+  border-radius: 5px;
+  background: #262d32;
+  color: #abb5bd;
+  white-space: nowrap;
+}
+.template-chip.supplement {
+  background: #292c3e;
+  color: #b8bfe5;
+}
+.template-labels {
+  border: 0;
+  padding: 0;
+  margin: 0;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px 12px;
+}
+.template-labels legend {
+  padding: 0;
+  margin-bottom: 4px;
+}
+.template-picker .checkbox,
+.template-form .checkbox,
+.template-supplement .checkbox {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 12px;
+}
+.template-rows {
+  display: grid;
+  gap: 2px;
+  padding: 0 24px 24px;
+}
+.template-row.active {
+  background: #262d32;
+}
+.template-form {
+  display: grid;
+  gap: 8px;
+}
+.template-supplement {
+  border: 1px solid #2b3238;
+  border-radius: 6px;
+  padding: 6px 10px;
+}
+.template-supplement summary {
+  cursor: pointer;
+  font-size: 12px;
+}
+.retire-form {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 8px;
+  margin: 12px 0;
+}
+.retire-form .field {
+  flex: 1 1 220px;
+}
+.template-fields {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: 4px 12px;
+  margin: 6px 0 12px;
+  font-size: 12px;
+}
+.template-fields dt {
+  color: #8d979f;
+}
+.template-fields dd {
+  margin: 0;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.template-labels legend {
+  width: 100%;
+}
+.template-picker .checkbox input,
+.template-form .checkbox input,
+.template-supplement .checkbox input {
+  width: auto;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+}
+.template-picker .checkbox,
+.template-form .checkbox,
+.template-supplement .checkbox {
+  flex-direction: row;
+  white-space: nowrap;
+  margin-right: 12px;
+}
+.field.template-labels {
+  flex-direction: row;
+  align-items: center;
+}

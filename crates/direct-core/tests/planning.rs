@@ -146,7 +146,7 @@ fn goals_milestones_progress_context_and_restore_follow_real_outcomes() {
     assert_eq!(context["goal_progress"][0]["completed"], 1);
 
     let archive = store.export().unwrap();
-    assert_eq!(archive.format, 12);
+    assert_eq!(archive.format, 13);
     assert_eq!(
         archive.goals[0].external_id.as_deref(),
         Some("initiative-123")
@@ -294,6 +294,7 @@ fn planning_hierarchy_rejects_cross_scope_duplicates_and_untyped_cycles() {
         verification_key: None,
         current_run: None,
         external: None,
+        template: None,
     });
     assert_eq!(validate_archive(&broken).unwrap_err().code, "invalid");
 }

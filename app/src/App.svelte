@@ -20,6 +20,11 @@
     saveLayout,
   } from "./layout";
   import type { ScrollAnchor, Section } from "./layout";
+  import TemplatePicker from "./TemplatePicker.svelte";
+  import type { Applied as TemplateApplied } from "./TemplatePicker.svelte";
+  import TemplatesView from "./TemplatesView.svelte";
+  import { provenanceLabel } from "./templates";
+  import type { PlanningScope, TemplateSelection } from "./api";
   import type {
     Snapshot,
     Issue,
@@ -217,6 +222,36 @@
     preview_url_template: "",
     promotion_policy: "verified_owner_approval",
   });
+  // Intake template (DIR-22): the selection sent with create_issue/create_project and
+  // the last starter text applied, so re-applying never overwrites the owner's edits.
+  let issueTemplate = $state<TemplateSelection | null>(null);
+  let projectTemplate = $state<TemplateSelection | null>(null);
+  let templateStarter = { brief: "", verification: "" };
+  // Suggested fields the creator actually edited in this form (reset per form).
+  // An edited field is explicit intent, even when it was returned to a suggested or
+  // default value, and survives mode, product and template refreshes. Untouched
+  // fields follow the active template, or the form default when it suggests nothing.
+  let touched = { priority: false, planning_scope: false };
+  let formDefaults: { priority: string; planning_scope: PlanningScope } = {
+    priority: "medium",
+    planning_scope: "project",
+  };
+  function applyIssueTemplate(applied: TemplateApplied) {
+    if (!draft.body.trim() || draft.body === templateStarter.brief) draft.body = applied.brief;
+    if (!draft.acceptance.trim() || draft.acceptance === templateStarter.verification)
+      draft.acceptance = applied.verification;
+    templateStarter = { brief: applied.brief, verification: applied.verification };
+    if (!touched.priority) draft.priority = applied.priority || formDefaults.priority;
+    if (!touched.planning_scope)
+      draft.planning_scope = applied.planning_scope || formDefaults.planning_scope;
+  }
+  function applyProjectTemplate(applied: TemplateApplied) {
+    const starter = [applied.brief, applied.verification].filter(Boolean).join("\n\n");
+    if (!projectDraft.description.trim() || projectDraft.description === templateStarter.brief)
+      projectDraft.description = starter;
+    templateStarter = { brief: starter, verification: "" };
+    if (!touched.priority) projectDraft.priority = applied.priority || formDefaults.priority;
+  }
   let draft = $state({
     title: "",
     body: "",
@@ -554,6 +589,8 @@
   let title = $derived(
     view === "theoria"
       ? "Theoria"
+      : view === "templates"
+      ? "Intake templates"
       : view === "sources"
       ? "Imported sources"
       : product !== "all"
@@ -1036,6 +1073,10 @@
       key: "",
       version: 0,
     };
+    issueTemplate = null;
+    templateStarter = { brief: "", verification: "" };
+    touched = { priority: false, planning_scope: false };
+    formDefaults = { priority: draft.priority, planning_scope: draft.planning_scope };
     modal = "issue";
   }
   async function saveDraft(event: SubmitEvent) {
@@ -1053,6 +1094,7 @@
               priority: draft.priority,
               planning_scope: draft.planning_scope,
               project_id: draft.project_id || null,
+              ...(issueTemplate ? { template: issueTemplate } : {}),
             },
             formIntent,
           )
@@ -1072,6 +1114,8 @@
           );
     if (result) {
       modal = null;
+      // Intake can start from the template manager; show the new issue in the work list.
+      if (view === "templates") view = "all";
       await choose(result.key);
     }
   }
@@ -1169,6 +1213,10 @@
           sort_order: 0,
           version: 0,
         };
+    projectTemplate = null;
+    templateStarter = { brief: "", verification: "" };
+    touched = { priority: false, planning_scope: false };
+    formDefaults = { priority: projectDraft.priority, planning_scope: "project" };
     modal = "project";
   }
   async function saveProject(event: SubmitEvent) {
@@ -1196,11 +1244,13 @@
               description: projectDraft.description,
               priority: projectDraft.priority,
               sort_order: projectDraft.sort_order,
+              ...(projectTemplate ? { template: projectTemplate } : {}),
             },
         formIntent,
       );
       product = saved.product_id;
       projectFilter = saved.id;
+      if (view === "templates") view = "all";
       modal = null;
     } catch (e) {
       formFailure(e);
@@ -1999,6 +2049,17 @@
             product = "all";
           }}><span>✓</span> Completed</button
         >
+        <button
+          title="Intake templates"
+          class:active={view === "templates"}
+          onclick={() => {
+            view = "templates";
+            product = "all";
+            selected = "";
+            context = null;
+          }}><span>▦</span> Intake templates
+          <small>{(data.templates || []).filter((t) => t.status === "active").length}</small></button
+        >
       </nav>{/if}
       {@render sectionToggle("theoria", "THEORIA")}
       {#if sectionOpen("theoria")}<nav aria-label="Theoria">
@@ -2257,6 +2318,8 @@
               <p>Run the explicit Theoria sync contract to populate the cache.</p>
             </div>{/if}
         </aside>
+      {:else if view === "templates"}
+        <TemplatesView {data} {connected} {commit} controls={detailControls} />
       {:else if view === "sources"}
         <section class="list-panel sources-list" aria-label="Imported sources">
           <div class="page-heading">
@@ -2629,6 +2692,9 @@
                 >{selectedProject.status || "active"} · {selectedProject.priority ||
                   "medium"} priority · order {selectedProject.sort_order || 0}</span
               >
+              {#if selectedProject.template}<span class="template-chip" title="Intake template provenance"
+                  >▦ {provenanceLabel(data, selectedProject.template)}</span
+                >{/if}
             </div>
             <div class="project-progress-copy">
               <b>{progress.completion_percent}%</b>
@@ -2879,6 +2945,16 @@
                     <p>
                       Historical completion is provenance only; it is not a passed Direct verification.
                       <a href={current.external.url} target="_blank" rel="noreferrer">Open source record</a>
+                    </p>
+                  </div>
+                </div>{/if}
+              {#if context?.template}<div class="info-card template-provenance" aria-label="Template provenance">
+                  <span class="card-symbol">▦</span>
+                  <div>
+                    <b>Created from {context.template.revision.name} · revision {context.template.use.revision}{context.template.outdated ? ` · outdated (revision ${context.template.current_revision} is current)` : ""}{context.template.retired ? " · template retired" : ""}</b>
+                    <p>
+                      Execution mode: {context.template.use.execution_mode || "not set"}{context.template.use.supplement_product_id ? " · product supplement applied" : ""}{context.template.use.overrides.length ? ` · overridden: ${context.template.use.overrides.join(", ")}` : ""}.
+                      Provenance only; it does not make work Ready or count as verification.
                     </p>
                   </div>
                 </div>{/if}
@@ -3707,6 +3783,13 @@
                 >{/each}
             </select></label
           >
+          {#if !projectDraft.id}<TemplatePicker
+              {data}
+              target="project"
+              productId={data.products.find((p) => p.key === projectDraft.product)?.id || ""}
+              bind:selection={projectTemplate}
+              onapply={applyProjectTemplate}
+            />{/if}
           <label class="field"
             >Project name<input
               required
@@ -3731,7 +3814,9 @@
                   ><option value="canceled">Canceled</option></select
                 ></label
               >{/if}<label class="field"
-              >Priority<select bind:value={projectDraft.priority}
+              >Priority<select
+                bind:value={projectDraft.priority}
+                onchange={() => (touched.priority = true)}
                 ><option value="urgent">Urgent</option><option value="high"
                   >High</option
                 ><option value="medium">Medium</option><option value="low"
@@ -4089,8 +4174,16 @@
                     >{p.name} · {p.key}</option
                   >{/each}</select
               ></label
-            >{/if}<label class="field"
-            >Work route<select bind:value={draft.planning_scope}
+            ><TemplatePicker
+              {data}
+              target="issue"
+              productId={data.products.find((p) => p.key === draft.product)?.id || ""}
+              bind:selection={issueTemplate}
+              onapply={applyIssueTemplate}
+            />{/if}<label class="field"
+            >Work route<select
+              bind:value={draft.planning_scope}
+              onchange={() => (touched.planning_scope = true)}
               ><option value="project">Project work · feature or change</option><option
                 value="inbox">Inbox / exceptional maintenance</option
               ></select
@@ -4146,7 +4239,9 @@
                     >{/if}</select
                 ></label
               ><label class="field"
-                >Priority<select bind:value={draft.priority}
+                >Priority<select
+                  bind:value={draft.priority}
+                  onchange={() => (touched.priority = true)}
                   ><option value="low">Low</option><option value="medium"
                     >Medium</option
                   ><option value="high">High</option><option value="urgent"

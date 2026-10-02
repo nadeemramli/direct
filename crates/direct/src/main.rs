@@ -1,7 +1,8 @@
-use anyhow::{bail, Context, Result};
+use anyhow::{anyhow, bail, Context, Result};
 use clap::{ArgGroup, Parser, Subcommand};
 use direct_core::{
-    Archive, Command, GitTraceKind, PlanningScope, Request, Role, Step, Store, TheoriaDocumentInput,
+    Archive, Command, ExecutionMode, GitTraceKind, PlanningScope, Request, Role, Step, Store,
+    TemplateSelection, TheoriaDocumentInput,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -56,6 +57,8 @@ enum Cli {
     Context {
         key: String,
     },
+    /// List owner-managed intake templates and every immutable revision (read-only).
+    Templates,
     /// Claim owner-ready work with a stable request ID.
     Claim {
         key: String,
@@ -175,6 +178,19 @@ enum Cli {
         planning_scope: String,
         #[arg(long)]
         project_id: Option<String>,
+        /// Apply an active issue template; records its exact revision as provenance.
+        #[arg(long, requires = "template_revision")]
+        template_id: Option<String>,
+        /// The template's current revision, as listed by `templates`.
+        #[arg(long, requires = "template_id")]
+        template_revision: Option<u32>,
+        /// Override the template's suggested execution mode: agent, owner, paired, prototype,
+        /// or none to clear the suggestion explicitly.
+        #[arg(long, requires = "template_id")]
+        execution_mode: Option<String>,
+        /// Keep a label the template suggests (repeatable).
+        #[arg(long = "keep-label", requires = "template_id")]
+        keep_labels: Vec<String>,
     },
     /// Execute a JSON agent command from a file or stdin. Human approval is unavailable here.
     Call {
@@ -357,8 +373,8 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             };
         }
     }
-    if expected.format < 12 {
-        expected.format = 12;
+    if expected.format < 13 {
+        expected.format = 13;
     }
     fs::create_dir(restore_dir)
         .context("Create the recovery workspace beneath an existing parent")?;
@@ -396,6 +412,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             "goals_and_milestones": true,
             "theoria_records": true,
             "labels": true,
+            "templates_and_provenance": true,
             "events_and_request_replays": true
         },
         "source_format": source_format,
@@ -408,6 +425,8 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             "goals": archive.goals.len(),
             "milestones": archive.milestones.len(),
             "labels": archive.labels.len(),
+            "templates": archive.templates.len(),
+            "template_revisions": archive.template_revisions.len(),
             "issues": archive.issues.len(),
             "comments": archive.comments.len(),
             "verification_runs": archive.verifications.len(),
@@ -430,6 +449,33 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             "bytes": archive.source_files.iter().map(|file| file.bytes).sum::<u64>(),
             "note": "Retained file bytes and record spans were verified during archive validation"
         }
+    }))
+}
+
+fn template_selection(
+    template_id: Option<String>,
+    revision: Option<u32>,
+    execution_mode: Option<&str>,
+    labels: Vec<String>,
+) -> Result<Option<TemplateSelection>> {
+    let (Some(template_id), Some(revision)) = (template_id, revision) else {
+        return Ok(None);
+    };
+    let execution_mode = execution_mode
+        .map(|mode| match mode {
+            "none" => Ok(None),
+            mode => serde_json::from_value::<ExecutionMode>(json!(mode))
+                .map(Some)
+                .map_err(|_| {
+                    anyhow!("execution mode must be agent, owner, paired, prototype or none")
+                }),
+        })
+        .transpose()?;
+    Ok(Some(TemplateSelection {
+        template_id,
+        revision,
+        execution_mode,
+        labels,
     }))
 }
 
@@ -696,6 +742,11 @@ fn run() -> Result<()> {
                     request_id: String::new(),
                     command: Command::Context { key },
                 },
+                Cli::Templates => Request {
+                    actor: args.actor,
+                    request_id: String::new(),
+                    command: Command::Templates,
+                },
                 Cli::TheoriaSync {
                     root,
                     catalog,
@@ -767,7 +818,17 @@ fn run() -> Result<()> {
                     priority,
                     planning_scope,
                     project_id,
+                    template_id,
+                    template_revision,
+                    execution_mode,
+                    keep_labels,
                 } => {
+                    let template = template_selection(
+                        template_id,
+                        template_revision,
+                        execution_mode.as_deref(),
+                        keep_labels,
+                    )?;
                     let planning_scope = match planning_scope.as_str() {
                         "project" => PlanningScope::Project,
                         "inbox" => PlanningScope::Inbox,
@@ -785,6 +846,7 @@ fn run() -> Result<()> {
                             priority,
                             planning_scope,
                             project_id,
+                            template,
                         },
                     }
                 }
@@ -979,6 +1041,47 @@ mod tests {
     }
 
     #[test]
+    fn native_create_maps_template_selection_without_changing_legacy_requests() {
+        assert!(template_selection(None, None, None, vec![])
+            .unwrap()
+            .is_none());
+        let selection = template_selection(
+            Some("t".into()),
+            Some(2),
+            Some("prototype"),
+            vec!["label".into()],
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(selection.revision, 2);
+        assert_eq!(
+            selection.execution_mode,
+            Some(Some(ExecutionMode::Prototype))
+        );
+        let cleared = template_selection(Some("t".into()), Some(1), Some("none"), vec![])
+            .unwrap()
+            .unwrap();
+        assert_eq!(cleared.execution_mode, Some(None));
+        assert_eq!(
+            serde_json::to_value(&cleared).unwrap()["execution_mode"],
+            Value::Null,
+            "an explicit clear is sent as null, not omitted"
+        );
+        assert!(serde_json::to_value(
+            template_selection(Some("t".into()), Some(1), None, vec![])
+                .unwrap()
+                .unwrap()
+        )
+        .unwrap()
+        .get("execution_mode")
+        .is_none());
+        assert_eq!(selection.labels, vec!["label".to_string()]);
+        assert!(template_selection(Some("t".into()), Some(1), Some("autopilot"), vec![]).is_err());
+        let cli = Args::try_parse_from(["direct", "create", "Title", "--template-id", "t"]);
+        assert!(cli.is_err(), "a template needs its exact revision");
+    }
+
+    #[test]
     fn native_submit_requires_at_least_one_manual_step() {
         assert!(Args::try_parse_from([
             "direct",
@@ -1074,6 +1177,39 @@ mod tests {
     }
 
     #[test]
+    fn recovery_check_round_trips_templates_and_their_provenance() {
+        let temp = TempDir::new().unwrap();
+        let mut store = Store::open(&temp.path().join("source.db")).unwrap();
+        let mut run = |value: Value| {
+            let mut value = value;
+            value["actor"] = json!("owner");
+            value["request_id"] = json!(uuid::Uuid::new_v4().to_string());
+            store
+                .execute(serde_json::from_value(value).unwrap(), Role::Human)
+                .unwrap()
+        };
+        let created = run(
+            json!({"op":"create_template","target":"issue","name":"Bug","shape":"bug","content":{"intent":"What broke?"}}),
+        );
+        let id = created["template"]["id"].clone();
+        run(
+            json!({"op":"create_issue","product":"DIR","title":"Templated","template":{"template_id":id,"revision":1}}),
+        );
+        run(
+            json!({"op":"revise_template","id":id,"expected_version":1,"name":"Bug","shape":"bug","content":{"intent":"Repro"}}),
+        );
+        let archive = serde_json::to_value(store.export().unwrap()).unwrap();
+        let backup = write_backup(&archive, &temp.path().join("backups"), 2).unwrap();
+        let source = PathBuf::from(backup["archive"].as_str().unwrap());
+        let report = recovery_check(&source, &temp.path().join("restored")).unwrap();
+        assert_eq!(report["semantic_archive_match"], true);
+        assert_eq!(report["byte_for_byte_archive_match"], true);
+        assert_eq!(report["restored_format"], 13);
+        assert_eq!(report["records"]["templates"], 1);
+        assert_eq!(report["records"]["template_revisions"], 2);
+    }
+
+    #[test]
     fn recovery_check_normalizes_supported_older_formats() {
         let temp = TempDir::new().unwrap();
         let store = Store::open(&temp.path().join("source.db")).unwrap();
@@ -1089,7 +1225,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(report["source_format"], format);
-            assert_eq!(report["restored_format"], 12);
+            assert_eq!(report["restored_format"], 13);
             assert_eq!(report["records"]["labels"], 0);
             assert_eq!(report["compatibility_upgrade_applied"], true);
             assert_eq!(report["semantic_archive_match"], true);
