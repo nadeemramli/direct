@@ -3,7 +3,7 @@
   // immutable revisions: saving appends a revision, retiring stops new use, and
   // nothing here deletes provenance or touches existing issues and projects.
   import type { Snippet } from "svelte";
-  import { api } from "./api";
+  import { DirectError } from "./api";
   import type {
     ExecutionMode,
     PlanningScope,
@@ -19,14 +19,29 @@
   let {
     data,
     connected,
-    refresh,
+    commit,
     controls,
   }: {
     data: Snapshot;
     connected: boolean;
-    refresh: () => Promise<void>;
+    /** Write, then refresh; a failed refresh never turns a confirmed write into a failure (DIR-55). */
+    commit: <T>(command: Record<string, unknown>, intent?: string) => Promise<T>;
     controls?: Snippet;
   } = $props();
+  // One user operation per opened editor: an unchanged retry reuses its
+  // request ID, a newly opened editor is a distinct operation.
+  let operation = crypto.randomUUID();
+  // The exact command of an unconfirmed save: a retry resends it verbatim
+  // (same request ID); the editor stays locked from send until the outcome is
+  // known, and changes made after sending are never resubmitted silently.
+  type Attempt = { command: Record<string, unknown>; intent: string };
+  let attempt = $state<Attempt | null>(null);
+  let pending = $state(false);
+  function failed(e: unknown) {
+    return e instanceof DirectError && e.outcome === "unknown"
+      ? `${e.message} It may already be saved. Your draft is kept; saving it unchanged sends the same request, so Direct applies it at most once.`
+      : String(e).replace(/^Error: /, "");
+  }
 
   interface SupplementDraft {
     product_id: string;
@@ -120,6 +135,8 @@
   }
 
   function startCreate() {
+    operation = crypto.randomUUID();
+    attempt = null;
     selectedId = "";
     retiring = "";
     error = "";
@@ -149,6 +166,8 @@
     };
   }
   function startRevise(head: WorkspaceTemplate, revision: TemplateRevision) {
+    operation = crypto.randomUUID();
+    attempt = null;
     retiring = "";
     error = "";
     notice = "";
@@ -180,8 +199,8 @@
       note: "",
     };
   }
-  async function save(event: SubmitEvent) {
-    event.preventDefault();
+  async function save(event?: SubmitEvent) {
+    event?.preventDefault();
     if (!draft || busy) return;
     busy = true;
     error = "";
@@ -214,20 +233,46 @@
       supplements,
       note: draft.note,
     };
+    const built = draft.id
+      ? { op: "revise_template", id: draft.id, expected_version: draft.version, ...common }
+      : { op: "create_template", target: draft.target, ...common };
+    const sending = attempt ?? { command: built, intent: operation };
+    // The reply belongs to this draft only (navigation is blocked while it is
+    // pending; if the draft was replaced anyway, the reply changes nothing on it).
+    const owner = operation;
+    const replaced = () => operation !== owner || !draft;
+    pending = true;
     try {
-      const saved = await api<{ template: WorkspaceTemplate }>(
-        draft.id
-          ? { op: "revise_template", id: draft.id, expected_version: draft.version, ...common }
-          : { op: "create_template", target: draft.target, ...common },
-        true,
-      );
-      await refresh();
+      const saved = await commit<{ template: WorkspaceTemplate }>(sending.command, sending.intent);
+      if (replaced()) {
+        notice = `An earlier template save was confirmed (${saved.template.name}).`;
+        return;
+      }
+      attempt = null;
       selectedId = saved.template.id;
-      notice = `Saved revision ${saved.template.current_revision}. Existing records keep the revision they were created from.`;
-      draft = null;
+      if (JSON.stringify(sending.command) !== JSON.stringify(built) && draft) {
+        // Keep the later changes as an unsaved revision of the saved template.
+        draft.id = saved.template.id;
+        draft.version = saved.template.version;
+        operation = crypto.randomUUID();
+        notice = `Saved revision ${saved.template.current_revision} as first submitted. Your later changes below are not saved — save them as a new revision, or cancel to discard them.`;
+      } else {
+        notice = `Saved revision ${saved.template.current_revision}. Existing records keep the revision they were created from.`;
+        draft = null;
+      }
     } catch (e) {
-      error = String(e).replace(/^Error: /, "");
+      const unknown = e instanceof DirectError && e.outcome === "unknown";
+      if (replaced()) {
+        error = `An earlier template save ${unknown ? "was not confirmed" : `failed: ${failed(e)}`}. Check the templates before repeating it.`;
+        return;
+      }
+      // Only a definitive answer unlocks the editor.
+      attempt = unknown ? sending : null;
+      error = unknown
+        ? `${(e as DirectError).message} It may already be saved. Your draft is kept and locked; retrying sends the identical request, so Direct applies it at most once.`
+        : failed(e);
     } finally {
+      pending = false;
       busy = false;
     }
   }
@@ -237,15 +282,14 @@
     busy = true;
     error = "";
     try {
-      await api(
+      await commit(
         { op: "retire_template", id: selected.id, expected_version: selected.version, reason: retiring },
-        true,
+        `retire:${selected.id}`,
       );
-      await refresh();
       retiring = "";
       notice = "Retired. It is no longer offered for new work; existing records and revisions remain readable.";
     } catch (e) {
-      error = String(e).replace(/^Error: /, "");
+      error = failed(e);
     } finally {
       busy = false;
     }
@@ -275,9 +319,12 @@
         class="trace-row template-row"
         class:active={item.id === selectedId}
         aria-label={`Template ${item.name}`}
+        disabled={pending}
+        title={pending ? "Waiting for Direct to reply to the template save" : undefined}
         onclick={() => {
           selectedId = item.id;
           draft = null;
+          attempt = null;
           retiring = "";
           error = "";
           notice = "";
@@ -304,8 +351,27 @@
   <div class="detail-body">
     {#if error}<p class="source-warning" role="alert">{error}</p>{/if}
     {#if notice}<p class="hint" role="status">{notice}</p>{/if}
+    {#if draft && attempt}<div class="info-card warning form-outcome">
+        <span class="card-symbol">!</span>
+        <div>
+          <b>Direct did not confirm this save</b>
+          <div class="card-actions">
+            <button type="button" class="primary" disabled={busy} onclick={() => save()}
+              >Retry the same save</button
+            ><button
+              type="button"
+              class="secondary"
+              onclick={() => {
+                attempt = null;
+                draft = null;
+              }}>Close and check the templates</button
+            >
+          </div>
+        </div>
+      </div>{/if}
     {#if draft}
       <form class="template-form" onsubmit={save}>
+        <fieldset class="modal-forms" disabled={pending || !!attempt}>
         {#if !draft.id}<label class="field"
             >Shapes<select aria-label="Template target" bind:value={draft.target}
               ><option value="issue">Issue intake</option><option value="project"
@@ -429,6 +495,7 @@
             >{draft.id ? "Save new revision" : "Create template"}</button
           >
         </div>
+        </fieldset>
       </form>
     {:else if selected && current}
       <div class="detail-heading">

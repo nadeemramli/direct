@@ -17,7 +17,7 @@ use std::{
     collections::HashMap,
     fs::{self, OpenOptions},
     path::{Path, PathBuf},
-    sync::{Arc, Mutex},
+    sync::{Arc, Mutex, MutexGuard},
 };
 use tower_http::{services::ServeDir, set_header::SetResponseHeaderLayer};
 use uuid::Uuid;
@@ -79,11 +79,14 @@ fn worker_failed() -> Response {
     )
         .into_response()
 }
-fn lock_failed() -> direct_core::Error {
-    direct_core::Error {
-        code: "storage",
-        message: "Store lock unavailable".into(),
-    }
+/// A panic while a request holds the store unwinds through its SQLite
+/// transaction, which rolls back on drop, so the store is still consistent.
+/// Recover the lock instead of refusing every later request (DIR-56).
+fn lock_store(store: &Mutex<Store>) -> MutexGuard<'_, Store> {
+    store.lock().unwrap_or_else(|poisoned| {
+        store.clear_poison();
+        poisoned.into_inner()
+    })
 }
 /// ASCII-only attachment name; the original name is never used as a path.
 fn download_name(name: &str) -> String {
@@ -132,10 +135,7 @@ async fn source_file(
     }
     let store = app.store.clone();
     match tokio::task::spawn_blocking(move || {
-        store
-            .lock()
-            .map_err(|_| lock_failed())?
-            .source_file(&input.bundle_id, &input.path)
+        lock_store(&store).source_file(&input.bundle_id, &input.path)
     })
     .await
     {
@@ -208,14 +208,7 @@ async fn migration_preview(State(app): State<App>, headers: HeaderMap, body: Byt
         return response;
     }
     let store = app.store.clone();
-    match tokio::task::spawn_blocking(move || {
-        store
-            .lock()
-            .map_err(|_| lock_failed())?
-            .preview_migration(&body)
-    })
-    .await
-    {
+    match tokio::task::spawn_blocking(move || lock_store(&store).preview_migration(&body)).await {
         Ok(Ok(value)) => Json(value).into_response(),
         Ok(Err(e)) => store_error(e),
         Err(_) => worker_failed(),
@@ -241,7 +234,7 @@ async fn migration_apply(
     let dir = app.dir.clone();
     match tokio::task::spawn_blocking(
         move || -> std::result::Result<serde_json::Value, direct_core::Error> {
-            let mut store = store.lock().map_err(|_| lock_failed())?;
+            let mut store = lock_store(&store);
             let archive = store.export()?;
             let backup =
                 crate::write_migration_backup(&dir, &archive).map_err(|e| direct_core::Error {
@@ -291,17 +284,7 @@ async fn command(
         );
     };
     let store = app.store.clone();
-    match tokio::task::spawn_blocking(move || {
-        store
-            .lock()
-            .map_err(|_| direct_core::Error {
-                code: "storage",
-                message: "Store lock unavailable".into(),
-            })?
-            .execute(request, role)
-    })
-    .await
-    {
+    match tokio::task::spawn_blocking(move || lock_store(&store).execute(request, role)).await {
         Ok(Ok(value)) => Json(value).into_response(),
         Ok(Err(e)) => {
             let status = match e.code {

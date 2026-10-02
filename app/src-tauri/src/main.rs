@@ -1,15 +1,20 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+/// Errors are `{code, message, outcome}` (see `direct::command_failure`) so the
+/// interface can tell a definitive refusal from an unknown write outcome.
 #[tauri::command]
-async fn direct_command(request: direct_core::Request) -> Result<serde_json::Value, String> {
+async fn direct_command(
+    request: direct_core::Request,
+) -> Result<serde_json::Value, serde_json::Value> {
     tauri::async_runtime::spawn_blocking(move || {
-        let dir = direct::data_dir().map_err(|e| e.to_string())?;
-        direct::ensure_service(&dir).map_err(|e| e.to_string())?;
-        direct::Client::new(&dir)
-            .and_then(|c| c.call(&request, direct_core::Role::Human))
-            .map_err(|e| e.to_string())
+        direct::data_dir()
+            .and_then(|dir| {
+                direct::ensure_service(&dir)?;
+                direct::Client::new(&dir)?.call(&request, direct_core::Role::Human)
+            })
+            .map_err(|e| direct::command_failure(&e))
     })
     .await
-    .map_err(|e| e.to_string())?
+    .map_err(|e| direct::command_failure(&e.into()))?
 }
 /// Retained source file bytes, returned as a raw IPC payload (not JSON).
 #[tauri::command]

@@ -339,6 +339,7 @@ fn write_backup(value: &Value, directory: &Path, retain: usize) -> Result<Value>
     }))
 }
 
+const REFUSED: &str = "Archive refused before restoring; no destination was created";
 fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
     if restore_dir.exists() {
         bail!("Recovery check requires a new, nonexistent restore directory");
@@ -360,7 +361,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
         false
     };
     let archive: Archive = serde_json::from_slice(&source_bytes)?;
-    direct_core::validate_archive(&archive)?;
+    direct_core::validate_archive(&archive).context(REFUSED)?;
     let source_format = archive.format;
     let mut expected = archive.clone();
     if expected.format < 5 {
@@ -668,7 +669,7 @@ fn run() -> Result<()> {
                 bail!("Restore requires a new, nonexistent data directory; existing data was not changed");
             }
             let a: Archive = serde_json::from_slice(&fs::read(from)?)?;
-            direct_core::validate_archive(&a)?;
+            direct_core::validate_archive(&a).context(REFUSED)?;
             fs::create_dir(&dir)
                 .context("Create a new restore destination beneath an existing parent")?;
             direct::protect_dir(&dir)?;

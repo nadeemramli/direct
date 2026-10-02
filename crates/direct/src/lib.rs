@@ -102,6 +102,43 @@ pub fn endpoint(dir: &Path) -> Result<Endpoint> {
     }
     Ok(e)
 }
+/// Whether a failed command may still have been applied by the service.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WriteOutcome {
+    /// The service answered with a definitive refusal; nothing was applied.
+    Rejected,
+    /// No usable answer (unreachable, dropped, timed out or failed while
+    /// handling it): the command may or may not have been applied. Retrying
+    /// the exact request with the same request ID is safe and authoritative.
+    Unknown,
+}
+/// An error reported by the service itself, with the outcome it implies.
+#[derive(Debug, Clone)]
+pub struct ServiceError {
+    pub code: String,
+    pub message: String,
+    pub outcome: WriteOutcome,
+}
+impl std::fmt::Display for ServiceError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}: {}", self.code, self.message)
+    }
+}
+impl std::error::Error for ServiceError {}
+/// The structured failure the desktop shell hands to the interface for a
+/// `Client::call` error: `{code, message, outcome}`, where `outcome` tells
+/// the interface whether keeping the request ID for a retry matters.
+pub fn command_failure(error: &anyhow::Error) -> Value {
+    match error.downcast_ref::<ServiceError>() {
+        Some(e) => serde_json::json!({"code": e.code, "message": e.message, "outcome": e.outcome}),
+        None => serde_json::json!({
+            "code": "unavailable",
+            "message": error.to_string(),
+            "outcome": WriteOutcome::Unknown,
+        }),
+    }
+}
 pub struct Client {
     pub endpoint: Endpoint,
     http: reqwest::blocking::Client,
@@ -140,15 +177,28 @@ impl Client {
             .send()
             .context("Direct service is unavailable. Restart it and retry the same request ID.")?;
         let status = response.status();
-        let value: Value = response.json()?;
-        if !status.is_success() {
-            bail!(
-                "{}: {}",
-                value["code"].as_str().unwrap_or("error"),
-                value["message"].as_str().unwrap_or("Request failed")
+        let body = response.json::<Value>();
+        if status.is_success() {
+            return body.context(
+                "Direct did not return a complete reply; the command may have been applied. Retry the same request ID.",
             );
         }
-        Ok(value)
+        let value = body.unwrap_or_default();
+        Err(ServiceError {
+            code: value["code"].as_str().unwrap_or("error").to_string(),
+            message: value["message"]
+                .as_str()
+                .unwrap_or("Request failed")
+                .to_string(),
+            // A server-side failure can happen after the decision to commit;
+            // only a client-error status is a definitive refusal.
+            outcome: if status.is_server_error() {
+                WriteOutcome::Unknown
+            } else {
+                WriteOutcome::Rejected
+            },
+        }
+        .into())
     }
     fn token(&self, role: Role) -> &str {
         if role == Role::Human {

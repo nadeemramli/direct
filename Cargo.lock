@@ -744,6 +744,7 @@ dependencies = [
  "direct-core",
  "fs2",
  "reqwest 0.12.28",
+ "rusqlite",
  "serde",
  "serde_json",
  "sha2",
