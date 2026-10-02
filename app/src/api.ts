@@ -48,6 +48,78 @@ export interface Issue {
   verification_key: string | null;
   current_run: string | null;
   external?: ExternalIssueRecord | null;
+  /** Exact intake template provenance; absent for untemplated work. */
+  template?: TemplateUse;
+}
+export type TemplateTarget = "issue" | "project";
+export type TemplateShape = "delivery" | "discovery_probe" | "bug" | "release";
+export type ExecutionMode = "agent" | "owner" | "paired" | "prototype";
+export interface TemplateContent {
+  intent: string;
+  execution_mode: ExecutionMode | null;
+  boundaries: string;
+  verification: string;
+  checklist: string[];
+  suggested_priority: string | null;
+  suggested_planning_scope: PlanningScope | null;
+  suggested_labels: string[];
+}
+export interface TemplateSupplement {
+  product_id: string;
+  note: string;
+  checklist: string[];
+  suggested_labels: string[];
+}
+export interface WorkspaceTemplate {
+  id: string;
+  target: TemplateTarget;
+  name: string;
+  shape: TemplateShape;
+  status: "active" | "retired";
+  current_revision: number;
+  retired_reason: string | null;
+  retired_by: string | null;
+  retired_at: number | null;
+  version: number;
+  created_at: number;
+  updated_at: number;
+}
+export interface TemplateRevision {
+  template_id: string;
+  revision: number;
+  target: TemplateTarget;
+  name: string;
+  description: string;
+  shape: TemplateShape;
+  content: TemplateContent;
+  supplements: TemplateSupplement[];
+  note: string;
+  created_by: string;
+  created_at: number;
+}
+export interface TemplateSelection {
+  template_id: string;
+  revision: number;
+  /** Omit to accept the suggestion; null explicitly clears it. */
+  execution_mode?: ExecutionMode | null;
+  labels?: string[];
+}
+export interface TemplateUse {
+  template_id: string;
+  revision: number;
+  supplement_product_id: string | null;
+  execution_mode: ExecutionMode | null;
+  overrides: string[];
+  applied_by: string;
+  applied_at: number;
+}
+export interface TemplateProvenance {
+  use: TemplateUse;
+  template: WorkspaceTemplate;
+  revision: TemplateRevision;
+  current_revision: number;
+  outdated: boolean;
+  retired: boolean;
 }
 export interface ExternalIssueRecord {
   source: string;
@@ -316,6 +388,8 @@ export interface Context {
   release_workflow: ReleaseWorkflowConfig | null;
   history: { seq: number; kind: string; actor: string; at: number }[];
   retained_sources?: SourceRecordSummary[];
+  template?: TemplateProvenance | null;
+  project_template?: TemplateProvenance | null;
 }
 export interface SourceBundleOverview {
   id: string;
@@ -414,6 +488,8 @@ export interface Snapshot {
   release_evidence: ReleaseEvidence[];
   release_workflows: ReleaseWorkflowConfig[];
   issue_links: IssueLink[];
+  templates?: WorkspaceTemplate[];
+  template_revisions?: TemplateRevision[];
   issues: Issue[];
   source_bundles?: SourceBundleOverview[];
   cursor: number;
@@ -430,6 +506,7 @@ export interface Project {
   external_id?: string | null;
   external_url?: string | null;
   labels?: string[];
+  template?: TemplateUse;
   version: number;
   created_at: number;
   updated_at: number;

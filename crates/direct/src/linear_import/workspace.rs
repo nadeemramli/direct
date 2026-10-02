@@ -1163,6 +1163,7 @@ impl<'a> Builder<'a> {
                 external_id: Some(id.clone()),
                 external_url: non_empty(project, "url"),
                 labels: Vec::new(),
+                template: None,
                 version: 1,
                 created_at: timestamp(project, "createdAt")?,
                 updated_at: timestamp(project, "updatedAt")?,
@@ -1751,6 +1752,7 @@ impl<'a> Builder<'a> {
                 verification_key: None,
                 current_run: None,
                 external: Some(external),
+                template: None,
             });
             self.record(
                 ISSUES,
@@ -2256,7 +2258,7 @@ impl<'a> Builder<'a> {
         }
 
         let mut archive = Archive {
-            format: 12,
+            format: 13,
             workspace_id: deterministic_uuid("linear-workspace", &{
                 let mut ids: Vec<_> = self
                     .products
@@ -2278,6 +2280,8 @@ impl<'a> Builder<'a> {
             release_evidence: vec![],
             release_workflows: vec![],
             issue_links: self.links,
+            templates: vec![],
+            template_revisions: vec![],
             issues: self.issues,
             comments: self.comments,
             verifications: vec![],

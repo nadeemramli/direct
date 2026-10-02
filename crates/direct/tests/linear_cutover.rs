@@ -171,6 +171,17 @@ fn seed(client: &Client) -> (String, String) {
         json!({"op": "create_issue_link", "key": "DIR-4", "expected_version": v, "target_key": "DIR-1", "kind": "related"}),
         Role::Agent,
     );
+    // Intake templates (format 13) must survive a migration merge untouched.
+    let template = call(
+        client,
+        json!({"op": "create_template", "target": "issue", "name": "Delivery", "shape": "delivery", "content": {"intent": "Outcome"}}),
+        Role::Human,
+    );
+    call(
+        client,
+        json!({"op": "create_issue", "product": "SITE", "title": "Templated", "template": {"template_id": template["template"]["id"], "revision": 1}}),
+        Role::Agent,
+    );
     (
         eng["id"].as_str().unwrap().to_owned(),
         ops["id"].as_str().unwrap().to_owned(),
@@ -224,6 +235,8 @@ fn assert_existing_preserved(before: &Archive, after: &Archive) {
         ("release_evidence", "id"),
         ("release_workflows", "product_id"),
         ("issue_links", "id"),
+        ("templates", "id"),
+        ("template_revisions", "template_id"),
         ("issues", "id"),
         ("comments", "id"),
         ("verifications", "id"),

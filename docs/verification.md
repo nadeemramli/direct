@@ -36,6 +36,15 @@ cargo build -p direct && (cd app && npm run build)
 node scripts/e2e/navigation.browser.mjs target/debug/direct <new-dir> app/dist <evidence-dir>
 ```
 
+## Intake templates browser E2E
+
+`scripts/e2e/templates.browser.mjs` (DIR-22) creates a fresh isolated workspace with two synthetic products and labels through the running service, then drives the built UI: no templates are seeded; the owner creates an issue template with a bounded product supplement and a project template; issues and projects are created from them in both products (one with explicit priority and execution-mode overrides, one through the agent CLI); the owner revises and retires templates; old records keep revision 1 and show it is outdated; the retired template is readable but not offered; nothing becomes Ready; templates, revisions and provenance survive reload and a service restart with an identical export. Synthetic data only.
+
+```sh
+cargo build -p direct && (cd app && npm run build)
+node scripts/e2e/templates.browser.mjs target/debug/direct <new-dir> app/dist <evidence-dir>
+```
+
 ## Acceptance still needed
 
 Launch the native desktop on the owner's normal workspace, create a real small task, complete it with an actual coding agent, and verify the delivered change. Test packaging, restore on a second machine, and large imported datasets before replacing Linear. Migration and project planning remain separate milestones.

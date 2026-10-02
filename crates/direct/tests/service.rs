@@ -210,6 +210,84 @@ fn labels_cross_the_wire_with_owner_definitions_and_agent_assignments() {
 }
 
 #[test]
+fn templates_cross_the_wire_owner_defines_agents_apply_and_restart_preserves_provenance() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("workspace");
+    let service = start(&dir);
+    let client = Client::new(&dir).unwrap();
+    for (key, name) in [("ALP", "Synthetic Alpha"), ("BET", "Synthetic Beta")] {
+        client
+            .call(
+                &req(json!({"op":"create_product","key":key,"name":name})),
+                Role::Human,
+            )
+            .unwrap();
+    }
+    let definition = req(
+        json!({"op":"create_template","target":"issue","name":"Discovery probe","shape":"discovery_probe",
+               "content":{"intent":"What do we need to learn?","execution_mode":"prototype","boundaries":"Throwaway; no production data"}}),
+    );
+    // The agent capability cannot define templates over HTTP.
+    assert!(client
+        .call(&definition, Role::Agent)
+        .unwrap_err()
+        .to_string()
+        .starts_with("forbidden"));
+    let created = client.call(&definition, Role::Human).unwrap();
+    let id = created["template"]["id"].as_str().unwrap().to_string();
+    let listed = native(&dir, &["--actor", "template-agent", "templates"]);
+    assert_eq!(listed["templates"][0]["name"], "Discovery probe");
+    assert_eq!(
+        listed["template_revisions"][0]["content"]["execution_mode"],
+        "prototype"
+    );
+    // Native CLI applies the shared template in two products.
+    for product in ["ALP", "BET"] {
+        let issue = native(
+            &dir,
+            &[
+                "--actor",
+                "template-agent",
+                "create",
+                "--product",
+                product,
+                "Probe",
+                "--body",
+                "Learn",
+                "--template-id",
+                &id,
+                "--template-revision",
+                "1",
+            ],
+        );
+        assert_eq!(issue["status"], "backlog");
+        assert_eq!(issue["template"]["revision"], 1);
+        assert_eq!(issue["template"]["applied_by"], "template-agent");
+    }
+    client
+        .call(
+            &req(json!({"op":"revise_template","id":id,"expected_version":1,"name":"Discovery probe","shape":"discovery_probe",
+                        "content":{"intent":"Question, probe and decision"}})),
+            Role::Human,
+        )
+        .unwrap();
+    let before = client
+        .call(&req(json!({"op":"export"})), Role::Agent)
+        .unwrap();
+    assert_eq!(before["format"], 13);
+    drop(service);
+    let _restart = start(&dir);
+    let after = Client::new(&dir)
+        .unwrap()
+        .call(&req(json!({"op":"export"})), Role::Agent)
+        .unwrap();
+    assert_eq!(before, after);
+    let context = native(&dir, &["context", "ALP-1"]);
+    assert_eq!(context["template"]["revision"]["revision"], 1);
+    assert_eq!(context["template"]["outdated"], true);
+}
+
+#[test]
 fn two_real_clients_claim_once_and_http_enforces_local_capabilities() {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().join("workspace");
