@@ -494,6 +494,85 @@ try {
     clearFaults();
   }
 
+  // QC on 0f149f3: the write is confirmed, then the follow-up refresh read
+  // hangs. The form must be released within the refresh deadline with the
+  // known result, never resent, and the view must recover afterwards.
+  const pastDeadline = 16000; // the UI's post-save refresh deadline is 10 s
+  try {
+    const title = "Saved while the snapshot read hangs";
+    await newIssueForm(title);
+    const hung = fault("hold", (body) => body.op === "snapshot", { times: 1000 });
+    const started = Date.now();
+    await dialog(page).getByRole("button", { name: /Create issue/ }).click();
+    await until(async () => titled(title) === 1);
+    const released = await until(async () => !(await dialog(page).isVisible()), pastDeadline);
+    check("[DIR-55 QC3 snapshot] confirmed save releases its form despite a hung refresh", released, `${Date.now() - started} ms`);
+    const status = (await page.getByRole("status").allInnerTexts()).join(" | ").replace(/\s+/g, " ");
+    check("[DIR-55 QC3 snapshot] UI says saved and reconnecting", /saved/i.test(status) && /reconnect/i.test(status), status);
+    await page.screenshot({ path: join(evidence, "dir55-qc3-snapshot-hung.png") });
+    const creates = () => sent.filter((entry) => entry.op === "create_issue" && entry.title === title).length;
+    check("[DIR-55 QC3 snapshot] one effect, no resend", titled(title) === 1 && creates() === 1, `${titled(title)} persisted, ${creates()} sent`);
+    // The workspace stays usable while the read is still hung.
+    let usable = false;
+    if (released) {
+      await page.getByRole("button", { name: "＋ Issue" }).first().click();
+      await dialog(page).waitFor();
+      usable = await dialog(page).getByLabel("Issue title").isEnabled();
+      await dialog(page).getByRole("button", { name: "Close dialog" }).click();
+      await open(page, "Alpha drafts issue", A.key);
+    }
+    check("[DIR-55 QC3 snapshot] forms and navigation stay usable while the read hangs", usable);
+    hung.times = 0;
+    hung.open();
+    const recovered = await until(async () => (await row(page, title).count()) === 1 &&
+      !(await page.getByRole("status").allInnerTexts()).some((text) => /reconnect/i.test(text)), 8000);
+    check("[DIR-55 QC3 snapshot] view recovers once the read returns; still one record", recovered && titled(title) === 1 && creates() === 1);
+  } catch (error) {
+    check("[DIR-55 QC3 snapshot] scenario completed", false, error.message.split("\n")[0]);
+    await page.screenshot({ path: join(evidence, "dir55-qc3-snapshot-failure.png") }).catch(() => {});
+  }
+  clearFaults();
+  if (await dialog(page).isVisible().catch(() => false)) await until(async () => !(await dialog(page).isVisible()), 20000);
+
+  try {
+    await open(page, "Bravo drafts issue", B.key);
+    const before = issueContext(B.key).issue;
+    await page.getByRole("button", { name: "Edit brief" }).click();
+    await dialog(page).waitFor();
+    const body = "Body saved while the context read hangs.";
+    await dialog(page).getByLabel("Problem & expected outcome").fill(body);
+    const hung = fault("hold", (request) => request.op === "context" && request.key === B.key, { times: 1000 });
+    const started = Date.now();
+    await dialog(page).getByRole("button", { name: /Save brief/ }).click();
+    await until(async () => issueContext(B.key).issue.body === body);
+    const released = await until(async () => !(await dialog(page).isVisible()), pastDeadline);
+    check("[DIR-55 QC3 context] confirmed save releases its form despite a hung context read", released, `${Date.now() - started} ms`);
+    const status = (await page.getByRole("status").allInnerTexts()).join(" | ").replace(/\s+/g, " ");
+    check("[DIR-55 QC3 context] UI says saved and reconnecting", /saved/i.test(status) && /reconnect/i.test(status), status);
+    const after = issueContext(B.key).issue;
+    const updates = sent.filter((entry) => entry.op === "update_issue" && entry.key === B.key && entry.body === body).length;
+    check("[DIR-55 QC3 context] one effect, no resend", after.version === before.version + 1 && updates === 1, `v${before.version}→v${after.version}, ${updates} sent`);
+    let navigated = false;
+    if (released) {
+      await open(page, "Alpha drafts issue", A.key);
+      navigated = true;
+    }
+    check("[DIR-55 QC3 context] navigation stays usable while the read hangs", navigated);
+    hung.times = 0;
+    hung.open();
+    await sleep(1500);
+    check("[DIR-55 QC3 context] a late stale read does not replace the open issue", (await page.locator("aside.detail-panel .detail-top > span").first().innerText()) === A.key);
+    await open(page, "Bravo drafts issue", B.key);
+    const recovered = await until(async () => (await page.locator("aside.detail-panel").innerText()).includes(body) &&
+      !(await page.getByRole("status").allInnerTexts()).some((text) => /reconnect/i.test(text)), 8000);
+    check("[DIR-55 QC3 context] view recovers once the read returns; still one update", recovered && issueContext(B.key).issue.version === before.version + 1);
+  } catch (error) {
+    check("[DIR-55 QC3 context] scenario completed", false, error.message.split("\n")[0]);
+    await page.screenshot({ path: join(evidence, "dir55-qc3-context-failure.png") }).catch(() => {});
+  }
+  clearFaults();
+  if (await dialog(page).isVisible().catch(() => false)) await until(async () => !(await dialog(page).isVisible()), 20000);
+
   // Unknown outcome followed by a reload: nothing is resubmitted silently.
   try {
     const committed = "Unknown then reload (committed)";

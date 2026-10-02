@@ -780,9 +780,13 @@
         : "Legacy verification source";
     return "Related";
   }
-  async function loadContext(key = selected) {
+  // A refresh that has not finished by this deadline is abandoned (the read
+  // and its body are aborted, and nothing it returns later is applied).
+  const REFRESH_DEADLINE_MS = 10_000;
+  async function loadContext(key = selected, signal?: AbortSignal) {
     if (!key) return;
-    const result = await api<Context>({ op: "context", key });
+    const result = await api<Context>({ op: "context", key }, false, "", signal);
+    signal?.throwIfAborted();
     if (selected !== key) return;
     context = result;
     const run = result.verifications.find(
@@ -796,8 +800,9 @@
       reviewNote = "";
     }
   }
-  async function refresh() {
-    const snapshot = await api<Snapshot>({ op: "snapshot" });
+  async function refresh(signal?: AbortSignal) {
+    const snapshot = await api<Snapshot>({ op: "snapshot" }, false, "", signal);
+    signal?.throwIfAborted();
     data = snapshot;
     // A guidance ID that is no longer cached stays selected and is shown as
     // missing rather than silently replaced by an unrelated document.
@@ -805,7 +810,7 @@
       selectedGuidanceId = snapshot.theoria_documents[0]?.id || "";
     connected = true;
     notice = "";
-    if (selected) await loadContext();
+    if (selected) await loadContext(selected, signal);
   }
   async function choose(key: string) {
     selected = key;
@@ -904,17 +909,19 @@
     return String(e).replace(/^Error: /, "");
   }
   /**
-   * Apply a write, then refresh. Once the write is confirmed it is reported
-   * as saved even if the refresh fails; the poll reconnects and refreshes.
+   * Apply a write, then refresh within a deadline. Once the write is
+   * confirmed it is reported as saved even if the refresh fails or hangs (it
+   * is abandoned, never retried as a write); the poll reconnects and refreshes.
    */
   async function commit<T>(command: Record<string, unknown>, intent = "") {
     const result = await api<T>(command, true, intent);
     try {
-      await refresh();
+      await refresh(AbortSignal.timeout(REFRESH_DEADLINE_MS));
     } catch {
+      // The write itself was answered; the poll decides whether the service
+      // is still reachable.
       const key = (result as { key?: unknown } | null)?.key;
       notice = `Saved${typeof key === "string" ? ` ${key}` : ""}. Direct couldn't refresh the view yet — reconnecting…`;
-      connected = false;
     }
     return result;
   }
@@ -1903,7 +1910,12 @@
           op: "changes",
           after: data.cursor,
         });
-        if (changes.cursor !== data.cursor || notice) await refresh();
+        // The service answered, so it is connected even if the refresh below
+        // is slow; a refresh that misses its deadline keeps the notice and is
+        // tried again on the next tick.
+        connected = true;
+        if (changes.cursor !== data.cursor || notice)
+          await refresh(AbortSignal.timeout(REFRESH_DEADLINE_MS)).catch(() => undefined);
         else if (
           current?.claim &&
           current.claim.expires_at <= clock &&
@@ -1920,7 +1932,7 @@
       if (!stopped) timer = setTimeout(poll, 750);
     }
     connect()
-      .then(refresh)
+      .then(() => refresh())
       .then(() => {
         if (!stopped) timer = setTimeout(poll, 750);
       })
