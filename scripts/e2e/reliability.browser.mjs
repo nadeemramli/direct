@@ -82,12 +82,14 @@ const titled = (title) => snapshot().issues.filter((issue) => issue.title === ti
 // Each rule applies to the next matching /api/command request:
 //   drop  — forward to the real service, then abort the browser's connection
 //   fail  — abort without forwarding (nothing reaches the service)
-//   hold  — forward only after `release()`; the reply is delivered normally
+//   hold  — forward only after `open()`; the reply is delivered normally
+//   holddrop — forward only after `open()`, then abort the browser's
+//          connection: the write commits while the caller sees no reply
 const rules = [];
 const sent = [];
 function fault(action, match, { times = 1 } = {}) {
   const rule = { action, match, times, gate: null, open: null, hits: 0 };
-  if (action === "hold") rule.gate = new Promise((done) => (rule.open = done));
+  if (action === "hold" || action === "holddrop") rule.gate = new Promise((done) => (rule.open = done));
   rules.push(rule);
   return rule;
 }
@@ -97,15 +99,16 @@ async function route(routeHandle, request) {
   try {
     body = request.postDataJSON() || {};
   } catch {}
-  if (body.request_id) sent.push({ op: body.op, request_id: body.request_id, title: body.title, body: body.body, key: body.key });
+  if (body.request_id)
+    sent.push({ op: body.op, request_id: body.request_id, title: body.title, name: body.name, body: body.body, key: body.key, payload: JSON.stringify({ ...body, request_id: undefined }) });
   const rule = rules.find((candidate) => candidate.times > 0 && candidate.match(body));
   if (!rule) return routeHandle.continue();
   rule.times -= 1;
   rule.hits += 1;
   if (rule.action === "fail") return routeHandle.abort("failed");
-  if (rule.action === "hold") await rule.gate;
+  if (rule.action === "hold" || rule.action === "holddrop") await rule.gate;
   const response = await routeHandle.fetch();
-  if (rule.action === "drop") {
+  if (rule.action === "drop" || rule.action === "holddrop") {
     await response.body().catch(() => {}); // the service has replied (committed)
     return routeHandle.abort("connectionreset");
   }
@@ -145,6 +148,22 @@ async function activity(page) {
   await commentBox(page).waitFor();
 }
 const dialog = (page) => page.locator("dialog.modal");
+const templatesNamed = (name) => snapshot().templates.filter((template) => template.name === name).length;
+// Changes a control's value the way an edit would, even when the control is
+// disabled for user input: proves a retry never re-reads the form.
+const outOfBandEdit = (locator, value) =>
+  locator.evaluate((element, value) => {
+    element.value = value;
+    element.dispatchEvent(new Event("input", { bubbles: true }));
+  }, value);
+// A user edits while the save is pending: typing when the control accepts
+// input, otherwise an out-of-band change. Returns whether it was locked.
+async function editWhilePending(locator, value) {
+  const locked = await locator.isDisabled();
+  if (locked) await outOfBandEdit(locator, value);
+  else await locator.fill(value);
+  return locked;
+}
 
 let service;
 let browser;
@@ -358,6 +377,142 @@ try {
     check("[DIR-55] dropped-reply scenario completed", false, error.message.split("\n")[0]);
     await page.screenshot({ path: join(evidence, "dir55-dropped-failure.png") }).catch(() => {});
     if (await dialog(page).isVisible()) await dialog(page).getByRole("button", { name: "Close dialog" }).click();
+  }
+  clearFaults();
+
+  // QC on a9e6b65: an edit made while the create is pending must never ride
+  // the retry of the original request.
+  try {
+    const title = "Held create original";
+    const edited = "Held create edited while pending";
+    await newIssueForm(title);
+    const held = fault("holddrop", (body) => body.op === "create_issue" && body.title === title);
+    await dialog(page).getByRole("button", { name: /Create issue/ }).click();
+    await until(async () => held.hits === 1);
+    const locked = await editWhilePending(dialog(page).getByLabel("Issue title"), edited);
+    check("[DIR-55 QC] form fields are locked while the save is pending", locked);
+    held.open();
+    await until(async () => titled(title) === 1);
+    await page.getByRole("alert").first().waitFor();
+    const retry = dialog(page).getByRole("button", { name: /Retry the same save/ });
+    await ((await retry.isVisible().catch(() => false)) ? retry : dialog(page).getByRole("button", { name: /Create issue/ })).click();
+    await sleep(1200);
+    const attempts = sent.filter((entry) => entry.op === "create_issue" && (entry.title === title || entry.title === edited));
+    check("[DIR-55 QC] retry sends the exact original command and request ID",
+      attempts.length === 2 && attempts[0].request_id === attempts[1].request_id && attempts[0].payload === attempts[1].payload,
+      JSON.stringify(attempts.map((entry) => [entry.title, entry.request_id])));
+    check("[DIR-55 QC] exactly one record; the pending-time edit created nothing", titled(title) + titled(edited) === 1 && titled(title) === 1,
+      JSON.stringify({ original: titled(title), edited: titled(edited) }));
+    const kept = (await dialog(page).isVisible()) ? await dialog(page).getByLabel("Issue title").inputValue() : "";
+    check("[DIR-55 QC] the later edit is kept, unsaved, for an explicit decision", kept === edited, JSON.stringify(kept));
+    const status = (await page.getByRole("status").allInnerTexts()).join(" | ").replace(/\s+/g, " ");
+    check("[DIR-55 QC] the form says the later changes are not saved", /not saved/i.test(status), status);
+    await page.screenshot({ path: join(evidence, "dir55-qc-later-edit.png") });
+    if (kept === edited) {
+      // Editing requires a complete brief; the original create left acceptance empty.
+      await dialog(page).getByLabel("Acceptance criteria").fill("Synthetic acceptance");
+      await dialog(page).getByRole("button", { name: /Save brief/ }).click();
+      await until(async () => titled(edited) === 1);
+      await until(async () => !(await dialog(page).isVisible()));
+      const key = snapshot().issues.find((issue) => issue.title === edited)?.key;
+      check("[DIR-55 QC] saving the kept edit updates that same record", titled(edited) === 1 && titled(title) === 0,
+        `${key} ${JSON.stringify({ original: titled(title), edited: titled(edited) })}`);
+    }
+    if (await dialog(page).isVisible()) await dialog(page).getByRole("button", { name: "Close dialog" }).click();
+  } catch (error) {
+    check("[DIR-55 QC] held-reply edit scenario completed", false, error.message.split("\n")[0]);
+    await page.screenshot({ path: join(evidence, "dir55-qc-failure.png") }).catch(() => {});
+    if (await dialog(page).isVisible()) await dialog(page).getByRole("button", { name: "Close dialog" }).click();
+  }
+  clearFaults();
+
+  // Unknown outcome followed by a reload: nothing is resubmitted silently.
+  try {
+    const committed = "Unknown then reload (committed)";
+    await newIssueForm(committed);
+    fault("drop", (body) => body.op === "create_issue" && body.title === committed);
+    await dialog(page).getByRole("button", { name: /Create issue/ }).click();
+    await page.getByRole("alert").first().waitFor();
+    await page.reload();
+    await page.getByText("Connected locally").waitFor();
+    await sleep(1500);
+    check("[DIR-55 QC] committed unknown write is listed once after reload, never resent",
+      titled(committed) === 1 && (await row(page, committed).count()) === 1 &&
+        sent.filter((entry) => entry.op === "create_issue" && entry.title === committed).length === 1);
+    const lost = "Unknown then reload (never sent)";
+    await newIssueForm(lost);
+    fault("fail", (body) => body.op === "create_issue" && body.title === lost);
+    await dialog(page).getByRole("button", { name: /Create issue/ }).click();
+    await page.getByRole("alert").first().waitFor();
+    await page.reload();
+    await page.getByText("Connected locally").waitFor();
+    await sleep(1500);
+    check("[DIR-55 QC] a write that never arrived is not created by reload", titled(lost) === 0);
+    // The owner deliberately creates it again: a distinct, explicit operation.
+    await newIssueForm(committed);
+    await dialog(page).getByRole("button", { name: /Create issue/ }).click();
+    await until(async () => titled(committed) === 2);
+    const ids = sent.filter((entry) => entry.op === "create_issue" && entry.title === committed).map((entry) => entry.request_id);
+    check("[DIR-55 QC] an intentional repeat after reload is a distinct record", titled(committed) === 2 && new Set(ids).size === 2, JSON.stringify(ids));
+  } catch (error) {
+    check("[DIR-55 QC] unknown+reload scenario completed", false, error.message.split("\n")[0]);
+    if (await dialog(page).isVisible()) await dialog(page).getByRole("button", { name: "Close dialog" }).click();
+  }
+  clearFaults();
+
+  // The inline template editor: same guarantees.
+  try {
+    const name = "Held template original";
+    const edited = "Held template edited while pending";
+    await page.getByRole("button", { name: /Intake templates/ }).first().click();
+    await page.getByRole("heading", { name: "Intake templates" }).waitFor();
+    const detail = page.getByLabel("Template detail");
+    await page.getByRole("button", { name: "＋ New template" }).click();
+    await detail.getByLabel("Template name").fill(name);
+    await detail.getByLabel("Intent prompt").fill("Who gains what outcome?");
+    const held = fault("holddrop", (body) => body.op === "create_template" && body.name === name);
+    await detail.getByRole("button", { name: "Create template" }).click();
+    await until(async () => held.hits === 1);
+    const locked = await editWhilePending(detail.getByLabel("Template name"), edited);
+    check("[DIR-55 QC templates] editor fields are locked while the save is pending", locked);
+    held.open();
+    await until(async () => templatesNamed(name) === 1);
+    await detail.getByRole("alert").first().waitFor();
+    const alert = (await detail.getByRole("alert").allInnerTexts()).join(" | ");
+    check("[DIR-55 QC templates] unconfirmed save is reported", /confirm/i.test(alert), alert);
+    const retry = detail.getByRole("button", { name: /Retry the same save/ });
+    const offered = await retry.isVisible().catch(() => false);
+    check("[DIR-55 QC templates] explicit exact retry is offered", offered);
+    await (offered ? retry : detail.getByRole("button", { name: /Create template|Save new revision/ })).click();
+    await sleep(1200);
+    const attempts = sent.filter((entry) => entry.op === "create_template" && (entry.name === name || entry.name === edited));
+    check("[DIR-55 QC templates] retry sends the exact original command and request ID",
+      attempts.length === 2 && attempts[0].request_id === attempts[1].request_id && attempts[0].payload === attempts[1].payload,
+      JSON.stringify(attempts.map((entry) => [entry.name, entry.request_id])));
+    check("[DIR-55 QC templates] exactly one template; the pending-time edit created nothing",
+      templatesNamed(name) === 1 && templatesNamed(edited) === 0, JSON.stringify({ original: templatesNamed(name), edited: templatesNamed(edited) }));
+    const kept = await detail.getByLabel("Template name").inputValue().catch(() => "");
+    const heading = await detail.locator(".detail-top > span").innerText();
+    check("[DIR-55 QC templates] the later edit is kept as an unsaved revision", kept === edited && heading === "Revise template", `${heading}: ${kept}`);
+    await page.screenshot({ path: join(evidence, "dir55-qc-template-later-edit.png") });
+    if (kept === edited) {
+      await detail.getByRole("button", { name: "Save new revision" }).click();
+      await until(async () => templatesNamed(edited) === 1);
+      check("[DIR-55 QC templates] saving the kept edit revises that same template",
+        templatesNamed(edited) === 1 && templatesNamed(name) === 0 && snapshot().templates.find((t) => t.name === edited)?.current_revision === 2);
+    }
+    // A distinct, intentional template with identical content is its own record.
+    await page.getByRole("button", { name: "＋ New template" }).click();
+    await detail.getByLabel("Template name").fill(edited);
+    await detail.getByLabel("Intent prompt").fill("Who gains what outcome?");
+    await detail.getByRole("button", { name: "Create template" }).click();
+    await until(async () => templatesNamed(edited) === 2);
+    check("[DIR-55 QC templates] a new editor is a distinct operation", templatesNamed(edited) === 2);
+    await page.getByRole("button", { name: /All work/ }).first().click();
+  } catch (error) {
+    check("[DIR-55 QC templates] scenario completed", false, error.message.split("\n")[0]);
+    await page.screenshot({ path: join(evidence, "dir55-qc-template-failure.png") }).catch(() => {});
+    await page.getByRole("button", { name: /All work/ }).first().click().catch(() => {});
   }
   clearFaults();
 

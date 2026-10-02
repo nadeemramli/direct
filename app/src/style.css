@@ -1676,6 +1676,10 @@ summary {
   padding: 10px 24px;
   font-size: 12px;
   overflow-wrap: anywhere;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
 }
 /* Wraps every modal form so an unconfirmed save can lock its entries. */
 .modal-forms {

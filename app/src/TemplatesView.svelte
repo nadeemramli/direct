@@ -31,6 +31,12 @@
   // One user operation per opened editor: an unchanged retry reuses its
   // request ID, a newly opened editor is a distinct operation.
   let operation = crypto.randomUUID();
+  // The exact command of an unconfirmed save: a retry resends it verbatim
+  // (same request ID); the editor stays locked from send until the outcome is
+  // known, and changes made after sending are never resubmitted silently.
+  type Attempt = { command: Record<string, unknown>; intent: string };
+  let attempt = $state<Attempt | null>(null);
+  let pending = $state(false);
   function failed(e: unknown) {
     return e instanceof DirectError && e.outcome === "unknown"
       ? `${e.message} It may already be saved. Your draft is kept; saving it unchanged sends the same request, so Direct applies it at most once.`
@@ -130,6 +136,7 @@
 
   function startCreate() {
     operation = crypto.randomUUID();
+    attempt = null;
     selectedId = "";
     retiring = "";
     error = "";
@@ -160,6 +167,7 @@
   }
   function startRevise(head: WorkspaceTemplate, revision: TemplateRevision) {
     operation = crypto.randomUUID();
+    attempt = null;
     retiring = "";
     error = "";
     notice = "";
@@ -191,8 +199,8 @@
       note: "",
     };
   }
-  async function save(event: SubmitEvent) {
-    event.preventDefault();
+  async function save(event?: SubmitEvent) {
+    event?.preventDefault();
     if (!draft || busy) return;
     busy = true;
     error = "";
@@ -225,19 +233,34 @@
       supplements,
       note: draft.note,
     };
+    const built = draft.id
+      ? { op: "revise_template", id: draft.id, expected_version: draft.version, ...common }
+      : { op: "create_template", target: draft.target, ...common };
+    const sending = attempt ?? { command: built, intent: operation };
+    pending = true;
     try {
-      const saved = await commit<{ template: WorkspaceTemplate }>(
-        draft.id
-          ? { op: "revise_template", id: draft.id, expected_version: draft.version, ...common }
-          : { op: "create_template", target: draft.target, ...common },
-        operation,
-      );
+      const saved = await commit<{ template: WorkspaceTemplate }>(sending.command, sending.intent);
+      attempt = null;
       selectedId = saved.template.id;
-      notice = `Saved revision ${saved.template.current_revision}. Existing records keep the revision they were created from.`;
-      draft = null;
+      if (JSON.stringify(sending.command) !== JSON.stringify(built) && draft) {
+        // Keep the later changes as an unsaved revision of the saved template.
+        draft.id = saved.template.id;
+        draft.version = saved.template.version;
+        operation = crypto.randomUUID();
+        notice = `Saved revision ${saved.template.current_revision} as first submitted. Your later changes below are not saved — save them as a new revision, or cancel to discard them.`;
+      } else {
+        notice = `Saved revision ${saved.template.current_revision}. Existing records keep the revision they were created from.`;
+        draft = null;
+      }
     } catch (e) {
-      error = failed(e);
+      const unknown = e instanceof DirectError && e.outcome === "unknown";
+      // Only a definitive answer unlocks the editor.
+      attempt = unknown ? sending : null;
+      error = unknown
+        ? `${(e as DirectError).message} It may already be saved. Your draft is kept and locked; retrying sends the identical request, so Direct applies it at most once.`
+        : failed(e);
     } finally {
+      pending = false;
       busy = false;
     }
   }
@@ -313,8 +336,27 @@
   <div class="detail-body">
     {#if error}<p class="source-warning" role="alert">{error}</p>{/if}
     {#if notice}<p class="hint" role="status">{notice}</p>{/if}
+    {#if draft && attempt}<div class="info-card warning form-outcome">
+        <span class="card-symbol">!</span>
+        <div>
+          <b>Direct did not confirm this save</b>
+          <div class="card-actions">
+            <button type="button" class="primary" disabled={busy} onclick={() => save()}
+              >Retry the same save</button
+            ><button
+              type="button"
+              class="secondary"
+              onclick={() => {
+                attempt = null;
+                draft = null;
+              }}>Close and check the templates</button
+            >
+          </div>
+        </div>
+      </div>{/if}
     {#if draft}
       <form class="template-form" onsubmit={save}>
+        <fieldset class="modal-forms" disabled={pending || !!attempt}>
         {#if !draft.id}<label class="field"
             >Shapes<select aria-label="Template target" bind:value={draft.target}
               ><option value="issue">Issue intake</option><option value="project"
@@ -438,6 +480,7 @@
             >{draft.id ? "Save new revision" : "Create template"}</button
           >
         </div>
+        </fieldset>
       </form>
     {:else if selected && current}
       <div class="detail-heading">

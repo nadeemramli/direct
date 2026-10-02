@@ -295,7 +295,18 @@
   // one request ID; a newly opened form is a distinct operation.
   let formIntent = crypto.randomUUID();
   let openedModal: string | null = null;
-  let formAttempt = $state(false);
+  // The exact command and intent of the open form's last send. A retry
+  // resends this, never the (possibly edited) form; it is cleared only by a
+  // definitive answer.
+  type FormAttempt = { command: Record<string, unknown>; intent: string };
+  let formAttempt = $state<FormAttempt | null>(null);
+  let formSending: FormAttempt | null = null;
+  // Fields are locked from send until the outcome is known.
+  let formPending = $state(false);
+  // Set after a confirmed send whose form had changed since it was sent.
+  let laterEdits = false;
+  let formNotice = $state("");
+  let keptNotice = $state("");
   let formConflict = $state<
     | null
     | { kind: "edit" | "submit"; latest: Issue | null }
@@ -871,8 +882,9 @@
     if (modal === openedModal) return;
     openedModal = modal;
     formIntent = crypto.randomUUID();
-    formAttempt = false;
+    formAttempt = null;
     formConflict = null;
+    if (!modal) formNotice = "";
   });
   $effect(() => {
     // The form is usually scrolled to its footer when a save fails; bring the
@@ -895,7 +907,6 @@
    */
   async function commit<T>(command: Record<string, unknown>, intent = "") {
     const result = await api<T>(command, true, intent);
-    if (intent && intent === formIntent) formAttempt = false;
     try {
       await refresh();
     } catch {
@@ -905,14 +916,39 @@
     }
     return result;
   }
-  async function act(command: Record<string, unknown>, intent = "") {
+  /**
+   * Send the open form. A retry of an unconfirmed send resends the captured
+   * command and intent verbatim; `built` (the form as it is now) is only
+   * compared with it, so later edits are never submitted silently.
+   */
+  async function sendForm<T>(built: Record<string, unknown>) {
+    const attempt = formAttempt ?? { command: built, intent: formIntent };
+    formSending = attempt;
+    formPending = true;
+    formNotice = "";
+    try {
+      const result = await commit<T>(attempt.command, attempt.intent);
+      formAttempt = null;
+      laterEdits = JSON.stringify(attempt.command) !== JSON.stringify(built);
+      // Only the issue form can carry later changes forward as an edit; for
+      // the others say plainly that they were not saved.
+      if (laterEdits && modal !== "issue" && modal !== "edit")
+        keptNotice = "Saved as first submitted. Changes made in the form after it was sent were not saved.";
+      return result;
+    } finally {
+      formPending = false;
+    }
+  }
+  async function act(command: Record<string, unknown>, form = false) {
     if (busy) return;
     busy = true;
     error = "";
     try {
-      return await commit<Issue>(command, intent);
+      return form
+        ? await sendForm<Issue>(command)
+        : await commit<Issue>(command);
     } catch (e) {
-      if (intent) formFailure(e);
+      if (form) formFailure(e);
       else error = failureText(e);
       return undefined;
     } finally {
@@ -922,10 +958,12 @@
   /** Keep the open form's entries; lock them while the outcome is unknown. */
   function formFailure(e: unknown) {
     if (e instanceof DirectError && e.outcome === "unknown") {
-      formAttempt = true;
+      formAttempt = formSending;
       error = "";
       return;
     }
+    // A definitive answer: nothing was applied, so the form is editable again.
+    formAttempt = null;
     error = failureText(e);
     if (
       e instanceof DirectError &&
@@ -1096,7 +1134,7 @@
               project_id: draft.project_id || null,
               ...(issueTemplate ? { template: issueTemplate } : {}),
             },
-            formIntent,
+            true,
           )
         : await act(
             {
@@ -1110,8 +1148,20 @@
               priority: draft.priority,
               planning_scope: draft.planning_scope,
             },
-            formIntent,
+            true,
           );
+    if (result && laterEdits) {
+      // The confirmed record is what was first sent. Keep the changes made
+      // after that as an unsaved edit of the same record for the owner to
+      // save or discard; never resubmit them silently.
+      editBase = briefOf(result);
+      draft = { ...draft, key: result.key, version: result.version, product: "" };
+      formIntent = crypto.randomUUID();
+      modal = "edit";
+      formNotice = `Saved ${result.key} as first submitted. Your later changes below are not saved — save them as an edit, or close to discard them.`;
+      await choose(result.key);
+      return;
+    }
     if (result) {
       modal = null;
       // Intake can start from the template manager; show the new issue in the work list.
@@ -1153,13 +1203,12 @@
     busy = true;
     error = "";
     try {
-      await commit(
+      await sendForm(
         {
           op: "delete_issue",
           key: current.key,
           expected_version: current.version,
         },
-        formIntent,
       );
       selected = "";
       context = null;
@@ -1175,7 +1224,7 @@
   }
   async function createProduct(event: SubmitEvent) {
     event.preventDefault();
-    if (await act({ op: "create_product", ...productDraft }, formIntent)) {
+    if (await act({ op: "create_product", ...productDraft }, true)) {
       modal = null;
       productDraft = {
         key: "",
@@ -1225,7 +1274,7 @@
     busy = true;
     error = "";
     try {
-      const saved = await commit<Project>(
+      const saved = await sendForm<Project>(
         projectDraft.id
           ? {
               op: "update_project",
@@ -1246,7 +1295,6 @@
               sort_order: projectDraft.sort_order,
               ...(projectTemplate ? { template: projectTemplate } : {}),
             },
-        formIntent,
       );
       product = saved.product_id;
       projectFilter = saved.id;
@@ -1310,7 +1358,7 @@
         }),
     };
     try {
-      const saved = await commit<Label>(
+      const saved = await sendForm<Label>(
         labelDraft.id
           ? {
               op: "update_label",
@@ -1319,7 +1367,6 @@
               ...fields,
             }
           : { op: "create_label", ...fields },
-        formIntent,
       );
       labelFilter = saved.id;
       modal = null;
@@ -1363,7 +1410,7 @@
     busy = true;
     error = "";
     try {
-      await commit<Goal>(
+      await sendForm<Goal>(
         goalDraft.id
           ? {
               op: "update_goal",
@@ -1383,7 +1430,6 @@
               priority: goalDraft.priority,
               project_ids: goalDraft.project_ids,
             },
-        formIntent,
       );
       modal = null;
     } catch (e) {
@@ -1419,7 +1465,7 @@
     busy = true;
     error = "";
     try {
-      await commit<Milestone>(
+      await sendForm<Milestone>(
         milestoneDraft.id
           ? {
               op: "update_milestone",
@@ -1436,7 +1482,6 @@
               description: milestoneDraft.description,
               sort_order: milestoneDraft.sort_order,
             },
-        formIntent,
       );
       modal = null;
     } catch (e) {
@@ -1488,7 +1533,7 @@
     busy = true;
     error = "";
     try {
-      await commit<ReleaseRecord>(
+      await sendForm<ReleaseRecord>(
         releaseDraft.id
           ? {
               op: "update_release",
@@ -1516,7 +1561,6 @@
               project_ids: releaseDraft.project_ids,
               issue_keys: releaseDraft.issue_keys,
             },
-        formIntent,
       );
       modal = null;
     } catch (e) {
@@ -1560,12 +1604,11 @@
     busy = true;
     error = "";
     try {
-      await commit(
+      await sendForm(
         {
           op: "set_release_workflow_config",
           ...workflowDraft,
         },
-        formIntent,
       );
       modal = null;
     } catch (e) {
@@ -1608,7 +1651,7 @@
           ...handoff,
           e2e: { ...e2eDraft, build_ref: handoff.build_ref, outcome: "passed" },
         },
-        formIntent,
+        true,
       )
     ) {
       modal = null;
@@ -2160,6 +2203,12 @@
         >
       </div>{/if}{#if notice}<div class="notice" role="status">
         <span>{notice}</span>
+      </div>{/if}{#if keptNotice}<div class="notice" role="status">
+        <span>{keptNotice}</span><button
+          class="icon-button"
+          aria-label="Dismiss notice"
+          onclick={() => (keptNotice = "")}>×</button
+        >
       </div>{/if}
     <div
       class="work-area"
@@ -3509,7 +3558,7 @@
                         type="button"
                         class="text-button"
                         onclick={() => delete commentAttempts[current!.key]}
-                        >Stop retrying and edit the draft</button
+                        >Stop retrying and edit (posting again may add a second copy)</button
                       >
                     </div>
                   </div>{:else if (commentDrafts[current.key] || "").trim()}<small class="hint draft-hint"
@@ -3745,7 +3794,11 @@
             </div>
           </div>
         </div>{/if}
-      <fieldset class="modal-forms" disabled={formAttempt}>
+      {#if formNotice}<div class="info-card form-outcome" role="status">
+          <span class="card-symbol">i</span>
+          <div><b>{formNotice}</b></div>
+        </div>{/if}
+      <fieldset class="modal-forms" disabled={formPending || !!formAttempt}>
       {#if modal === "delete"}<form class="modal-form" onsubmit={deleteIssue}>
           <div class="info-card warning">
             <span class="card-symbol">!</span>
