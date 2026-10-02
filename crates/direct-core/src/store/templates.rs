@@ -548,9 +548,10 @@ pub(crate) fn apply(
             overrides.push("planning_scope".to_string());
         }
     }
-    if selection.execution_mode.is_some()
-        && selection.execution_mode != definition.content.execution_mode
-    {
+    // Absent accepts the suggestion; an explicit choice, including clearing it, is recorded.
+    let suggested_mode = definition.content.execution_mode;
+    let execution_mode = selection.execution_mode.unwrap_or(suggested_mode);
+    if execution_mode != suggested_mode {
         overrides.push("execution_mode".to_string());
     }
     if applicable.iter().any(|id| !kept.contains(id)) {
@@ -561,9 +562,7 @@ pub(crate) fn apply(
             template_id: head.id,
             revision: definition.revision,
             supplement_product_id: supplement.map(|s| s.product_id.clone()),
-            execution_mode: selection
-                .execution_mode
-                .or(definition.content.execution_mode),
+            execution_mode,
             overrides,
             applied_by: actor.into(),
             applied_at: at,

@@ -70,7 +70,11 @@
     selection = {
       template_id: head.id,
       revision: head.current_revision,
-      ...(mode && mode !== revision.content.execution_mode ? { execution_mode: mode } : {}),
+      // Omitted accepts the suggestion; a different mode, or null for "Not set",
+      // is the creator's explicit choice and is recorded as an override.
+      ...((mode || null) !== (revision.content.execution_mode ?? null)
+        ? { execution_mode: mode || null }
+        : {}),
       ...(kept.length ? { labels: kept } : {}),
     };
   }
@@ -83,12 +87,16 @@
       planning_scope: revision.content.suggested_planning_scope,
     });
   }
+  // Label suggestions offered when `kept` was last decided, so a refresh can tell
+  // an explicit un-check from a suggestion that is new for this product.
+  let offered: string[] = [];
   function choose(id: string) {
     chosenId = id;
     const next = options.find((item) => item.id === id);
     const nextRevision = next ? revisionOf(data, next.id, next.current_revision) : undefined;
     mode = nextRevision?.content.execution_mode || "";
     kept = labels.map((label) => label.id);
+    offered = [...kept];
     sync();
     apply();
   }
@@ -99,7 +107,10 @@
     lastProduct = productId;
     if (previous === null || previous === productId) return;
     if (!revision) return;
-    kept = labels.map((label) => label.id);
+    // Keep explicit choices; only suggestions new to this product start kept.
+    const now = labels.map((label) => label.id);
+    kept = now.filter((id) => kept.includes(id) || !offered.includes(id));
+    offered = now;
     sync();
     apply();
   });
@@ -143,7 +154,11 @@
             sync();
             apply();
           }}
-          ><option value="">Not set</option>{#each MODES as item}<option value={item.value}
+          ><option value=""
+            >{revision.content.execution_mode
+              ? "Not set · clear the suggestion"
+              : "Not set (suggested)"}</option
+          >{#each MODES as item}<option value={item.value}
               >{item.label}{item.value === revision.content.execution_mode
                 ? " (suggested)"
                 : ""}</option

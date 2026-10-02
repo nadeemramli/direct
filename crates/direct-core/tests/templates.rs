@@ -633,3 +633,44 @@ fn format_12_archive_restores_and_legacy_requests_replay_with_unchanged_hashes()
         expected
     );
 }
+
+#[test]
+fn clearing_a_suggested_execution_mode_is_explicit_and_recorded() {
+    let mut w = workspace();
+    let created = delivery_template(&mut w);
+    let id = created["template"]["id"].as_str().unwrap().to_string();
+    let create = |mode: Option<Value>| {
+        let mut selection = json!({"template_id":id,"revision":1,"labels":[w.label_triage]});
+        if let Some(mode) = mode {
+            selection["execution_mode"] = mode;
+        }
+        json!({"op":"create_issue","product":"BET","title":"Mode","priority":"high","planning_scope":"project","template":selection})
+    };
+    // Absent: the suggestion applies and is not an override.
+    let accepted = owner(&mut w.store, create(None)).unwrap();
+    assert_eq!(accepted["template"]["execution_mode"], "agent");
+    assert_eq!(accepted["template"]["overrides"], json!([]));
+    // Explicitly choosing the suggested mode is not an override either.
+    let same = owner(&mut w.store, create(Some(json!("agent")))).unwrap();
+    assert_eq!(same["template"]["overrides"], json!([]));
+    // Explicit null clears the suggestion and is recorded as the creator's choice.
+    let cleared = owner(&mut w.store, create(Some(Value::Null))).unwrap();
+    assert_eq!(cleared["template"]["execution_mode"], Value::Null);
+    assert_eq!(cleared["template"]["overrides"], json!(["execution_mode"]));
+    // The explicit clear survives reopen and context.
+    drop(w.store);
+    let mut reopened = Store::open(&w.path).unwrap();
+    let context = read(&mut reopened, json!({"op":"context","key":cleared["key"]}));
+    assert_eq!(context["issue"]["template"]["execution_mode"], Value::Null);
+    assert_eq!(
+        context["template"]["use"]["overrides"],
+        json!(["execution_mode"])
+    );
+    // Absent and null are different commands for request-ID idempotency.
+    let mut first = create(None);
+    first["request_id"] = json!("mode-request");
+    owner(&mut reopened, first).unwrap();
+    let mut second = create(Some(Value::Null));
+    second["request_id"] = json!("mode-request");
+    assert_eq!(code(owner(&mut reopened, second)), "conflict");
+}

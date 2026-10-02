@@ -84,6 +84,18 @@ async function openTemplates() {
   await sidebar.getByRole("button", { name: /Intake templates/ }).click();
   await page.getByRole("heading", { name: "Intake templates" }).waitFor();
 }
+// Each QC regression scenario runs in isolation: a failure is recorded with a
+// screenshot, the dialog is closed, and the remaining scenarios still run.
+async function scenario(name, body) {
+  try {
+    await body();
+  } catch (error) {
+    check(`${name} completed`, false, (error.stack || String(error)).split("\n")[0]);
+    await page.screenshot({ path: join(evidence, `failure-${name.replaceAll(" ", "-")}.png`), fullPage: true }).catch(() => {});
+    if (await dialog.count()) await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "detached", timeout: 5000 }).catch(() => {});
+  }
+}
 async function allWork() {
   await sidebar.getByRole("button", { name: /All work/ }).click();
   await page.getByLabel("Filter by project").selectOption("all");
@@ -155,6 +167,8 @@ try {
   await detail.getByLabel("Template shape").selectOption("release");
   await detail.getByLabel("Intent prompt").fill("Release outcome and audience");
   await detail.getByLabel("Verification prompt").fill("Production evidence recorded");
+  await detail.getByLabel("Suggested execution mode").selectOption("owner");
+  await detail.getByLabel("Suggested priority").selectOption("urgent");
   check("project templates cannot suggest an issue work route",
     (await detail.getByLabel("Suggested work route").count()) === 0);
   await detail.getByRole("button", { name: "Create template" }).click();
@@ -228,6 +242,89 @@ try {
   check("project summary shows template provenance",
     (await page.locator(".project-summary .template-chip").innerText()).includes("Release train · v1"));
 
+  // ------------------------------------------------------------ explicit choices survive refreshes (QC P2 regressions)
+  // Action order from QC: choose a high/project template, explicitly set low/inbox,
+  // then change execution mode (and product): explicit choices must not reset.
+  const contextOf = (key) => owner(page, { op: "context", key });
+  await scenario("issue overrides", async () => {
+  await newIssue({ product: "ALP", title: "Explicit choices kept", template: "Delivery · Delivery · v1" });
+  check("template suggests high priority and project route",
+    (await dialog.getByLabel("Priority").inputValue()) === "high" && (await dialog.getByLabel(/Work route/).inputValue()) === "project");
+  await dialog.getByLabel("Priority").selectOption("low");
+  await dialog.getByLabel(/Work route/).selectOption("inbox");
+  await dialog.getByLabel("Execution mode").selectOption("prototype");
+  check("explicit priority and route survive an execution-mode change",
+    (await dialog.getByLabel("Priority").inputValue()) === "low" && (await dialog.getByLabel(/Work route/).inputValue()) === "inbox",
+    `${await dialog.getByLabel("Priority").inputValue()} / ${await dialog.getByLabel(/Work route/).inputValue()}`);
+  await dialog.locator(".template-labels").getByLabel("Triage").uncheck();
+  await dialog.locator("select").first().selectOption("BET");
+  check("explicit priority, route and mode survive a product (supplement) change",
+    (await dialog.getByLabel("Priority").inputValue()) === "low" && (await dialog.getByLabel(/Work route/).inputValue()) === "inbox"
+      && (await dialog.getByLabel("Execution mode").inputValue()) === "prototype");
+  check("an explicitly unchecked suggested label stays unchecked after a product change",
+    !(await dialog.locator(".template-labels").getByLabel("Triage").isChecked()));
+  await dialog.getByRole("button", { name: /Create issue/ }).click();
+  await dialog.waitFor({ state: "detached" });
+  snapshot = await owner(page, { op: "snapshot" });
+  const keptKey = snapshot.issues.find((issue) => issue.title === "Explicit choices kept").key;
+  await page.reload();
+  let kept = (await contextOf(keptKey)).issue;
+  check("explicit issue choices persist with exact overrides after reload",
+    kept.priority === "low" && kept.planning_scope === "inbox" && kept.template?.execution_mode === "prototype"
+      && JSON.stringify(kept.template?.overrides) === JSON.stringify(["priority", "planning_scope", "execution_mode", "labels"])
+      && kept.labels.length === 0,
+    JSON.stringify({ priority: kept.priority, scope: kept.planning_scope, template: kept.template }));
+  });
+
+  // Clearing the suggested execution mode is an explicit choice, not the suggestion.
+  await scenario("cleared mode", async () => {
+  await newIssue({ product: "ALP", title: "Mode cleared", template: "Delivery · Delivery · v1", project: "Alpha intake" });
+  check("the Not set option says it clears the suggestion",
+    (await dialog.getByLabel("Execution mode").locator("option").first().innerText()).includes("clear the suggestion"));
+  await dialog.getByLabel("Execution mode").selectOption({ index: 0 });
+  await dialog.getByRole("button", { name: /Create issue/ }).click();
+  await dialog.waitFor({ state: "detached" });
+  snapshot = await owner(page, { op: "snapshot" });
+  const clearedKey = snapshot.issues.find((issue) => issue.title === "Mode cleared").key;
+  await page.reload();
+  const cleared = (await contextOf(clearedKey)).issue;
+  check("cleared execution mode is recorded as cleared, not as the suggested agent mode",
+    cleared.template?.execution_mode === null && JSON.stringify(cleared.template?.overrides) === JSON.stringify(["execution_mode"]),
+    JSON.stringify(cleared.template));
+  await allWork();
+  await page.locator(".issue-row", { hasText: "Mode cleared" }).first().click();
+  await provenance.waitFor();
+  check("UI provenance shows the cleared mode and the override after reload",
+    (await provenance.innerText()).includes("Execution mode: not set") && (await provenance.innerText()).includes("overridden: execution_mode"),
+    await provenance.innerText());
+  });
+
+  // Project priority: same order for project intake.
+  await scenario("project priority", async () => {
+  await allWork();
+  await page.getByRole("button", { name: "＋ New project" }).click();
+  await dialog.waitFor();
+  await dialog.locator("select").first().selectOption("ALP");
+  await dialog.getByLabel("Intake template").selectOption({ label: "Release train · Release · v1" });
+  check("project template suggests urgent priority", (await dialog.getByLabel("Priority").inputValue()) === "urgent");
+  await dialog.getByLabel("Priority").selectOption("low");
+  await dialog.getByLabel("Execution mode").selectOption("prototype");
+  await dialog.locator("select").first().selectOption("BET");
+  check("explicit project priority survives mode and product changes",
+    (await dialog.getByLabel("Priority").inputValue()) === "low", await dialog.getByLabel("Priority").inputValue());
+  await dialog.getByLabel("Project name").fill("Gamma probe");
+  await dialog.getByRole("button", { name: "Create project" }).click();
+  await dialog.waitFor({ state: "detached" });
+  await page.reload();
+  snapshot = await owner(page, { op: "snapshot" });
+  const gamma = snapshot.projects.find((project) => project.name === "Gamma probe");
+  check("explicit project priority persists with exact overrides after reload",
+    gamma?.priority === "low" && gamma?.product_id === bet.id && gamma?.template?.execution_mode === "prototype"
+      && JSON.stringify(gamma?.template?.overrides) === JSON.stringify(["priority", "execution_mode"]),
+    JSON.stringify({ priority: gamma?.priority, template: gamma?.template }));
+  await page.getByRole("button", { name: /New issue/ }).first().waitFor();
+  });
+
   // ------------------------------------------------------------ agent applies through the CLI
   const agentIssue = agentCli("create", "--product", "BET", "Agent applied", "--template-id", alpIssue.template.template_id, "--template-revision", "1");
   check("agent applies an allowed intake shape through the native CLI",
@@ -275,7 +372,7 @@ try {
   await page.keyboard.press("Escape");
   snapshot = await owner(page, { op: "snapshot" });
   check("retiring left project provenance intact",
-    snapshot.projects.filter((project) => project.template?.revision === 1).length === 2);
+    snapshot.projects.filter((project) => project.template?.revision === 1).length === 3);
 
   // ------------------------------------------------------------ readiness is still an owner decision
   snapshot = await owner(page, { op: "snapshot" });

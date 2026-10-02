@@ -227,20 +227,30 @@
   let issueTemplate = $state<TemplateSelection | null>(null);
   let projectTemplate = $state<TemplateSelection | null>(null);
   let templateStarter = { brief: "", verification: "" };
+  // Values the form or a template last put in each suggested field. A suggestion
+  // replaces a field only while it still holds that value; anything else is the
+  // creator's explicit choice and survives mode, product and template refreshes.
+  let templateSet: { priority: string; planning_scope: string } = {
+    priority: "",
+    planning_scope: "",
+  };
   function applyIssueTemplate(applied: TemplateApplied) {
     if (!draft.body.trim() || draft.body === templateStarter.brief) draft.body = applied.brief;
     if (!draft.acceptance.trim() || draft.acceptance === templateStarter.verification)
       draft.acceptance = applied.verification;
     templateStarter = { brief: applied.brief, verification: applied.verification };
-    if (applied.priority) draft.priority = applied.priority;
-    if (applied.planning_scope) draft.planning_scope = applied.planning_scope;
+    if (applied.priority && draft.priority === templateSet.priority)
+      draft.priority = templateSet.priority = applied.priority;
+    if (applied.planning_scope && draft.planning_scope === templateSet.planning_scope)
+      draft.planning_scope = templateSet.planning_scope = applied.planning_scope;
   }
   function applyProjectTemplate(applied: TemplateApplied) {
     const starter = [applied.brief, applied.verification].filter(Boolean).join("\n\n");
     if (!projectDraft.description.trim() || projectDraft.description === templateStarter.brief)
       projectDraft.description = starter;
     templateStarter = { brief: starter, verification: "" };
-    if (applied.priority) projectDraft.priority = applied.priority;
+    if (applied.priority && projectDraft.priority === templateSet.priority)
+      projectDraft.priority = templateSet.priority = applied.priority;
   }
   let draft = $state({
     title: "",
@@ -872,6 +882,7 @@
     };
     issueTemplate = null;
     templateStarter = { brief: "", verification: "" };
+    templateSet = { priority: draft.priority, planning_scope: draft.planning_scope };
     modal = "issue";
   }
   async function saveDraft(event: SubmitEvent) {
@@ -999,6 +1010,7 @@
         };
     projectTemplate = null;
     templateStarter = { brief: "", verification: "" };
+    templateSet = { priority: projectDraft.priority, planning_scope: "" };
     modal = "project";
   }
   async function saveProject(event: SubmitEvent) {

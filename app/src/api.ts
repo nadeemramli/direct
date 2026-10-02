@@ -100,7 +100,8 @@ export interface TemplateRevision {
 export interface TemplateSelection {
   template_id: string;
   revision: number;
-  execution_mode?: ExecutionMode;
+  /** Omit to accept the suggestion; null explicitly clears it. */
+  execution_mode?: ExecutionMode | null;
   labels?: string[];
 }
 export interface TemplateUse {

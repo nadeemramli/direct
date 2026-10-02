@@ -25,7 +25,7 @@ Templates are workspace-level and apply to every product. They have no per-produ
 | `create_template` | owner | Creates `target`, `name`, `shape`, `content`, optional `description`, `supplements` and `note`; the result is revision 1. |
 | `revise_template` | owner | Takes `id`, `expected_version` and the full definition. Appends revision N+1. The target cannot change, and a retired template is read-only. |
 | `retire_template` | owner | Takes `id`, `expected_version` and a nonblank `reason`. The template is no longer offered. Nothing is deleted and retirement is not reversible. |
-| `create_issue` / `create_project` `template` | agent or owner (project creation stays owner-only) | `{template_id, revision, execution_mode?, labels?}` applies the current revision of an active template. |
+| `create_issue` / `create_project` `template` | agent or owner (project creation stays owner-only) | `{template_id, revision, execution_mode?, labels?}` applies the current revision of an active template. `execution_mode`: omit it to accept the suggestion, send a mode to choose one, or send `null` to clear the suggestion explicitly. |
 
 Applying a template is refused when:
 
@@ -39,7 +39,7 @@ The record stores exact provenance in `template`:
 - `template_id` and `revision`
 - `supplement_product_id`, set when the revision had a supplement for the record's product
 - the effective `execution_mode`
-- `overrides`, the suggested fields the creator explicitly changed (`priority`, `planning_scope`, `execution_mode`, `labels`)
+- `overrides`, the suggested fields the creator explicitly changed (`priority`, `planning_scope`, `execution_mode`, `labels`). Explicitly clearing a suggested execution mode records `execution_mode: null` and the `execution_mode` override; it never falls back to the suggestion.
 - `applied_by` and `applied_at`
 
 The kept suggested labels are attached in the same transaction.
@@ -75,5 +75,6 @@ Schema and archive format 13 add the `templates` and `template_revisions` tables
 
 - Applying a template requires its current revision. Rejecting a stale form is safer than silently applying a newer definition than the one the creator saw.
 - Overrides are computed by the service from typed suggestions; edits to the free-text starter are expected and are not counted as overrides.
+- In the intake form, a suggestion fills a field only while the field still holds the value the form or the template last put there. A priority, route or label the creator changed survives later execution-mode, product (supplement) and template refreshes.
 - Retirement is one-way. To reuse a shape, create a new template, which keeps provenance unambiguous.
 - Supplements live inside a revision. Changing one product's supplement creates a new revision of the shared template, so every use states exactly which base and supplement it saw.

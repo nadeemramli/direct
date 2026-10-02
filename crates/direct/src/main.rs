@@ -184,7 +184,8 @@ enum Cli {
         /// The template's current revision, as listed by `templates`.
         #[arg(long, requires = "template_id")]
         template_revision: Option<u32>,
-        /// Override the template's suggested execution mode: agent, owner, paired or prototype.
+        /// Override the template's suggested execution mode: agent, owner, paired, prototype,
+        /// or none to clear the suggestion explicitly.
         #[arg(long, requires = "template_id")]
         execution_mode: Option<String>,
         /// Keep a label the template suggests (repeatable).
@@ -460,9 +461,13 @@ fn template_selection(
         return Ok(None);
     };
     let execution_mode = execution_mode
-        .map(|mode| {
-            serde_json::from_value::<ExecutionMode>(json!(mode))
-                .map_err(|_| anyhow!("execution mode must be agent, owner, paired or prototype"))
+        .map(|mode| match mode {
+            "none" => Ok(None),
+            mode => serde_json::from_value::<ExecutionMode>(json!(mode))
+                .map(Some)
+                .map_err(|_| {
+                    anyhow!("execution mode must be agent, owner, paired, prototype or none")
+                }),
         })
         .transpose()?;
     Ok(Some(TemplateSelection {
@@ -1048,7 +1053,27 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(selection.revision, 2);
-        assert_eq!(selection.execution_mode, Some(ExecutionMode::Prototype));
+        assert_eq!(
+            selection.execution_mode,
+            Some(Some(ExecutionMode::Prototype))
+        );
+        let cleared = template_selection(Some("t".into()), Some(1), Some("none"), vec![])
+            .unwrap()
+            .unwrap();
+        assert_eq!(cleared.execution_mode, Some(None));
+        assert_eq!(
+            serde_json::to_value(&cleared).unwrap()["execution_mode"],
+            Value::Null,
+            "an explicit clear is sent as null, not omitted"
+        );
+        assert!(serde_json::to_value(
+            template_selection(Some("t".into()), Some(1), None, vec![])
+                .unwrap()
+                .unwrap()
+        )
+        .unwrap()
+        .get("execution_mode")
+        .is_none());
         assert_eq!(selection.labels, vec!["label".to_string()]);
         assert!(template_selection(Some("t".into()), Some(1), Some("autopilot"), vec![]).is_err());
         let cli = Args::try_parse_from(["direct", "create", "Title", "--template-id", "t"]);

@@ -338,12 +338,26 @@ pub struct TemplateSelection {
     pub template_id: String,
     /// Must be the template's current revision; a stale form is refused.
     pub revision: u32,
-    /// Omit to accept the template's suggestion.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub execution_mode: Option<ExecutionMode>,
+    /// Omit to accept the template's suggestion; `null` explicitly clears it;
+    /// a mode explicitly chooses it.
+    #[serde(
+        default,
+        skip_serializing_if = "Option::is_none",
+        deserialize_with = "explicit_value"
+    )]
+    pub execution_mode: Option<Option<ExecutionMode>>,
     /// Suggested labels (base or product supplement) the creator keeps.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub labels: Vec<String>,
+}
+
+/// Distinguishes an explicit `null` (`Some(None)`) from an absent field (`None`).
+fn explicit_value<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
 }
 
 /// Exact provenance recorded on an issue or project created from a template.
