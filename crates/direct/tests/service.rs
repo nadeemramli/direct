@@ -308,3 +308,161 @@ fn two_real_clients_claim_once_and_http_enforces_local_capabilities() {
         .unwrap();
     assert_eq!(before, after);
 }
+
+/// Forwards one HTTP request to the real service, waits for its complete
+/// reply, then closes the client connection without relaying it: the write is
+/// committed but the caller never learns the outcome (DIR-55).
+fn dropping_proxy(service_port: u16) -> u16 {
+    use std::io::{Read, Write};
+    use std::net::{TcpListener, TcpStream};
+    fn read_message(stream: &mut TcpStream) -> Vec<u8> {
+        let mut bytes = Vec::new();
+        let mut buffer = [0u8; 4096];
+        loop {
+            let n = stream.read(&mut buffer).unwrap();
+            assert!(n > 0, "connection closed before a complete message");
+            bytes.extend_from_slice(&buffer[..n]);
+            if let Some(end) = bytes.windows(4).position(|w| w == b"\r\n\r\n") {
+                let head = String::from_utf8_lossy(&bytes[..end]).to_ascii_lowercase();
+                let length = head
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .map(|v| v.trim().parse::<usize>().unwrap())
+                    .unwrap_or(0);
+                if bytes.len() >= end + 4 + length {
+                    return bytes;
+                }
+            }
+        }
+    }
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let port = listener.local_addr().unwrap().port();
+    thread::spawn(move || {
+        let (mut client, _) = listener.accept().unwrap();
+        // The service only accepts its own Host; present it as a direct caller.
+        let request = String::from_utf8(read_message(&mut client))
+            .unwrap()
+            .replace(
+                &format!("127.0.0.1:{port}"),
+                &format!("127.0.0.1:{service_port}"),
+            )
+            .into_bytes();
+        let mut upstream = TcpStream::connect(("127.0.0.1", service_port)).unwrap();
+        upstream.write_all(&request).unwrap();
+        let _reply = read_message(&mut upstream);
+        drop(client);
+    });
+    port
+}
+
+#[test]
+fn client_classifies_write_outcomes_and_an_exact_retry_is_applied_once() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("workspace");
+    let service = start(&dir);
+    let client = Client::new(&dir).unwrap();
+    let create = |request_id: &str| -> Request {
+        serde_json::from_value(json!({"actor":"owner","request_id":request_id,"op":"create_issue",
+            "product":"DIR","title":"Identical intent","body":"Same text","planning_scope":"inbox"}))
+        .unwrap()
+    };
+    let titled = |snapshot: &Value| {
+        snapshot["issues"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|issue| issue["title"] == "Identical intent")
+            .count()
+    };
+
+    // The reply is dropped after the service committed: outcome unknown.
+    let mut dropped = Client::new(&dir).unwrap();
+    dropped.endpoint.port = dropping_proxy(client.endpoint.port);
+    let failure = dropped
+        .call(&create("dir-55-create-1"), Role::Human)
+        .expect_err("the dropped reply must not look like success");
+    let shaped = direct::command_failure(&failure);
+    assert_eq!(shaped["outcome"], "unknown", "{shaped}");
+    let snapshot = client
+        .call(&req(json!({"op":"snapshot"})), Role::Human)
+        .unwrap();
+    assert_eq!(
+        titled(&snapshot),
+        1,
+        "the write was committed before the reply was lost"
+    );
+
+    // Retrying the exact payload and request ID replays the stored result.
+    let retried = client
+        .call(&create("dir-55-create-1"), Role::Human)
+        .unwrap();
+    assert_eq!(retried["key"], "DIR-1");
+    let snapshot = client
+        .call(&req(json!({"op":"snapshot"})), Role::Human)
+        .unwrap();
+    assert_eq!(titled(&snapshot), 1, "retry must not create a second issue");
+
+    // A distinct user operation (new request ID) is a distinct record.
+    let distinct = client
+        .call(&create("dir-55-create-2"), Role::Human)
+        .unwrap();
+    assert_eq!(distinct["key"], "DIR-2");
+    let snapshot = client
+        .call(&req(json!({"op":"snapshot"})), Role::Human)
+        .unwrap();
+    assert_eq!(titled(&snapshot), 2);
+
+    // Reusing a request ID for different work is a definitive refusal.
+    let mut changed = create("dir-55-create-1");
+    changed.command = serde_json::from_value(json!({"op":"create_issue","product":"DIR",
+        "title":"Different","body":"","planning_scope":"inbox"}))
+    .unwrap();
+    let refused = client.call(&changed, Role::Human).unwrap_err();
+    let shaped = direct::command_failure(&refused);
+    assert_eq!(shaped["outcome"], "rejected", "{shaped}");
+    assert_eq!(shaped["code"], "conflict");
+
+    // A stale version is a definitive refusal that names the conflict.
+    let stale = client
+        .call(
+            &req(
+                json!({"op":"update_issue","key":"DIR-1","expected_version":99,
+                "title":"Stale","body":"","acceptance":"","owner":"","priority":"low"}),
+            ),
+            Role::Human,
+        )
+        .unwrap_err();
+    let shaped = direct::command_failure(&stale);
+    assert_eq!(shaped["outcome"], "rejected");
+    assert_eq!(shaped["code"], "conflict");
+    assert!(
+        shaped["message"].as_str().unwrap().contains("version"),
+        "{shaped}"
+    );
+    // CLI and MCP keep the established `code: message` text.
+    assert!(
+        stale.to_string().starts_with("conflict: DIR-1 is version"),
+        "{stale}"
+    );
+
+    // An unreachable service is an unknown outcome, never a refusal.
+    drop(service);
+    let gone = client
+        .call(&req(json!({"op":"snapshot"})), Role::Human)
+        .unwrap_err();
+    let shaped = direct::command_failure(&gone);
+    assert_eq!(shaped["outcome"], "unknown", "{shaped}");
+    assert_eq!(shaped["code"], "unavailable");
+
+    // After restart the persisted state is unchanged: two records, no duplicate.
+    let _service = start(&dir);
+    let client = Client::new(&dir).unwrap();
+    let snapshot = client
+        .call(&req(json!({"op":"snapshot"})), Role::Human)
+        .unwrap();
+    assert_eq!(titled(&snapshot), 2);
+    let replay = client
+        .call(&create("dir-55-create-1"), Role::Human)
+        .unwrap();
+    assert_eq!(replay["key"], "DIR-1", "the replay record survives restart");
+}
