@@ -1668,6 +1668,55 @@ summary {
   gap: 12px;
   overflow-wrap: anywhere;
 }
+/* A confirmed write whose refresh failed (DIR-55): saved, not an error. */
+.notice {
+  background: #23302a;
+  border-bottom: 1px solid #39483e;
+  color: #bcd9c7;
+  padding: 10px 24px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+/* Wraps every modal form so an unconfirmed save can lock its entries. */
+.modal-forms {
+  border: 0;
+  margin: 0;
+  padding: 0;
+  min-width: 0;
+  display: contents;
+}
+.form-outcome {
+  margin: 0 0 16px;
+}
+.form-outcome details {
+  margin-top: 8px;
+}
+.form-outcome summary {
+  cursor: pointer;
+  font-size: 10px;
+  color: #b79e86;
+}
+.form-outcome pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 160px;
+  overflow: auto;
+  margin: 6px 0 0;
+  font-size: 11px;
+}
+.card-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+}
+.comment-outcome {
+  margin: 0 0 10px;
+}
+.draft-hint {
+  display: block;
+  margin: -4px 0 8px;
+}
 .modal-backdrop {
   position: fixed;
   inset: 0;

@@ -1,7 +1,7 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
   import type { Snippet } from "svelte";
-  import { api, connect, migration, sourceFile } from "./api";
+  import { api, connect, DirectError, migration, sourceFile } from "./api";
   import {
     BIG_STEP,
     LEFT_MIN,
@@ -249,7 +249,40 @@
   let e2eDraft = $state({ environment: "", entrypoint: "", scenarios: "", delivered_build_ref: "", delivery_check: "" });
   let results = $state<{ outcome: Outcome; note: string }[]>([]);
   let reviewNote = $state("");
-  let comment = $state("");
+  // Comment drafts and unconfirmed posts belong to the issue they were
+  // written on (DIR-54); switching issues never retargets them.
+  let commentDrafts = $state<Record<string, string>>({});
+  let commentAttempts = $state<Record<string, Record<string, unknown>>>({});
+  let postingKey = $state("");
+  // A write that committed but whose refresh failed (DIR-55).
+  let notice = $state("");
+  // The open form's user operation: retries of its unchanged payload reuse
+  // one request ID; a newly opened form is a distinct operation.
+  let formIntent = crypto.randomUUID();
+  let openedModal: string | null = null;
+  let formAttempt = $state(false);
+  let formConflict = $state<
+    | null
+    | { kind: "edit" | "submit"; latest: Issue | null }
+    | { kind: "merged"; theirs: string[]; both: { field: string; theirs: string }[] }
+  >(null);
+  const BRIEF_FIELDS = [
+    ["title", "Title"],
+    ["body", "Problem & expected outcome"],
+    ["acceptance", "Acceptance criteria"],
+    ["owner", "Human owner"],
+    ["priority", "Priority"],
+    ["planning_scope", "Work route"],
+  ] as const;
+  type BriefField = (typeof BRIEF_FIELDS)[number][0];
+  let editBase: Record<BriefField, string> = {
+    title: "",
+    body: "",
+    acceptance: "",
+    owner: "",
+    priority: "",
+    planning_scope: "",
+  };
   let reopenReason = $state("");
   let clock = $state(Date.now() / 1000);
   let activeRunId = "";
@@ -723,6 +756,7 @@
     if (!selectedGuidanceId)
       selectedGuidanceId = snapshot.theoria_documents[0]?.id || "";
     connected = true;
+    notice = "";
     if (selected) await loadContext();
   }
   async function choose(key: string) {
@@ -796,22 +830,181 @@
     // The return point belongs to this one trip into Theoria.
     if (view !== "theoria" && returnTo) returnTo = null;
   });
-  async function act(command: Record<string, unknown>) {
+  $effect(() => {
+    if (modal === openedModal) return;
+    openedModal = modal;
+    formIntent = crypto.randomUUID();
+    formAttempt = false;
+    formConflict = null;
+  });
+  $effect(() => {
+    // The form is usually scrolled to its footer when a save fails; bring the
+    // outcome into view and put focus on its action.
+    if (!formAttempt && !formConflict) return;
+    tick().then(() => {
+      const card = document.querySelector<HTMLElement>("dialog.modal .form-outcome");
+      card?.scrollIntoView({ block: "nearest" });
+      card?.querySelector<HTMLButtonElement>("button.primary")?.focus();
+    });
+  });
+  function failureText(e: unknown) {
+    if (e instanceof DirectError && e.outcome === "unknown")
+      return `${e.message} It may already be saved. Your text is kept; retrying sends the same request, so Direct applies it at most once.`;
+    return String(e).replace(/^Error: /, "");
+  }
+  /**
+   * Apply a write, then refresh. Once the write is confirmed it is reported
+   * as saved even if the refresh fails; the poll reconnects and refreshes.
+   */
+  async function commit<T>(command: Record<string, unknown>, intent = "") {
+    const result = await api<T>(command, true, intent);
+    if (intent && intent === formIntent) formAttempt = false;
+    try {
+      await refresh();
+    } catch {
+      const key = (result as { key?: unknown } | null)?.key;
+      notice = `Saved${typeof key === "string" ? ` ${key}` : ""}. Direct couldn't refresh the view yet — reconnecting…`;
+      connected = false;
+    }
+    return result;
+  }
+  async function act(command: Record<string, unknown>, intent = "") {
     if (busy) return;
     busy = true;
     error = "";
     try {
-      const result = await api<Issue>(command, true);
-      await refresh();
-      return result;
+      return await commit<Issue>(command, intent);
     } catch (e) {
-      error = String(e).replace(/^Error: /, "");
+      if (intent) formFailure(e);
+      else error = failureText(e);
       return undefined;
     } finally {
       busy = false;
     }
   }
+  /** Keep the open form's entries; lock them while the outcome is unknown. */
+  function formFailure(e: unknown) {
+    if (e instanceof DirectError && e.outcome === "unknown") {
+      formAttempt = true;
+      error = "";
+      return;
+    }
+    error = failureText(e);
+    if (
+      e instanceof DirectError &&
+      e.code === "conflict" &&
+      (modal === "edit" || modal === "submit")
+    ) {
+      // Show what changed before offering the explicit reconcile action.
+      const conflict = { kind: modal, latest: null as Issue | null };
+      formConflict = conflict;
+      latestIssue(modal === "edit" ? draft.key : current?.key || "")
+        .then((latest) => {
+          if (formConflict === conflict) formConflict = { ...conflict, latest };
+        })
+        .catch(() => undefined);
+    }
+  }
+  function retryForm() {
+    document
+      .querySelector<HTMLFormElement>("dialog.modal form.modal-form")
+      ?.requestSubmit();
+  }
+  function briefOf(i: Issue): Record<BriefField, string> {
+    return {
+      title: i.title,
+      body: i.body,
+      acceptance: i.acceptance,
+      owner: i.owner,
+      priority: i.priority,
+      planning_scope: i.planning_scope || (i.project_id ? "project" : "inbox"),
+    };
+  }
+  async function latestIssue(key: string) {
+    return (await api<Context>({ op: "context", key })).issue;
+  }
+  /**
+   * Three-way merge of the edit form against the latest version: fields only
+   * the other actor changed are adopted, fields only the owner changed are
+   * kept, and fields both changed keep the owner's text with theirs shown.
+   * Saving afterwards is a new, explicit request on the fresh version.
+   */
+  async function mergeLatest() {
+    if (busy) return;
+    busy = true;
+    try {
+      const latest = await latestIssue(draft.key);
+      const theirs = briefOf(latest);
+      const adopted: string[] = [];
+      const both: { field: string; theirs: string }[] = [];
+      for (const [field, label] of BRIEF_FIELDS) {
+        const mine = String(draft[field]);
+        if (theirs[field] === editBase[field] || theirs[field] === mine) continue;
+        if (mine === editBase[field]) {
+          draft[field] = theirs[field] as never;
+          adopted.push(label);
+        } else both.push({ field: label, theirs: theirs[field] });
+      }
+      draft.version = latest.version;
+      editBase = theirs;
+      error = "";
+      formConflict = { kind: "merged", theirs: adopted, both };
+    } catch (e) {
+      error = failureText(e);
+    } finally {
+      busy = false;
+    }
+  }
+  async function useCurrentVersion() {
+    if (busy || !current) return;
+    busy = true;
+    try {
+      const latest = await latestIssue(current.key);
+      draft.version = latest.version;
+      error = "";
+      formConflict = null;
+    } catch (e) {
+      error = failureText(e);
+    } finally {
+      busy = false;
+    }
+  }
+  async function postComment(key: string) {
+    const issue = data.issues.find((i) => i.key === key);
+    if (!issue || busy) return;
+    // An unconfirmed post is retried verbatim (same version, same request
+    // ID); anything else is a new post of this issue's own draft.
+    const command = commentAttempts[key] ?? {
+      op: "comment",
+      key,
+      expected_version: issue.version,
+      body: commentDrafts[key] || "",
+    };
+    const body = String(command.body);
+    if (!body.trim()) return;
+    busy = true;
+    postingKey = key;
+    error = "";
+    try {
+      await commit(command, `comment:${key}`);
+      delete commentAttempts[key];
+      // Clear only this issue's draft, and only if it is still what was posted.
+      if ((commentDrafts[key] || "") === body) delete commentDrafts[key];
+    } catch (e) {
+      if (e instanceof DirectError && e.outcome === "unknown")
+        commentAttempts[key] = command;
+      if (selected !== key || !(e instanceof DirectError && e.outcome === "unknown"))
+        error =
+          e instanceof DirectError && e.code === "conflict"
+            ? `${key} changed while you were writing. Your comment is kept; post it again to add it to the current version.`
+            : `Comment on ${key}: ${failureText(e)}`;
+    } finally {
+      busy = false;
+      postingKey = "";
+    }
+  }
   function edit(i: Issue) {
+    editBase = briefOf(i);
     draft = {
       title: i.title,
       body: i.body,
@@ -849,28 +1042,34 @@
     event.preventDefault();
     const result =
       modal === "issue"
-        ? await act({
-            op: "create_issue",
-            product: draft.product,
-            title: draft.title,
-            body: draft.body,
-            acceptance: draft.acceptance,
-            owner: draft.owner,
-            priority: draft.priority,
-            planning_scope: draft.planning_scope,
-            project_id: draft.project_id || null,
-          })
-        : await act({
-            op: "update_issue",
-            key: draft.key,
-            expected_version: draft.version,
-            title: draft.title,
-            body: draft.body,
-            acceptance: draft.acceptance,
-            owner: draft.owner,
-            priority: draft.priority,
-            planning_scope: draft.planning_scope,
-          });
+        ? await act(
+            {
+              op: "create_issue",
+              product: draft.product,
+              title: draft.title,
+              body: draft.body,
+              acceptance: draft.acceptance,
+              owner: draft.owner,
+              priority: draft.priority,
+              planning_scope: draft.planning_scope,
+              project_id: draft.project_id || null,
+            },
+            formIntent,
+          )
+        : await act(
+            {
+              op: "update_issue",
+              key: draft.key,
+              expected_version: draft.version,
+              title: draft.title,
+              body: draft.body,
+              acceptance: draft.acceptance,
+              owner: draft.owner,
+              priority: draft.priority,
+              planning_scope: draft.planning_scope,
+            },
+            formIntent,
+          );
     if (result) {
       modal = null;
       await choose(result.key);
@@ -901,33 +1100,38 @@
   }
   async function deleteIssue(event: SubmitEvent) {
     event.preventDefault();
-    if (!current || busy) return;
+    if (busy) return;
+    // An unconfirmed delete that did commit leaves nothing to retry.
+    if (!current) {
+      modal = null;
+      return;
+    }
     busy = true;
     error = "";
     try {
-      await api(
+      await commit(
         {
           op: "delete_issue",
           key: current.key,
           expected_version: current.version,
         },
-        true,
+        formIntent,
       );
       selected = "";
       context = null;
       modal = null;
-      await refresh();
     } catch (e) {
-      error = String(e).replace(/^Error: /, "");
+      formFailure(e);
       // The server refused under its own transaction; show the current reasons.
-      await refresh().catch(() => undefined);
+      if (e instanceof DirectError && e.outcome === "rejected")
+        await refresh().catch(() => undefined);
     } finally {
       busy = false;
     }
   }
   async function createProduct(event: SubmitEvent) {
     event.preventDefault();
-    if (await act({ op: "create_product", ...productDraft })) {
+    if (await act({ op: "create_product", ...productDraft }, formIntent)) {
       modal = null;
       productDraft = {
         key: "",
@@ -973,7 +1177,7 @@
     busy = true;
     error = "";
     try {
-      const saved = await api<Project>(
+      const saved = await commit<Project>(
         projectDraft.id
           ? {
               op: "update_project",
@@ -993,14 +1197,13 @@
               priority: projectDraft.priority,
               sort_order: projectDraft.sort_order,
             },
-        true,
+        formIntent,
       );
-      await refresh();
       product = saved.product_id;
       projectFilter = saved.id;
       modal = null;
     } catch (e) {
-      error = String(e).replace(/^Error: /, "");
+      formFailure(e);
     } finally {
       busy = false;
     }
@@ -1057,7 +1260,7 @@
         }),
     };
     try {
-      const saved = await api<Label>(
+      const saved = await commit<Label>(
         labelDraft.id
           ? {
               op: "update_label",
@@ -1066,13 +1269,12 @@
               ...fields,
             }
           : { op: "create_label", ...fields },
-        true,
+        formIntent,
       );
-      await refresh();
       labelFilter = saved.id;
       modal = null;
     } catch (e) {
-      error = String(e).replace(/^Error: /, "");
+      formFailure(e);
     } finally {
       busy = false;
     }
@@ -1111,7 +1313,7 @@
     busy = true;
     error = "";
     try {
-      await api<Goal>(
+      await commit<Goal>(
         goalDraft.id
           ? {
               op: "update_goal",
@@ -1131,12 +1333,11 @@
               priority: goalDraft.priority,
               project_ids: goalDraft.project_ids,
             },
-        true,
+        formIntent,
       );
-      await refresh();
       modal = null;
     } catch (e) {
-      error = String(e).replace(/^Error: /, "");
+      formFailure(e);
     } finally {
       busy = false;
     }
@@ -1168,7 +1369,7 @@
     busy = true;
     error = "";
     try {
-      await api<Milestone>(
+      await commit<Milestone>(
         milestoneDraft.id
           ? {
               op: "update_milestone",
@@ -1185,12 +1386,11 @@
               description: milestoneDraft.description,
               sort_order: milestoneDraft.sort_order,
             },
-        true,
+        formIntent,
       );
-      await refresh();
       modal = null;
     } catch (e) {
-      error = String(e).replace(/^Error: /, "");
+      formFailure(e);
     } finally {
       busy = false;
     }
@@ -1238,7 +1438,7 @@
     busy = true;
     error = "";
     try {
-      await api<ReleaseRecord>(
+      await commit<ReleaseRecord>(
         releaseDraft.id
           ? {
               op: "update_release",
@@ -1266,12 +1466,11 @@
               project_ids: releaseDraft.project_ids,
               issue_keys: releaseDraft.issue_keys,
             },
-        true,
+        formIntent,
       );
-      await refresh();
       modal = null;
     } catch (e) {
-      error = String(e).replace(/^Error: /, "");
+      formFailure(e);
     } finally {
       busy = false;
     }
@@ -1311,17 +1510,16 @@
     busy = true;
     error = "";
     try {
-      await api(
+      await commit(
         {
           op: "set_release_workflow_config",
           ...workflowDraft,
         },
-        true,
+        formIntent,
       );
-      await refresh();
       modal = null;
     } catch (e) {
-      error = String(e).replace(/^Error: /, "");
+      formFailure(e);
     } finally {
       busy = false;
     }
@@ -1352,13 +1550,16 @@
     event.preventDefault();
     if (!current) return;
     if (
-      await act({
-        op: "submit",
-        key: current.key,
-        expected_version: draft.version,
-        ...handoff,
-        e2e: { ...e2eDraft, build_ref: handoff.build_ref, outcome: "passed" },
-      })
+      await act(
+        {
+          op: "submit",
+          key: current.key,
+          expected_version: draft.version,
+          ...handoff,
+          e2e: { ...e2eDraft, build_ref: handoff.build_ref, outcome: "passed" },
+        },
+        formIntent,
+      )
     ) {
       modal = null;
       tab = "verify";
@@ -1588,7 +1789,7 @@
           op: "changes",
           after: data.cursor,
         });
-        if (changes.cursor !== data.cursor) await refresh();
+        if (changes.cursor !== data.cursor || notice) await refresh();
         else if (
           current?.claim &&
           current.claim.expires_at <= clock &&
@@ -1896,6 +2097,8 @@
           aria-label="Dismiss error"
           onclick={() => (error = "")}>×</button
         >
+      </div>{/if}{#if notice}<div class="notice" role="status">
+        <span>{notice}</span>
       </div>{/if}
     <div
       class="work-area"
@@ -3190,28 +3393,60 @@
                   Keep decisions and handoff context with the work.
                 </p>{/if}
               <form
-                onsubmit={async (e) => {
+                class="comment-form"
+                onsubmit={(e) => {
                   e.preventDefault();
-                  if (
-                    await act({
-                      op: "comment",
-                      key: current.key,
-                      expected_version: current.version,
-                      body: comment,
-                    })
-                  )
-                    comment = "";
+                  postComment(current.key);
                 }}
               >
                 <label class="field"
                   >Add a comment<textarea
-                    bind:value={comment}
+                    bind:value={
+                      () =>
+                        String(
+                          commentAttempts[current!.key]?.body ??
+                            commentDrafts[current!.key] ??
+                            "",
+                        ),
+                      (text) => (commentDrafts[current!.key] = text)
+                    }
+                    onkeydown={(e) => {
+                      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                        e.preventDefault();
+                        e.currentTarget.form?.requestSubmit();
+                      }
+                    }}
+                    readonly={!!commentAttempts[current.key] || postingKey === current.key}
                     rows="3"
                     required
                     placeholder="Add evidence, a decision, or context…"
                   ></textarea></label
-                ><button class="secondary" disabled={busy || !comment.trim()}
-                  >Add comment</button
+                >{#if commentAttempts[current.key]}<div class="info-card warning comment-outcome" role="alert">
+                    <span class="card-symbol">!</span>
+                    <div>
+                      <b>Direct did not confirm this comment</b>
+                      <p>
+                        It may already be posted to {current.key}. Retrying sends the
+                        identical request, so it is added at most once.
+                      </p>
+                      <button
+                        type="button"
+                        class="text-button"
+                        onclick={() => delete commentAttempts[current!.key]}
+                        >Stop retrying and edit the draft</button
+                      >
+                    </div>
+                  </div>{:else if (commentDrafts[current.key] || "").trim()}<small class="hint draft-hint"
+                    >Draft kept with {current.key} when you switch issues · Ctrl+Enter posts</small
+                  >{/if}<button
+                  class="secondary"
+                  disabled={busy ||
+                    !(commentAttempts[current.key] || (commentDrafts[current.key] || "").trim())}
+                  >{postingKey === current.key
+                    ? "Posting…"
+                    : commentAttempts[current.key]
+                      ? "Retry posting"
+                      : "Add comment"}</button
                 >
               </form>
               <div class="section-label spaced">HISTORY</div>
@@ -3372,7 +3607,70 @@
         >
       </div>
       {#if error}<div class="error" role="alert">{error}</div>{/if}
-      {#if modal === "delete"}<form onsubmit={deleteIssue}>
+      {#if formAttempt}<div class="info-card warning form-outcome" role="alert">
+          <span class="card-symbol">!</span>
+          <div>
+            <b>Direct did not confirm this save</b>
+            <p>
+              The connection dropped before Direct replied, so it may already be
+              saved. Your entries are kept and locked until the outcome is
+              known. Retrying sends the identical request, so Direct applies it
+              at most once.
+            </p>
+            <div class="card-actions">
+              <button type="button" class="primary" disabled={busy} onclick={retryForm}
+                >Retry the same save</button
+              ><button type="button" class="secondary" onclick={() => (modal = null)}
+                >Close and check the workspace</button
+              >
+            </div>
+          </div>
+        </div>{/if}
+      {#if formConflict?.kind === "edit"}<div class="info-card warning form-outcome">
+          <span class="card-symbol">i</span>
+          <div>
+            <b>{draft.key} changed while you were editing</b>
+            <p>
+              Nothing was saved and your text is kept.{formConflict.latest
+                ? ` It is now version ${formConflict.latest.version} (you started from version ${draft.version}).`
+                : ""} Load the latest version to merge: changes only the other side made are adopted, your own changes stay, and fields you both changed keep your text with theirs shown for comparison.
+            </p>
+            <div class="card-actions">
+              <button type="button" class="primary" disabled={busy} onclick={mergeLatest}
+                >Load latest and merge</button
+              >
+            </div>
+          </div>
+        </div>{:else if formConflict?.kind === "merged"}<div class="info-card form-outcome" role="status">
+          <span class="card-symbol">✓</span>
+          <div>
+            <b>Merged with version {draft.version} — review, then save</b>
+            {#if formConflict.theirs.length}<p>
+                Adopted the other change to {formConflict.theirs.join(", ")}.
+              </p>{/if}
+            {#if formConflict.both.length}{#each formConflict.both as field}<details open>
+                  <summary>You both changed {field.field} — your text is kept; theirs:</summary>
+                  <pre class="prose">{field.theirs}</pre>
+                </details>{/each}{:else}<p>None of your changes collide with theirs.</p>{/if}
+          </div>
+        </div>{:else if formConflict?.kind === "submit"}<div class="info-card warning form-outcome">
+          <span class="card-symbol">i</span>
+          <div>
+            <b>{current?.key} changed since you opened this handoff</b>
+            <p>
+              Nothing was submitted and your handoff is kept.{formConflict.latest
+                ? ` It is now version ${formConflict.latest.version} · ${labels[formConflict.latest.status]}${formConflict.latest.claim ? ` · claimed by ${formConflict.latest.claim.actor}` : " · unclaimed"}.`
+                : ""} Review the change, then submit against the current version.
+            </p>
+            <div class="card-actions">
+              <button type="button" class="primary" disabled={busy} onclick={useCurrentVersion}
+                >Use the current version</button
+              >
+            </div>
+          </div>
+        </div>{/if}
+      <fieldset class="modal-forms" disabled={formAttempt}>
+      {#if modal === "delete"}<form class="modal-form" onsubmit={deleteIssue}>
           <div class="info-card warning">
             <span class="card-symbol">!</span>
             <div>
@@ -3399,7 +3697,7 @@
             >
           </div>
         </form>
-      {:else if modal === "project"}<form onsubmit={saveProject}>
+      {:else if modal === "project"}<form class="modal-form" onsubmit={saveProject}>
           <label class="field"
             >Product<select
               bind:value={projectDraft.product}
@@ -3455,7 +3753,7 @@
             >
           </div>
         </form>
-      {:else if modal === "goal"}<form onsubmit={saveGoal}>
+      {:else if modal === "goal"}<form class="modal-form" onsubmit={saveGoal}>
           <label class="field"
             >Product<select bind:value={goalDraft.product} disabled={!!goalDraft.id}>
               {#each data.products as p}<option value={p.key}>{p.name}</option
@@ -3502,7 +3800,7 @@
             >
           </div>
         </form>
-      {:else if modal === "milestone"}<form onsubmit={saveMilestone}>
+      {:else if modal === "milestone"}<form class="modal-form" onsubmit={saveMilestone}>
           <label class="field"
             >Project<select disabled value={milestoneDraft.project_id}>
               {#each data.projects as project}<option value={project.id}>{project.name}</option>{/each}
@@ -3526,7 +3824,7 @@
             >
           </div>
         </form>
-      {:else if modal === "release"}<form onsubmit={saveRelease}>
+      {:else if modal === "release"}<form class="modal-form" onsubmit={saveRelease}>
           <label class="field"
             >Product<select bind:value={releaseDraft.product} disabled={!!releaseDraft.id}>
               {#each data.products as p}<option value={p.key}>{p.name}</option>{/each}
@@ -3580,7 +3878,7 @@
           {/if}
           <div class="modal-footer"><button class="primary" disabled={busy}>{releaseDraft.id ? "Save release" : "Create release"}</button></div>
         </form>
-      {:else if modal === "workflow"}<form onsubmit={saveWorkflow}>
+      {:else if modal === "workflow"}<form class="modal-form" onsubmit={saveWorkflow}>
           <label class="field">Product<select bind:value={workflowDraft.product} disabled={workflowDraft.expected_version !== null}>
               {#each data.products as p}<option value={p.key}>{p.name}</option>{/each}
             </select></label>
@@ -3603,7 +3901,7 @@
           <p class="hint">External strategy opts out of one-branch-per-release. Direct still records attempts and evidence only after external commands finish; it never runs Git or deployment commands itself.</p>
           <div class="modal-footer"><button class="primary" disabled={busy}>Save release workflow</button></div>
         </form>
-      {:else if modal === "label"}<form onsubmit={saveLabel}>
+      {:else if modal === "label"}<form class="modal-form" onsubmit={saveLabel}>
           <div class="form-grid">
             <label class="field"
               >Label name<input
@@ -3677,7 +3975,7 @@
             >
           </div>
         </form>
-      {:else if modal === "product"}<form onsubmit={createProduct}>
+      {:else if modal === "product"}<form class="modal-form" onsubmit={createProduct}>
           <div class="form-grid">
             <label class="field"
               >Product name<input
@@ -3708,7 +4006,7 @@
             <button class="primary" disabled={busy}>Create product</button>
           </div>
         </form>
-      {:else if modal === "submit"}<form onsubmit={submit}>
+      {:else if modal === "submit"}<form class="modal-form" onsubmit={submit}>
           <p class="hint">Finish the complete user flow and check the delivered build before asking for owner verification.</p>
           <label class="field">Test environment<input required bind:value={e2eDraft.environment} placeholder="Windows, isolated test workspace" /></label>
           <label class="field">Tested entrypoint<input required bind:value={e2eDraft.entrypoint} placeholder="App URL, shortcut, or client command" /></label>
@@ -3779,7 +4077,7 @@
             >
           </div>
         </form>
-      {:else}<form onsubmit={saveDraft}>
+      {:else}<form class="modal-form" onsubmit={saveDraft}>
           {#if modal === "issue"}<label class="field"
               >Product<select
                 value={draft.product}
@@ -3872,6 +4170,7 @@
             >
           </div>
         </form>{/if}
+      </fieldset>
     </dialog>
   </div>
 {/if}

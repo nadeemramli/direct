@@ -507,34 +507,86 @@ export async function connect() {
       "Open Direct from the desktop app or run “direct open” to get a fresh local launch link.",
     );
 }
+/**
+ * A failed command. `outcome` says what the caller may assume:
+ * - `rejected`: Direct answered with a definitive refusal; nothing changed.
+ * - `unknown`: no usable answer (connection lost, reply dropped, service
+ *   failure). The write may have been applied. Retrying the exact command
+ *   reuses its request ID, so Direct applies it at most once.
+ */
+export class DirectError extends Error {
+  constructor(
+    message: string,
+    readonly outcome: "rejected" | "unknown",
+    readonly code = "",
+  ) {
+    super(message);
+  }
+}
+const UNKNOWN =
+  "Direct did not confirm the result (the connection was lost before a reply).";
+const UNREACHABLE = "Direct is unavailable right now. Check that the local service is running.";
+function asDirectError(error: unknown, mutation: boolean): DirectError {
+  if (error instanceof DirectError) return error;
+  // Desktop transport: `{code, message, outcome}` (direct::command_failure).
+  if (error && typeof error === "object" && "outcome" in error) {
+    const e = error as { code?: string; message?: string; outcome?: string };
+    return new DirectError(
+      e.message || (mutation ? UNKNOWN : UNREACHABLE),
+      e.outcome === "rejected" ? "rejected" : "unknown",
+      e.code || "",
+    );
+  }
+  return new DirectError(mutation ? UNKNOWN : UNREACHABLE, "unknown", "unavailable");
+}
+/**
+ * Request identity is kept per user operation (`intent`) and exact payload
+ * until Direct gives a definitive answer, so retrying an unconfirmed write
+ * replays it instead of applying it twice, while a separate operation with
+ * identical content still gets its own request.
+ */
 export async function api<T = unknown>(
   command: Record<string, unknown>,
   mutation = false,
+  intent = "",
 ): Promise<T> {
-  const key = JSON.stringify(command);
+  const key = `${intent}\u0000${JSON.stringify(command)}`;
   const requestId = mutation ? pending.get(key) || crypto.randomUUID() : "";
   if (mutation) pending.set(key, requestId);
   const request = { actor: "owner", request_id: requestId, ...command };
-  let data: T;
-  if (isTauri()) data = await invoke<T>("direct_command", { request });
-  else {
-    const response = await fetch("/api/command", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify(request),
-    });
-    const value = await response.json();
-    if (!response.ok)
-      throw new Error(
-        value.message || "Direct could not complete this action.",
-      );
-    data = value;
+  try {
+    const data = isTauri()
+      ? await invoke<T>("direct_command", { request })
+      : await post<T>(request);
+    pending.delete(key);
+    return data;
+  } catch (e) {
+    const error = asDirectError(e, mutation);
+    if (error.outcome === "rejected") pending.delete(key);
+    throw error;
   }
-  pending.delete(key);
-  return data;
+}
+async function post<T>(request: Record<string, unknown>): Promise<T> {
+  const response = await fetch("/api/command", {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify(request),
+  });
+  const value = await response.json().catch(() => undefined);
+  if (response.ok) {
+    if (value === undefined) throw new DirectError(UNKNOWN, "unknown");
+    return value as T;
+  }
+  // Only a client-error status is a definitive refusal; a service failure
+  // may have happened after the write committed.
+  throw new DirectError(
+    value?.message || "Direct could not complete this action.",
+    response.status < 500 ? "rejected" : "unknown",
+    value?.code || "",
+  );
 }
 
 async function failure(response: Response): Promise<Error> {
