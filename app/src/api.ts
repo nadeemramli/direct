@@ -634,7 +634,7 @@ export async function api<T = unknown>(
   try {
     const data = isTauri()
       ? await invoke<T>("direct_command", { request })
-      : await post<T>(request);
+      : await post<T>(request, mutation);
     pending.delete(key);
     return data;
   } catch (e) {
@@ -643,7 +643,10 @@ export async function api<T = unknown>(
     throw error;
   }
 }
-async function post<T>(request: Record<string, unknown>): Promise<T> {
+// A write that gets no reply in this time is reported as an unknown outcome
+// (like the desktop transport's timeout) instead of holding its form forever.
+const WRITE_TIMEOUT_MS = 20_000;
+async function post<T>(request: Record<string, unknown>, mutation: boolean): Promise<T> {
   const response = await fetch("/api/command", {
     method: "POST",
     headers: {
@@ -651,6 +654,7 @@ async function post<T>(request: Record<string, unknown>): Promise<T> {
       Authorization: `Bearer ${token}`,
     },
     body: JSON.stringify(request),
+    signal: mutation ? AbortSignal.timeout(WRITE_TIMEOUT_MS) : undefined,
   });
   const value = await response.json().catch(() => undefined);
   if (response.ok) {

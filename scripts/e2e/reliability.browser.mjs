@@ -426,6 +426,74 @@ try {
   }
   clearFaults();
 
+  // QC on b703560: while A's save is pending, the owner tries to close A
+  // (Escape, then ×) and start form B. A's late reply — success or unknown —
+  // must never close, lock or retarget B, and B's text must survive.
+  for (const outcome of ["success", "unknown"]) {
+    try {
+      const a = `Pending A (${outcome})`;
+      const b = `Form B typed while A pending (${outcome})`;
+      await newIssueForm(a);
+      const held = fault(outcome === "success" ? "hold" : "holddrop", (body) => body.op === "create_issue" && body.title === a);
+      await dialog(page).getByRole("button", { name: /Create issue/ }).click();
+      await until(async () => held.hits === 1);
+      await page.keyboard.press("Escape");
+      await sleep(300);
+      let closed = !(await dialog(page).isVisible());
+      const x = dialog(page).getByRole("button", { name: "Close dialog" });
+      if (!closed && (await x.isEnabled())) {
+        await x.click();
+        await sleep(300);
+        closed = !(await dialog(page).isVisible());
+      }
+      const waiting = (await dialog(page).getByRole("status").allInnerTexts().catch(() => [])).join(" ");
+      check(`[DIR-55 QC2 ${outcome}] a pending form cannot be closed or replaced`, !closed, closed ? "closed while pending" : waiting.replace(/\s+/g, " "));
+      if (closed) {
+        // The race: the owner opens B while A is still pending and types.
+        await page.getByRole("button", { name: "＋ Issue" }).first().click();
+        await dialog(page).waitFor();
+        const editable = await dialog(page).getByLabel("Issue title").isEnabled();
+        check(`[DIR-55 QC2 ${outcome}] form B opened during A's save is not locked by A`, editable);
+        if (editable) {
+          await dialog(page).getByLabel("Work route").selectOption("inbox");
+          await dialog(page).getByLabel("Issue title").fill(b);
+        }
+      }
+      held.open();
+      await until(async () => titled(a) === 1);
+      await sleep(900);
+      if (!closed) {
+        // A's outcome lands on A's own form.
+        if (outcome === "unknown") {
+          check(`[DIR-55 QC2 ${outcome}] A's unknown outcome is shown on A's form`,
+            (await dialog(page).getByLabel("Issue title").inputValue()) === a &&
+              (await dialog(page).getByRole("button", { name: /Retry the same save/ }).isVisible()));
+          await dialog(page).getByRole("button", { name: /Retry the same save/ }).click();
+        }
+        await until(async () => !(await dialog(page).isVisible()));
+        await newIssueForm(b);
+        await sleep(600);
+      }
+      const bTitle = (await dialog(page).isVisible()) ? await dialog(page).getByLabel("Issue title").inputValue() : "";
+      const bLocked = (await dialog(page).isVisible()) ? await dialog(page).getByLabel("Issue title").isDisabled() : true;
+      check(`[DIR-55 QC2 ${outcome}] form B stays open, editable and keeps its text after A's reply`, bTitle === b && !bLocked, JSON.stringify({ bTitle, bLocked }));
+      check(`[DIR-55 QC2 ${outcome}] A persisted once; B was never submitted`, titled(a) === 1 && titled(b) === 0,
+        JSON.stringify({ a: titled(a), b: titled(b) }));
+      await page.screenshot({ path: join(evidence, `dir55-qc2-${outcome}.png`) });
+      if (await dialog(page).isVisible()) {
+        if (await dialog(page).getByRole("button", { name: /Close and check/ }).isVisible().catch(() => false))
+          await dialog(page).getByRole("button", { name: /Close and check/ }).click();
+        else await dialog(page).getByRole("button", { name: "Close dialog" }).click();
+      }
+      check(`[DIR-55 QC2 ${outcome}] B still never submitted after closing it`, titled(b) === 0);
+    } catch (error) {
+      check(`[DIR-55 QC2 ${outcome}] scenario completed`, false, error.message.split("\n")[0]);
+      await page.screenshot({ path: join(evidence, `dir55-qc2-${outcome}-failure.png`) }).catch(() => {});
+      if (await dialog(page).isVisible().catch(() => false)) await dialog(page).getByRole("button", { name: "Close dialog" }).click().catch(() => {});
+    }
+    clearFaults();
+  }
+
   // Unknown outcome followed by a reload: nothing is resubmitted silently.
   try {
     const committed = "Unknown then reload (committed)";
@@ -501,6 +569,44 @@ try {
       check("[DIR-55 QC templates] saving the kept edit revises that same template",
         templatesNamed(edited) === 1 && templatesNamed(name) === 0 && snapshot().templates.find((t) => t.name === edited)?.current_revision === 2);
     }
+    // QC on b703560: navigation in the template list while a save is pending
+    // must not discard the pending draft or let its reply land elsewhere.
+    for (const outcome of ["success", "unknown"]) {
+      const pendingName = `Pending template (${outcome})`;
+      await page.getByRole("button", { name: "＋ New template" }).click();
+      await detail.getByLabel("Template name").fill(pendingName);
+      await detail.getByLabel("Intent prompt").fill("Who gains what outcome?");
+      const heldTemplate = fault(outcome === "success" ? "hold" : "holddrop", (body) => body.op === "create_template" && body.name === pendingName);
+      await detail.getByRole("button", { name: "Create template" }).click();
+      await until(async () => heldTemplate.hits === 1);
+      const otherRow = page.locator(".template-row").first();
+      const rowEnabled = await otherRow.isEnabled();
+      if (rowEnabled) await otherRow.click();
+      await sleep(300);
+      const draftShown = await detail.getByLabel("Template name").inputValue().catch(() => "");
+      check(`[DIR-55 QC2 templates ${outcome}] list navigation cannot discard a pending draft`, !rowEnabled && draftShown === pendingName,
+        JSON.stringify({ rowEnabled, draftShown }));
+      heldTemplate.open();
+      await until(async () => templatesNamed(pendingName) === 1);
+      await sleep(900);
+      if (outcome === "unknown") {
+        const onDraft = (await detail.getByLabel("Template name").inputValue().catch(() => "")) === pendingName &&
+          (await detail.getByRole("button", { name: /Retry the same save/ }).isVisible().catch(() => false));
+        check(`[DIR-55 QC2 templates ${outcome}] the unknown outcome stays with its own draft`, onDraft);
+        if (onDraft) await detail.getByRole("button", { name: /Retry the same save/ }).click();
+        await sleep(900);
+      }
+      check(`[DIR-55 QC2 templates ${outcome}] pending template persisted exactly once`, templatesNamed(pendingName) === 1);
+      // After the reply, navigation works again and a new draft is untouched.
+      await page.getByRole("button", { name: "＋ New template" }).click();
+      await detail.getByLabel("Template name").fill(`Draft after ${outcome}`);
+      await sleep(600);
+      check(`[DIR-55 QC2 templates ${outcome}] a later draft is editable and kept`,
+        (await detail.getByLabel("Template name").inputValue()) === `Draft after ${outcome}` && !(await detail.getByLabel("Template name").isDisabled()));
+      await detail.getByRole("button", { name: "Cancel" }).click();
+      clearFaults();
+    }
+
     // A distinct, intentional template with identical content is its own record.
     await page.getByRole("button", { name: "＋ New template" }).click();
     await detail.getByLabel("Template name").fill(edited);

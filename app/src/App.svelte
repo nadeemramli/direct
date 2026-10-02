@@ -884,6 +884,8 @@
     formIntent = crypto.randomUUID();
     formAttempt = null;
     formConflict = null;
+    // A send that belonged to the previous form no longer locks this one.
+    formPending = false;
     if (!modal) formNotice = "";
   });
   $effect(() => {
@@ -923,11 +925,27 @@
    */
   async function sendForm<T>(built: Record<string, unknown>) {
     const attempt = formAttempt ?? { command: built, intent: formIntent };
+    // The reply belongs to this form only. A pending form cannot be closed,
+    // but if it was replaced anyway its reply never touches the new form.
+    const owner = formIntent;
     formSending = attempt;
     formPending = true;
     formNotice = "";
     try {
-      const result = await commit<T>(attempt.command, attempt.intent);
+      let result: T;
+      try {
+        result = await commit<T>(attempt.command, attempt.intent);
+      } catch (e) {
+        if (formIntent !== owner) {
+          keptNotice = `An earlier save ${e instanceof DirectError && e.outcome === "unknown" ? "was not confirmed" : `failed: ${failureText(e)}`}. Check the workspace before repeating it.`;
+          throw new Superseded();
+        }
+        throw e;
+      }
+      if (formIntent !== owner) {
+        keptNotice = "An earlier save was confirmed after its form was closed. Check the workspace for it.";
+        throw new Superseded();
+      }
       formAttempt = null;
       laterEdits = JSON.stringify(attempt.command) !== JSON.stringify(built);
       // Only the issue form can carry later changes forward as an edit; for
@@ -936,9 +954,11 @@
         keptNotice = "Saved as first submitted. Changes made in the form after it was sent were not saved.";
       return result;
     } finally {
-      formPending = false;
+      if (formIntent === owner) formPending = false;
     }
   }
+  /** A reply for a form that is no longer open; it changes nothing on screen. */
+  class Superseded extends Error {}
   async function act(command: Record<string, unknown>, form = false) {
     if (busy) return;
     busy = true;
@@ -957,6 +977,7 @@
   }
   /** Keep the open form's entries; lock them while the outcome is unknown. */
   function formFailure(e: unknown) {
+    if (e instanceof Superseded) return;
     if (e instanceof DirectError && e.outcome === "unknown") {
       formAttempt = formSending;
       error = "";
@@ -3652,7 +3673,11 @@
     <dialog
       class="modal"
       use:showDialog
-      oncancel={() => (modal = null)}
+      oncancel={(event) => {
+        // Escape never abandons a save that is still waiting for its reply.
+        event.preventDefault();
+        if (!formPending) modal = null;
+      }}
       aria-label={modal === "project"
         ? projectDraft.id
           ? "Edit project"
@@ -3728,6 +3753,8 @@
         <button
           class="icon-button"
           aria-label="Close dialog"
+          disabled={formPending}
+          title={formPending ? "Waiting for Direct to reply to this save" : undefined}
           onclick={() => (modal = null)}>×</button
         >
       </div>
@@ -3792,6 +3819,13 @@
                 >Use the current version</button
               >
             </div>
+          </div>
+        </div>{/if}
+      {#if formPending}<div class="info-card form-outcome" role="status">
+          <span class="card-symbol">…</span>
+          <div>
+            <b>Saving — waiting for Direct to reply</b>
+            <p>This form stays open and locked until Direct answers, so the reply cannot land on other work.</p>
           </div>
         </div>{/if}
       {#if formNotice}<div class="info-card form-outcome" role="status">

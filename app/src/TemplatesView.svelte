@@ -237,9 +237,17 @@
       ? { op: "revise_template", id: draft.id, expected_version: draft.version, ...common }
       : { op: "create_template", target: draft.target, ...common };
     const sending = attempt ?? { command: built, intent: operation };
+    // The reply belongs to this draft only (navigation is blocked while it is
+    // pending; if the draft was replaced anyway, the reply changes nothing on it).
+    const owner = operation;
+    const replaced = () => operation !== owner || !draft;
     pending = true;
     try {
       const saved = await commit<{ template: WorkspaceTemplate }>(sending.command, sending.intent);
+      if (replaced()) {
+        notice = `An earlier template save was confirmed (${saved.template.name}).`;
+        return;
+      }
       attempt = null;
       selectedId = saved.template.id;
       if (JSON.stringify(sending.command) !== JSON.stringify(built) && draft) {
@@ -254,6 +262,10 @@
       }
     } catch (e) {
       const unknown = e instanceof DirectError && e.outcome === "unknown";
+      if (replaced()) {
+        error = `An earlier template save ${unknown ? "was not confirmed" : `failed: ${failed(e)}`}. Check the templates before repeating it.`;
+        return;
+      }
       // Only a definitive answer unlocks the editor.
       attempt = unknown ? sending : null;
       error = unknown
@@ -307,9 +319,12 @@
         class="trace-row template-row"
         class:active={item.id === selectedId}
         aria-label={`Template ${item.name}`}
+        disabled={pending}
+        title={pending ? "Waiting for Direct to reply to the template save" : undefined}
         onclick={() => {
           selectedId = item.id;
           draft = null;
+          attempt = null;
           retiring = "";
           error = "";
           notice = "";
