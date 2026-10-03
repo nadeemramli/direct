@@ -1,4 +1,5 @@
 import { invoke, isTauri } from "@tauri-apps/api/core";
+import { SessionExpired } from "./connection";
 export type Status =
   | "backlog"
   | "ready"
@@ -564,25 +565,43 @@ export interface MilestoneProgress extends Omit<ProjectProgress, "project_id"> {
 }
 let token = sessionStorage.getItem("direct.session") || "";
 const pending = new Map<string, string>();
-export async function connect() {
+// A launch grant is single-use and expires quickly. It is kept only until
+// Direct answers the exchange, so an exchange lost to an outage is retried;
+// Direct itself refuses a grant that was already used.
+let launchGrant: string | null = null;
+const NEW_LINK =
+  "Open Direct from the desktop app or run “direct open” to get a fresh local launch link.";
+export async function connect(signal?: AbortSignal) {
   if (isTauri()) return;
   const grant = new URLSearchParams(location.hash.slice(1)).get("grant");
   if (grant) {
+    launchGrant = grant;
     history.replaceState(null, "", location.pathname);
+  }
+  if (launchGrant) {
     const response = await fetch("/api/session", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ grant }),
+      body: JSON.stringify({ grant: launchGrant }),
+      signal,
+    }).catch((e) => {
+      throw signal?.aborted ? e : new DirectError(UNREACHABLE, "unknown", "unavailable");
     });
-    const data = await response.json();
-    if (!response.ok) throw new Error(data.message);
+    const data = await response.json().catch(() => undefined);
+    signal?.throwIfAborted();
+    if (response.status < 500 && !response.ok) {
+      launchGrant = null;
+      throw new SessionExpired(
+        `${data?.message || "This launch link can no longer be used."} ${NEW_LINK}`,
+      );
+    }
+    if (!response.ok || !data?.token)
+      throw new DirectError(UNREACHABLE, "unknown", "unavailable");
+    launchGrant = null;
     token = data.token;
     sessionStorage.setItem("direct.session", token);
   }
-  if (!token)
-    throw new Error(
-      "Open Direct from the desktop app or run “direct open” to get a fresh local launch link.",
-    );
+  if (!token) throw new SessionExpired(NEW_LINK);
 }
 /**
  * A failed command. `outcome` says what the caller may assume:
@@ -641,6 +660,7 @@ export async function api<T = unknown>(
     pending.delete(key);
     return data;
   } catch (e) {
+    if (e instanceof SessionExpired) throw e;
     const error = asDirectError(e, mutation);
     if (error.outcome === "rejected") pending.delete(key);
     throw error;
@@ -682,6 +702,15 @@ async function post<T>(
   if (response.ok) {
     if (value === undefined) throw new DirectError(UNKNOWN, "unknown");
     return value as T;
+  }
+  // The service no longer accepts this browser session (it restarted or the
+  // session ended). A write keeps its definitive refusal below.
+  if (response.status === 401 && !mutation) {
+    token = "";
+    sessionStorage.removeItem("direct.session");
+    throw new SessionExpired(
+      `This browser session is no longer valid; Direct may have restarted or the session ended. ${NEW_LINK}`,
+    );
   }
   // Only a client-error status is a definitive refusal; a service failure
   // may have happened after the write committed.

@@ -2,6 +2,8 @@
   import { onMount, tick } from "svelte";
   import type { Snippet } from "svelte";
   import { api, connect, DirectError, migration, sourceFile } from "./api";
+  import { LOAD_DEADLINE_MS, SessionExpired, startConnection } from "./connection";
+  import type { LoadState } from "./connection";
   import {
     BIG_STEP,
     LEFT_MIN,
@@ -164,6 +166,9 @@
   });
   let search = $state("");
   let connected = $state(false);
+  // Initial load and browser-session state (DIR-59).
+  let load = $state<LoadState>({ kind: "loading" });
+  let retryLoad = () => {};
   let error = $state("");
   let busy = $state(false);
   let tab = $state("brief");
@@ -782,12 +787,20 @@
   }
   // A refresh that has not finished by this deadline is abandoned (the read
   // and its body are aborted, and nothing it returns later is applied).
-  const REFRESH_DEADLINE_MS = 10_000;
+  const REFRESH_DEADLINE_MS = LOAD_DEADLINE_MS;
+  // Reads can overlap (poll, post-save refresh); an older one that answers
+  // late never replaces what a newer one already showed.
+  let snapshotsStarted = 0;
+  let snapshotShown = 0;
+  let contextsStarted = 0;
+  let contextShown = 0;
   async function loadContext(key = selected, signal?: AbortSignal) {
     if (!key) return;
+    const started = ++contextsStarted;
     const result = await api<Context>({ op: "context", key }, false, "", signal);
     signal?.throwIfAborted();
-    if (selected !== key) return;
+    if (selected !== key || started < contextShown) return;
+    contextShown = started;
     context = result;
     const run = result.verifications.find(
       (v) => v.id === result.issue.current_run,
@@ -801,8 +814,11 @@
     }
   }
   async function refresh(signal?: AbortSignal) {
+    const started = ++snapshotsStarted;
     const snapshot = await api<Snapshot>({ op: "snapshot" }, false, "", signal);
     signal?.throwIfAborted();
+    if (started < snapshotShown) return;
+    snapshotShown = started;
     data = snapshot;
     // A guidance ID that is no longer cached stays selected and is shown as
     // missing rather than silently replaced by an unrelated document.
@@ -1870,8 +1886,6 @@
     }
   }
   onMount(() => {
-    let stopped = false;
-    let timer: ReturnType<typeof setTimeout>;
     function shortcut(e: KeyboardEvent) {
       if (
         e.altKey &&
@@ -1903,7 +1917,6 @@
     const measure = () => (viewport = window.innerWidth);
     window.addEventListener("resize", measure);
     async function poll() {
-      if (stopped) return;
       clock = Date.now() / 1000;
       try {
         const changes = await api<{ cursor: number }>({
@@ -1926,22 +1939,27 @@
           await loadContext();
         }
         connected = true;
-      } catch {
+      } catch (e) {
         connected = false;
+        if (e instanceof SessionExpired) throw e;
       }
-      if (!stopped) timer = setTimeout(poll, 750);
     }
-    connect()
-      .then(() => refresh())
-      .then(() => {
-        if (!stopped) timer = setTimeout(poll, 750);
-      })
-      .catch((e) => {
-        error = String(e).replace(/^Error: /, "");
-      });
+    // The first load retries by itself until it succeeds, each attempt within
+    // a deadline; then the steady poll takes over.
+    const connection = startConnection({
+      async load(signal) {
+        await connect(signal);
+        await refresh(signal);
+      },
+      poll,
+      state(state) {
+        load = state;
+        if (state.kind !== "loaded") connected = false;
+      },
+    });
+    retryLoad = connection.retryNow;
     return () => {
-      stopped = true;
-      clearTimeout(timer);
+      connection.stop();
       window.removeEventListener("keydown", shortcut);
       window.removeEventListener("resize", measure);
     };
@@ -2183,10 +2201,16 @@
       <div class="local-note" title={connected ? "Connected locally" : "Service disconnected"}>
         <span class:online={connected} class="connection-dot"></span>
         <div>
-          {connected ? "Connected locally" : "Service disconnected"}<small
+          {connected
+            ? "Connected locally"
+            : load.kind === "session_expired"
+              ? "Browser session ended"
+              : "Service disconnected"}<small
             >{connected
               ? "Your work stays on this device"
-              : "Reconnect to continue working"}</small
+              : load.kind === "session_expired"
+                ? "Open a fresh launch link"
+                : "Reconnecting automatically"}</small
           >
         </div>
       </div>
@@ -2228,6 +2252,14 @@
         >
       </div>
     </header>
+    {#if load.kind === "retrying"}<div class="notice" role="status">
+        <span
+          >Can't load the workspace yet. {load.reason} Retrying automatically (attempt
+          {load.attempt}).</span
+        ><button class="secondary" onclick={() => retryLoad()}>Retry now</button>
+      </div>{:else if load.kind === "session_expired"}<div class="error" role="alert">
+        <span>{load.message}</span>
+      </div>{/if}
     {#if error}<div class="error" role="alert">
         <span>{error}</span><button
           class="icon-button"

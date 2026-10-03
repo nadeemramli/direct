@@ -281,16 +281,72 @@ impl Client {
         let value: Value = response.json()?;
         Ok(value["url"].as_str().context("Missing launch URL")?.into())
     }
+    /// Authenticated liveness of the service on record. The service answers
+    /// without touching the store, so a busy store (a long export or
+    /// migration) still reads as alive; ordinary commands keep waiting for it.
+    pub fn liveness(&self, timeout: Duration) -> Liveness {
+        let Ok(response) = self
+            .http
+            .post(format!(
+                "http://127.0.0.1:{}/api/health",
+                self.endpoint.port
+            ))
+            .bearer_auth(&self.endpoint.agent_token)
+            .timeout(timeout)
+            .send()
+        else {
+            return Liveness::Unreachable;
+        };
+        let status = response.status();
+        if matches!(
+            status,
+            reqwest::StatusCode::UNAUTHORIZED | reqwest::StatusCode::FORBIDDEN
+        ) {
+            return Liveness::Refused;
+        }
+        match response.json::<Value>() {
+            Ok(value) if status.is_success() && value["service"] == "direct" => Liveness::Alive,
+            _ => Liveness::Unreachable,
+        }
+    }
     pub fn healthy(&self) -> bool {
-        self.call(
-            &Request {
-                actor: "desktop".into(),
-                request_id: String::new(),
-                command: direct_core::Command::Changes { after: 0 },
-            },
-            Role::Agent,
-        )
-        .is_ok()
+        self.liveness(PROBE_TIMEOUT) == Liveness::Alive
+    }
+}
+/// What one liveness probe learned about the endpoint on record.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Liveness {
+    /// The Direct service holding these credentials answered.
+    Alive,
+    /// Something on the recorded port refused these credentials.
+    Refused,
+    /// No usable answer in time: nothing listening, a dropped connection,
+    /// a timeout or a reply that is not from Direct.
+    Unreachable,
+}
+const PROBE_TIMEOUT: Duration = Duration::from_secs(1);
+const MIN_PROBE: Duration = Duration::from_millis(250);
+/// Startup wait budget, plus the initial probe and at most 250 ms for a final probe.
+pub const STARTUP_DEADLINE: Duration = Duration::from_secs(15);
+fn probe(dir: &Path, timeout: Duration) -> Liveness {
+    Client::new(dir).map_or(Liveness::Unreachable, |c| c.liveness(timeout))
+}
+/// Whether a `direct serve` process holds this data directory's service lock.
+/// The lock is held for the service's whole life, so this tells a busy or
+/// starting service from a dead one without asking the service anything.
+pub fn service_running(dir: &Path) -> Result<bool> {
+    let file = match fs::File::open(dir.join("service.lock")) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(e) => return Err(e.into()),
+    };
+    match file.try_lock_shared() {
+        Ok(()) => {
+            let _ = file.unlock();
+            Ok(false)
+        }
+        Err(fs::TryLockError::WouldBlock) => Ok(true),
+        Err(fs::TryLockError::Error(e)) => Err(e.into()),
     }
 }
 
@@ -305,7 +361,7 @@ pub fn hidden(command: &mut Command) -> &mut Command {
 
 /// Keep the service outside the desktop's lifecycle: closing the UI must not stop agents.
 pub fn ensure_service(dir: &Path) -> Result<()> {
-    if Client::new(dir).is_ok_and(|c| c.healthy()) {
+    if probe(dir, PROBE_TIMEOUT) == Liveness::Alive {
         return Ok(());
     }
     let exe = std::env::current_exe()?
@@ -316,34 +372,76 @@ pub fn ensure_service(dir: &Path) -> Result<()> {
         } else {
             "direct"
         });
-    if !exe.exists() {
-        bail!("Build the service first: cargo build -p direct");
-    }
     let packaged = exe.parent().unwrap().join("web");
     let assets = if packaged.exists() {
         packaged
     } else {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../app/dist")
     };
-    hidden(
-        Command::new(exe)
-            .arg("--data-dir")
-            .arg(dir)
-            .arg("serve")
-            .arg("--assets")
-            .arg(assets),
-    )
-    .stdin(std::process::Stdio::null())
-    .stdout(std::process::Stdio::null())
-    .stderr(std::process::Stdio::null())
-    .spawn()?;
-    for _ in 0..40 {
-        std::thread::sleep(Duration::from_millis(100));
-        if Client::new(dir).is_ok_and(|c| c.healthy()) {
-            return Ok(());
+    // Dropping the handle leaves the service running for agents.
+    start_service(dir, &exe, &assets, STARTUP_DEADLINE).map(drop)
+}
+/// Wait for this data directory's service, starting `exe` only while no
+/// process holds the service lock, and give up after `deadline` in total.
+/// A running service that is busy, still starting or answering with other
+/// credentials is never duplicated. Returns the process it started, if any.
+pub fn start_service(
+    dir: &Path,
+    exe: &Path,
+    assets: &Path,
+    deadline: Duration,
+) -> Result<Option<std::process::Child>> {
+    let end = std::time::Instant::now() + deadline;
+    let mut child: Option<std::process::Child> = None;
+    loop {
+        let remaining = end.saturating_duration_since(std::time::Instant::now());
+        // The last probe still gets long enough to be answered, so the
+        // reported reason is real; it can overrun the deadline by this much.
+        let state = probe(dir, PROBE_TIMEOUT.min(remaining).max(MIN_PROBE));
+        if state == Liveness::Alive {
+            return Ok(child);
         }
+        let running = service_running(dir)?;
+        if !running {
+            match child.as_mut() {
+                None => {
+                    if !exe.exists() {
+                        bail!("Build the service first: cargo build -p direct");
+                    }
+                    child = Some(
+                        hidden(
+                            Command::new(exe)
+                                .arg("--data-dir")
+                                .arg(dir)
+                                .arg("serve")
+                                .arg("--assets")
+                                .arg(assets),
+                        )
+                        .stdin(std::process::Stdio::null())
+                        .stdout(std::process::Stdio::null())
+                        .stderr(std::process::Stdio::null())
+                        .spawn()?,
+                    );
+                }
+                Some(started) => {
+                    if let Some(status) = started.try_wait()? {
+                        bail!("The Direct service exited during startup ({status}). Run `direct serve` to see diagnostics.");
+                    }
+                }
+            }
+        }
+        if std::time::Instant::now() >= end {
+            let seconds = deadline.as_secs_f32();
+            if running && state == Liveness::Refused {
+                bail!("A Direct service holds this data directory but refused the credentials in its endpoint record, so no second service was started. Stop the running `direct serve`, then open Direct again.");
+            }
+            if running {
+                bail!("A Direct service holds this data directory but did not answer within {seconds:.0} seconds. It may still be starting; retry shortly.");
+            }
+            bail!("The Direct service did not start within {seconds:.0} seconds. Run `direct serve` to see diagnostics.");
+        }
+        std::thread::sleep(Duration::from_millis(100).min(remaining));
     }
-    bail!("Service did not start. Run `direct serve` to see diagnostics.")
 }
 
 pub fn protect_dir(dir: &Path) -> Result<()> {
