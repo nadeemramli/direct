@@ -195,6 +195,105 @@ fn issue_guidance_and_method_proposals_are_traceable_without_becoming_decisions(
     );
 }
 
+// DIR-39: a recorded playbook version is the issue's historical pin. Newer
+// guidance, an unavailable source, reopen and restore never rewrite it, and
+// a blank version stays unrecorded rather than being filled in.
+#[test]
+fn recorded_playbook_versions_survive_guidance_changes_and_blank_stays_unknown() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("db");
+    let mut store = Store::open(&path).unwrap();
+    let first = "a".repeat(64);
+    send(
+        &mut store,
+        sync(Some(&first), Some("# v1"), None),
+        Role::Agent,
+        100,
+    )
+    .unwrap();
+    let known = send(
+        &mut store,
+        json!({"op":"create_issue","product":"DIR","title":"Known","body":"b"}),
+        Role::Human,
+        101,
+    )
+    .unwrap();
+    let blank = send(
+        &mut store,
+        json!({"op":"create_issue","product":"DIR","title":"Blank","body":"b"}),
+        Role::Human,
+        102,
+    )
+    .unwrap();
+    let version = "v1.1 Direct baseline + owner-adopted E2E protocol (2026-10-01)";
+    send(
+        &mut store,
+        json!({"op":"link_theoria","key":known["key"],"expected_version":1,"document_id":"dos-direct-workflow","playbook_version":format!("  {version} ")}),
+        Role::Human,
+        103,
+    )
+    .unwrap();
+    send(
+        &mut store,
+        json!({"op":"link_theoria","key":blank["key"],"expected_version":1,"document_id":"dos-direct-workflow","playbook_version":"   "}),
+        Role::Human,
+        104,
+    )
+    .unwrap();
+    let pins = |store: &mut Store, at| {
+        let snapshot = send(store, json!({"op":"snapshot"}), Role::Agent, at).unwrap();
+        let reference = |key: &Value| {
+            let issue = snapshot["issues"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .find(|issue| issue["key"] == *key)
+                .unwrap();
+            (
+                issue["theoria_refs"][0]["playbook_version"].clone(),
+                issue["theoria_refs"][0]["recorded_fingerprint"].clone(),
+            )
+        };
+        (reference(&known["key"]), reference(&blank["key"]))
+    };
+    let expected = ((json!(version), json!(first)), (Value::Null, json!(first)));
+    assert_eq!(pins(&mut store, 105), expected);
+
+    let second = "b".repeat(64);
+    send(
+        &mut store,
+        sync(Some(&second), Some("# v2 recommended"), None),
+        Role::Agent,
+        106,
+    )
+    .unwrap();
+    assert_eq!(
+        pins(&mut store, 107),
+        expected,
+        "stale guidance keeps the pin"
+    );
+    send(
+        &mut store,
+        sync(None, None, Some("source unavailable")),
+        Role::Agent,
+        108,
+    )
+    .unwrap();
+    assert_eq!(
+        pins(&mut store, 109),
+        expected,
+        "unavailable guidance keeps the pin"
+    );
+
+    let archive = store.export().unwrap();
+    drop(store);
+    let mut reopened = Store::open(&path).unwrap();
+    assert_eq!(pins(&mut reopened, 110), expected, "reopen keeps the pin");
+    let mut restored = Store::open(&dir.path().join("restored")).unwrap();
+    restored.restore(archive).unwrap();
+    assert_eq!(pins(&mut restored, 111), expected, "restore keeps the pin");
+}
+
 #[test]
 fn malformed_or_cross_product_theoria_records_are_rejected() {
     let dir = TempDir::new().unwrap();

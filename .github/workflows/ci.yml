@@ -19,6 +19,7 @@ jobs:
         working-directory: app
       - run: npm run build
         working-directory: app
+      - run: node --test scripts/guidance-view.test.mjs
       - run: cargo fmt --all --check
       - run: cargo test -p direct-core -p direct --locked
       - run: cargo test -p direct-mcp --locked

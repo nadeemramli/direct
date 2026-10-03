@@ -1938,6 +1938,14 @@ summary {
   line-height: 1.6;
 }
 .reference-meta { margin-bottom: 0; }
+.trace-version {
+  display: block;
+  margin-top: 6px;
+  color: #a8c9b7;
+  font-size: 10px;
+}
+.trace-version.unknown, .reference-meta dd.unknown { color: #c0a47f; }
+.playbook-context { margin-top: 10px; }
 .inline-theoria-form, .finding-form {
   margin-top: 20px;
   padding-top: 18px;

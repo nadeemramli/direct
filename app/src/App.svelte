@@ -24,6 +24,16 @@
   import type { Applied as TemplateApplied } from "./TemplatePicker.svelte";
   import TemplatesView from "./TemplatesView.svelte";
   import { provenanceLabel } from "./templates";
+  import {
+    STATE_NOTE,
+    guidanceState,
+    guidanceUses,
+    playbookContext,
+    playbookContextLabel,
+    recordedVersion,
+    shortFingerprint,
+    versionLabel,
+  } from "./guidance";
   import type { PlanningScope, TemplateSelection } from "./api";
   import type {
     Snapshot,
@@ -34,7 +44,6 @@
     Outcome,
     Project,
     Label,
-    TheoriaDocument,
     FindingClassification,
     EvidenceKind,
     IssueLinkKind,
@@ -522,6 +531,12 @@
       ),
     })),
   );
+  let selectedGuidanceUses = $derived(
+    selectedGuidance ? guidanceUses(data.issues, selectedGuidance.id) : [],
+  );
+  let issuePlaybook = $derived(playbookContext(current));
+  const playbookFor = (key: string) =>
+    playbookContextLabel(playbookContext(data.issues.find((issue) => issue.key === key)));
   function needsMe(i: Issue) {
     return (
       (i.status === "verify" && data.review_ready_runs?.includes(i.current_run || "")) ||
@@ -688,19 +703,6 @@
   function workflowForProductKey(key: string) {
     const product = data.products.find((candidate) => candidate.key === key);
     return data.release_workflows.find((workflow) => workflow.product_id === product?.id);
-  }
-  function guidanceState(
-    document: TheoriaDocument | undefined,
-    recordedFingerprint?: string | null,
-  ) {
-    if (!document || document.availability === "unavailable")
-      return "unavailable";
-    if (
-      recordedFingerprint !== undefined &&
-      recordedFingerprint !== document.fingerprint
-    )
-      return "stale";
-    return "cached";
   }
   async function linkGuidance(event: SubmitEvent) {
     event.preventDefault();
@@ -2304,6 +2306,9 @@
                   " ",
                 )} · {date(proposal.created_at)}</small
               >
+              <small class="playbook-context"
+                >Issue playbook: {playbookFor(proposal.issue_key)}</small
+              >
             </button>{:else}<div class="empty compact">
               <div class="empty-symbol">◇</div>
               <h3>No proposed improvements</h3>
@@ -2324,7 +2329,11 @@
             <div class="detail-top">
               <span>{selectedGuidance.id}</span>
               <div>
-                <span class="tiny">catalog v{selectedGuidance.catalog_version}</span>
+                <span
+                  class="tiny"
+                  title="Revision of the synced catalog entry. It is not a playbook version."
+                  >catalog revision {selectedGuidance.catalog_version}</span
+                >
                 {@render detailControls()}
               </div>
             </div>
@@ -2370,15 +2379,27 @@
                   Sync this catalog from an accessible source to read it here.
                 </p>{/if}
               <div class="section-label spaced">OPERATIONAL TRACE</div>
-              {#each data.issues.filter((issue) => issue.theoria_refs.some((reference) => reference.document_id === selectedGuidance?.id)) as linkedIssue}<button
+              <p class="hint">
+                The playbook version each issue explicitly recorded when it
+                linked this guidance. This page never infers one.
+              </p>
+              {#each selectedGuidanceUses as pin}<button
                   class="trace-row"
                   onclick={async () => {
                     view = "all";
-                    await choose(linkedIssue.key);
+                    await choose(pin.issue.key);
                     tab = "theoria";
                   }}
                 >
-                  <b>{linkedIssue.key} · {linkedIssue.title}</b>
+                  <b>{pin.issue.key} · {pin.issue.title}</b>
+                  <span
+                    class="trace-version"
+                    class:unknown={recordedVersion(pin.reference) === null}
+                    >Playbook version: {versionLabel(pin.reference)}</span
+                  >
+                  <small
+                    >Pinned <code>{shortFingerprint(pin.reference.recorded_fingerprint)}</code> by {pin.reference.linked_by} · {date(pin.reference.linked_at)} · {STATE_NOTE[guidanceState(selectedGuidance, pin.reference.recorded_fingerprint)]}</small
+                  >
                   <small>Open the recorded fingerprint and findings →</small>
                 </button>{:else}<p class="muted">
                   No Direct issue currently references this guidance.
@@ -3291,7 +3312,9 @@
                 </div>
                 <p class="hint">
                   Each link pins the source fingerprint actually used for this
-                  issue. A blank playbook version remains explicitly Unknown.
+                  issue. The playbook version is shown only when it was
+                  recorded with the link; otherwise it stays explicitly
+                  Unknown and is never inferred from the guidance text.
                 </p>
                 {#each issueGuidance as item}
                   <article class="guidance-reference">
@@ -3308,7 +3331,12 @@
                     <b>{item.document?.title || item.reference.document_id}</b>
                     <p>{item.document?.description || "Catalog entry is not currently available."}</p>
                     <dl class="evidence reference-meta">
-                      <dt>Playbook version</dt><dd>{item.reference.playbook_version || "Unknown"}</dd>
+                      <dt>Playbook version</dt><dd
+                        class="playbook-version"
+                        class:unknown={recordedVersion(item.reference) === null}
+                        >{versionLabel(item.reference)}</dd
+                      >
+                      <dt>Linked</dt><dd>{item.reference.linked_by} · {date(item.reference.linked_at)}</dd>
                       <dt>Recorded fingerprint</dt><dd><code>{item.reference.recorded_fingerprint || "unavailable"}</code></dd>
                       <dt>Current fingerprint</dt><dd><code>{item.document?.fingerprint || "unavailable"}</code></dd>
                     </dl>
@@ -3352,6 +3380,16 @@
                 <p class="hint">
                   Findings distinguish observed facts from hypotheses and
                   proposals. Recording one does not change a playbook or enroll an experiment.
+                </p>
+                <dl class="evidence reference-meta playbook-context">
+                  <dt>Playbook context</dt><dd
+                    class:unknown={!issuePlaybook.versions.length}
+                    >{playbookContextLabel(issuePlaybook)}</dd
+                  >
+                </dl>
+                <p class="hint">
+                  Findings carry no version of their own; this is the version
+                  recorded on the guidance pinned to this issue.
                 </p>
                 {#each context?.method_findings || [] as item}
                   <article class="finding-card">
