@@ -303,6 +303,18 @@ async fn command(
             .into_response(),
     }
 }
+/// Authenticated liveness for local clients. It never takes the store lock,
+/// so a long export or migration cannot make a running service look dead,
+/// and it reveals nothing about the workspace.
+async fn health(State(app): State<App>, headers: HeaderMap) -> Response {
+    if role(&app, &headers).is_none() {
+        return fail(
+            StatusCode::UNAUTHORIZED,
+            "Open Direct locally or use the local CLI",
+        );
+    }
+    Json(json!({"service":"direct","status":"alive"})).into_response()
+}
 async fn launch(State(app): State<App>, headers: HeaderMap) -> Response {
     if !same_host(&headers, &app.endpoint) || bearer(&headers) != app.endpoint.owner_token {
         return fail(StatusCode::FORBIDDEN, "Owner launch capability required");
@@ -363,7 +375,7 @@ pub async fn serve(dir: &Path, port: u16, assets: &Path) -> Result<()> {
         sessions: Arc::new(Mutex::new(HashMap::new())),
     };
     let migration_limit = DefaultBodyLimit::max(direct_core::MAX_MIGRATION_ARTIFACT_BYTES);
-    let router=Router::new().route("/api/command",post(command)).route("/api/launch",post(launch)).route("/api/session",post(session))
+    let router=Router::new().route("/api/command",post(command)).route("/api/launch",post(launch)).route("/api/health",post(health)).route("/api/session",post(session))
       .route("/api/source-file",post(source_file))
       .route("/api/migration/preview",post(migration_preview).layer(migration_limit).layer(middleware::from_fn_with_state(app.clone(), require_owner)))
       .route("/api/migration/apply",post(migration_apply).layer(migration_limit).layer(middleware::from_fn_with_state(app.clone(), require_owner)))

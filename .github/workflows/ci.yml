@@ -17,6 +17,8 @@ jobs:
         working-directory: app
       - run: npm run check
         working-directory: app
+      - run: npm test
+        working-directory: app
       - run: npm run build
         working-directory: app
       - run: node --test scripts/guidance-view.test.mjs
