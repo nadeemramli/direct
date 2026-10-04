@@ -91,3 +91,17 @@ test("status filter matches open work and single workflow states", () => {
   assert.ok(isStatusFilter("open") && isStatusFilter("all") && isStatusFilter("verify"));
   assert.ok(!isStatusFilter("needs") && !isStatusFilter("constructor"));
 });
+
+test("only open parent work can be canceled and active claims are surfaced", async () => {
+  const { cancelEligibility } = await import("../src/workflow.ts");
+  const base = { parent: null, claim: null };
+  for (const status of ["backlog", "ready", "doing"] as Status[])
+    assert.equal(cancelEligibility({ ...base, status }, 100).allowed, true);
+  for (const status of ["verify", "done", "legacy_completed", "canceled"] as Status[])
+    assert.equal(cancelEligibility({ ...base, status }, 100).allowed, false);
+  assert.match(cancelEligibility({ ...base, status: "verify" }, 100).reason, /pending verification/);
+  assert.equal(cancelEligibility({ ...base, status: "ready", parent: "id" }, 100).allowed, false);
+  const held = { ...base, status: "doing" as Status, claim: { actor: "agent-1", expires_at: 200 } };
+  assert.equal(cancelEligibility(held, 100).activeClaim, "agent-1");
+  assert.equal(cancelEligibility(held, 300).activeClaim, null);
+});

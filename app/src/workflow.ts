@@ -186,3 +186,21 @@ export function progressSummary(b: WorkflowBreakdown) {
     excluded.length ? ` · not counted: ${excluded.join(", ")}` : ""
   }`;
 }
+
+/** Owner cancellation (DIR-86): only open, non-verification parent work can be
+ * canceled. Submitted work is reviewed or reopened first, so its pending run is
+ * never orphaned. `activeClaim` names an agent the owner must explicitly release. */
+export function cancelEligibility(
+  issue: Pick<Issue, "status" | "parent" | "claim">,
+  now: number,
+): { allowed: boolean; reason: string; activeClaim: string | null } {
+  const activeClaim =
+    issue.claim && issue.claim.expires_at > now ? issue.claim.actor : null;
+  if (issue.parent)
+    return { allowed: false, reason: "Verification runs are managed through their parent issue.", activeClaim };
+  if (issue.status === "verify")
+    return { allowed: false, reason: "Review or reopen the pending verification run before canceling.", activeClaim };
+  if (["done", "legacy_completed", "canceled"].includes(issue.status))
+    return { allowed: false, reason: "Completed or canceled work cannot be canceled.", activeClaim };
+  return { allowed: true, reason: "", activeClaim };
+}
