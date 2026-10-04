@@ -69,7 +69,7 @@
       <dt>Member</dt><dd>{assignment.member?.name || a.member_id}{assignment.member ? ` · ${assignment.member.runtime}${assignment.member.enabled ? "" : " · disabled"}` : ""}</dd>
       <dt>Role</dt><dd>{assignment.role ? `${assignment.role.key} r${assignment.role.revision}` : a.role_id}</dd>
       <dt>Requested model</dt><dd><code>{assignment.requested_model}</code></dd>
-      <dt>Actual model</dt><dd>{#if assignment.actual_model}<code>{assignment.actual_model}</code>{#if assignment.actual_model !== assignment.requested_model}<span class="source-warning"> differs from the request</span>{/if}{:else}<span class="muted">No session recorded yet</span>{/if}</dd>
+      <dt>Actual model</dt><dd>{#if assignment.actual_model}<code>{assignment.actual_model}</code>{#if assignment.actual_model !== assignment.requested_model}{" · "}<span class="source-warning">differs from the request</span>{/if}{:else}<span class="muted">No session recorded yet</span>{/if}</dd>
       <dt>Assigned</dt><dd>{a.assigned_by} · {new Date(a.assigned_at * 1000).toLocaleString()} · version {a.version}</dd>
       {#if a.reconciliation}<dt>Reconciliation</dt><dd>{a.reconciliation}</dd>{/if}
     </dl>
