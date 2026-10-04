@@ -27,6 +27,81 @@ fn submission(key: &str, version: u64) -> Value {
 }
 
 #[test]
+fn owner_consolidation_preserves_workflow_and_defaults_after_restart_and_restore() {
+    let dir = TempDir::new().unwrap();
+    let path = dir.path().join("db");
+    let mut store = Store::open(&path).unwrap();
+    let ready = prepared(&mut store);
+    let key = ready["key"].as_str().unwrap();
+    send(
+        &mut store,
+        json!({"op":"claim","key":key,"expected_version":3}),
+        Role::Agent,
+        103,
+    )
+    .unwrap();
+    send(&mut store, submission(key, 4), Role::Agent, 104).unwrap();
+    let doing = prepared(&mut store);
+    send(&mut store, json!({"op":"claim","key":doing["key"],"expected_version":3}), Role::Agent, 104).unwrap();
+    send(&mut store, json!({"op":"create_issue","product":"DIR","title":"Imported reviewer","owner":"Taufiq Mastor"}), Role::Agent, 105).unwrap();
+    let before = store.export().unwrap();
+    let snapshot = send(&mut store, json!({"op":"snapshot"}), Role::Agent, 106).unwrap();
+    let command = json!({"op":"consolidate_human_owners","request_id":"consolidate-owner","owner":"Nadeem Ramli","expected_cursor":snapshot["cursor"]});
+    assert_eq!(
+        send(&mut store, command.clone(), Role::Agent, 107)
+            .unwrap_err()
+            .code,
+        "forbidden"
+    );
+    let mut stale = command.clone();
+    stale["expected_cursor"] = json!(0);
+    assert_eq!(
+        send(&mut store, stale, Role::Human, 107).unwrap_err().code,
+        "conflict"
+    );
+    let result = send(&mut store, command.clone(), Role::Human, 108).unwrap();
+    assert_eq!(send(&mut store, command, Role::Human, 109).unwrap(), result);
+    let after = store.export().unwrap();
+    assert_eq!(
+        serde_json::to_value(&before.verifications).unwrap(),
+        serde_json::to_value(&after.verifications).unwrap()
+    );
+    for old in &before.issues {
+        let new = after
+            .issues
+            .iter()
+            .find(|issue| issue.key == old.key)
+            .unwrap();
+        assert_eq!(new.owner, "Nadeem Ramli");
+        let mut expected = serde_json::to_value(old).unwrap();
+        expected["owner"] = json!("Nadeem Ramli");
+        expected["version"] = json!(old.version + 1);
+        expected["updated_at"] = json!(108);
+        assert_eq!(serde_json::to_value(new).unwrap(), expected);
+    }
+    drop(store);
+    let mut store = Store::open(&path).unwrap();
+    let created = send(
+        &mut store,
+        json!({"op":"create_issue","product":"DIR","title":"Default reviewer"}),
+        Role::Agent,
+        110,
+    )
+    .unwrap();
+    assert_eq!(created["owner"], "Nadeem Ramli");
+    let mut restored = Store::open(&dir.path().join("restored")).unwrap();
+    restored.restore(store.export().unwrap()).unwrap();
+    let created = send(
+        &mut restored,
+        json!({"op":"create_issue","product":"DIR","title":"Restored reviewer"}),
+        Role::Agent,
+        111,
+    )
+    .unwrap();
+    assert_eq!(created["owner"], "Nadeem Ramli");
+}
+
+#[test]
 fn human_verification_and_cancellation_cannot_be_bypassed() {
     let dir = TempDir::new().unwrap();
     let mut s = Store::open(&dir.path().join("db")).unwrap();

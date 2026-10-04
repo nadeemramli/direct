@@ -977,6 +977,27 @@
     }
     return result;
   }
+  let consolidationAttempt: { owner: string; expected_cursor: number } | null = null;
+  async function consolidateOwners() {
+    if (!draft.owner || formPending) return;
+    const owner = consolidationAttempt?.owner || draft.owner;
+    if (!confirm(`Use ${owner} as the human owner for every issue in this workspace, including unassigned issues? Issue statuses and verification history will stay unchanged.`)) return;
+    consolidationAttempt ??= { owner, expected_cursor: data.cursor };
+    formPending = true;
+    try {
+      const result = await commit<{ changed_keys: string[] }>({
+        op: "consolidate_human_owners", ...consolidationAttempt,
+      });
+      consolidationAttempt = null;
+      notice = `${result.changed_keys.length} issues now use ${owner} as their human owner.`;
+      modal = null;
+    } catch (error) {
+      if (error instanceof DirectError && error.outcome === "rejected") consolidationAttempt = null;
+      formNotice = failureText(error);
+    } finally {
+      formPending = false;
+    }
+  }
   /**
    * Send the open form. A retry of an unconfirmed send resends the captured
    * command and intent verbatim; `built` (the form as it is now) is only
@@ -4840,6 +4861,10 @@
                 ></label
               >
             </div>
+          {#if ownerOptions.length > 1}
+            <p class="hint">For a workspace with one human reviewer, consolidate all existing issue owners. New issues will default to that reviewer.</p>
+            <button type="button" disabled={formPending || !draft.owner} onclick={consolidateOwners}>Use selected owner for all issues</button>
+          {/if}
           {#if modal === "edit"}
             <p class="hint">
               Editing Ready work returns it to Backlog for a fresh readiness

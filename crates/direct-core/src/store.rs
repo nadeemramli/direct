@@ -2174,6 +2174,32 @@ fn save(conn: &Connection, mut i: Issue, actor: &str, kind: &str, at: i64) -> Re
 
 fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> Result<Value> {
     match cmd {
+        Command::ConsolidateHumanOwners {
+            owner,
+            expected_cursor,
+        } => {
+            human(role)?;
+            required(owner, "human owner")?;
+            if owner.trim().len() > 120 {
+                return Err(err("invalid", "Human owner must be at most 120 characters"));
+            }
+            if cursor(tx)? != *expected_cursor {
+                return Err(err(
+                    "conflict",
+                    "Workspace changed; reload before consolidating owners",
+                ));
+            }
+            let owner = owner.trim();
+            let mut changed = Vec::new();
+            for mut issue in all::<Issue>(tx, "issues")? {
+                if issue.owner != owner {
+                    issue.owner = owner.to_string();
+                    changed.push(issue.key.clone());
+                    save(tx, issue, actor, "human_owner_consolidated", at)?;
+                }
+            }
+            Ok(json!({"owner":owner,"changed_keys":changed,"cursor":cursor(tx)?}))
+        }
         Command::CreateProject {
             product,
             name,
@@ -3895,7 +3921,20 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             )?;
             i.acceptance = acceptance.clone();
             i.intake = intake.clone();
-            i.owner = owner.clone();
+            i.owner = if owner.trim().is_empty() {
+                let owners: std::collections::HashSet<String> = all::<Issue>(tx, "issues")?
+                    .into_iter()
+                    .map(|issue| issue.owner.trim().to_string())
+                    .filter(|owner| !owner.is_empty())
+                    .collect();
+                if owners.len() == 1 {
+                    owners.into_iter().next().unwrap_or_default()
+                } else {
+                    String::new()
+                }
+            } else {
+                owner.clone()
+            };
             i.priority = priority.clone();
             // Product defaults attach the shared definition; they never copy it per product.
             i.labels = all::<Label>(tx, "labels")?
