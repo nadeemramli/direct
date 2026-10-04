@@ -4,6 +4,7 @@ import { test } from "node:test";
 import {
   relationCandidates,
   relationProblem,
+  missingTargets,
   relationsForProduct,
 } from "../src/relations.ts";
 
@@ -48,4 +49,14 @@ test("changing product drops relations to the old product", () => {
     kept: [{ target_key: "ALT-1", kind: "related" }],
     dropped: [{ target_key: "DIR-1", kind: "parent" }],
   });
+});
+
+test("a deleted target stays in the draft and is reported, not silently dropped", () => {
+  const pending = [
+    { target_key: "DIR-1", kind: "parent" as const },
+    { target_key: "DIR-9", kind: "related" as const },
+  ];
+  assert.deepEqual(relationsForProduct(pending, issues, "dir"), { kept: pending, dropped: [] });
+  assert.deepEqual(missingTargets(pending, issues), ["DIR-9"]);
+  assert.deepEqual(missingTargets([{ target_key: "DIR-2", kind: "blocked_by" }], issues), []);
 });

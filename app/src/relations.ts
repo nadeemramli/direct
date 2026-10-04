@@ -54,7 +54,12 @@ export function relationProblem(
   return "";
 }
 
-/** Split pending relations into those still valid for `productId` and those that are not. */
+/**
+ * Split pending relations into those to keep and those that belong to another
+ * product. A target that no longer exists is kept (and reported by
+ * `missingTargets`) so the create is refused atomically with the draft intact,
+ * instead of silently saving the issue without that relation.
+ */
 export function relationsForProduct<T extends Candidate>(
   pending: DraftRelation[],
   issues: T[],
@@ -64,7 +69,14 @@ export function relationsForProduct<T extends Candidate>(
   const dropped: DraftRelation[] = [];
   for (const link of pending) {
     const target = issues.find((issue) => issue.key === link.target_key);
-    (target?.product_id === productId ? kept : dropped).push(link);
+    (!target || target.product_id === productId ? kept : dropped).push(link);
   }
   return { kept, dropped };
+}
+
+/** Pending relations whose target issue is no longer in the workspace. */
+export function missingTargets<T extends Candidate>(pending: DraftRelation[], issues: T[]): string[] {
+  return pending
+    .filter((link) => !issues.some((issue) => issue.key === link.target_key))
+    .map((link) => link.target_key);
 }

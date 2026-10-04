@@ -3,6 +3,7 @@
   // issue in one create; nothing is written until the form is submitted.
   import type { Issue } from "./api";
   import {
+    missingTargets,
     relationCandidates,
     relationKinds,
     relationProblem,
@@ -30,6 +31,7 @@
   let problem = $state("");
   let notice = $state("");
   let candidates = $derived(relationCandidates(issues, productId, query));
+  let missing = $derived(missingTargets(links, issues));
   // A search with a single match needs no separate selection.
   let chosen = $derived(
     candidates.some((issue) => issue.key === target)
@@ -70,7 +72,10 @@
   {#each links as link, index (`${link.kind}:${link.target_key}`)}
     <article class="relation-card">
       <span class="relation-kind">{label(link.kind)}</span>
-      <span class="relation-target"><b>{link.target_key}</b> {titleOf(link.target_key)}</span>
+      <span class="relation-target"
+        ><b>{link.target_key}</b>
+        {missing.includes(link.target_key) ? "no longer exists — remove it to save" : titleOf(link.target_key)}</span
+      >
       <button
         type="button"
         class="text-button relation-remove"
@@ -120,6 +125,10 @@
     <button type="button" class="secondary" disabled={!chosen} onclick={add}>Add relation</button>
   </div>
   {#if problem || refused}<p class="hint relation-problem" role="alert">{problem || refused}</p>{/if}
+  {#if missing.length && !refused}<p class="hint relation-problem" role="alert">
+      {missing.join(", ")} no longer {missing.length === 1 ? "exists" : "exist"}. Remove {missing.length === 1 ? "it" : "them"} before
+      creating; Direct will not save the issue without every listed relation.
+    </p>{/if}
   {#if notice}<p class="hint" role="status">{notice}</p>{/if}
 </fieldset>
 
