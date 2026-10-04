@@ -227,6 +227,7 @@ pub fn dry_run(
         products: vec![product],
         product_sections: Vec::new(),
         customer_signals: Vec::new(),
+        context_links: Vec::new(),
         projects: vec![project],
         goals,
         milestones,

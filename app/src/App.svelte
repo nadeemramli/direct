@@ -27,6 +27,8 @@
   import type { Applied as TemplateApplied } from "./TemplatePicker.svelte";
   import TemplatesView from "./TemplatesView.svelte";
   import SignalsView from "./SignalsView.svelte";
+  import ContextDocs from "./ContextDocs.svelte";
+  import { linksFor } from "./context";
   import { signalStatus } from "./signals";
   import { provenanceLabel } from "./templates";
   import {
@@ -77,6 +79,7 @@
     products: [],
     product_sections: [],
     customer_signals: [],
+    context_links: [],
     projects: [],
     project_progress: [],
     goals: [],
@@ -3397,6 +3400,15 @@
                 {current.acceptance ||
                   "Describe what a good result looks like before making this Ready."}
               </p>
+              <ContextDocs
+                {data}
+                {connected}
+                {commit}
+                targetKind="issue"
+                target={current.key}
+                links={context?.context_links || []}
+                productId={current.product_id}
+              />
               {#if current.claim}<div class="info-card">
                   <span class="card-symbol">↗</span>
                   <div>
@@ -4320,6 +4332,7 @@
             >
           </div>
         </form>
+        {#if projectDraft.id}<div class="modal-context"><ContextDocs {data} {connected} {commit} targetKind="project" target={projectDraft.id} links={linksFor(data.context_links, "project", projectDraft.id)} productId={data.products.find((p) => p.key === projectDraft.product)?.id || ""} /></div>{/if}
       {:else if modal === "goal"}<form class="modal-form" onsubmit={saveGoal}>
           <label class="field"
             >Product<select bind:value={goalDraft.product} disabled={!!goalDraft.id}>
@@ -4367,6 +4380,7 @@
             >
           </div>
         </form>
+        {#if goalDraft.id}<div class="modal-context"><ContextDocs {data} {connected} {commit} targetKind="goal" target={goalDraft.id} links={linksFor(data.context_links, "goal", goalDraft.id)} productId={data.products.find((p) => p.key === goalDraft.product)?.id || ""} /></div>{/if}
       {:else if modal === "milestone"}<form class="modal-form" onsubmit={saveMilestone}>
           <label class="field"
             >Project<select disabled value={milestoneDraft.project_id}>
@@ -4445,6 +4459,7 @@
           {/if}
           <div class="modal-footer"><button class="primary" disabled={busy}>{releaseDraft.id ? "Save release" : "Create release"}</button></div>
         </form>
+        {#if releaseDraft.id}<div class="modal-context"><ContextDocs {data} {connected} {commit} targetKind="release" target={releaseDraft.id} links={linksFor(data.context_links, "release", releaseDraft.id)} productId={data.products.find((p) => p.key === releaseDraft.product)?.id || ""} /></div>{/if}
       {:else if modal === "workflow"}<form class="modal-form" onsubmit={saveWorkflow}>
           <label class="field">Product<select bind:value={workflowDraft.product} disabled={workflowDraft.expected_version !== null}>
               {#each data.products as p}<option value={p.key}>{p.name}</option>{/each}

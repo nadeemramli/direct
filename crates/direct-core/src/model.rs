@@ -139,6 +139,74 @@ pub struct CustomerSignal {
     pub updated_at: i64,
 }
 
+/// What a context document is attached to (DIR-23).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextTargetKind {
+    Issue,
+    Project,
+    Goal,
+    Release,
+}
+
+/// Where a context document lives. Obsidian notes and URLs are linked, never
+/// copied; Linear documents are the read-only records already retained from
+/// the Linear capture.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ContextSource {
+    /// A note in a product's knowledge vault, as a path relative to its root.
+    Obsidian { product_id: String, path: String },
+    /// A retained source record (for example a Linear document).
+    RetainedRecord { record_id: String },
+    /// An external page. Direct does not fetch it.
+    Url { url: String },
+}
+
+/// One observation of a context document. Fingerprints are SHA-256 of the
+/// exact bytes read; URLs are never fetched, so they have no fingerprint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextObservation {
+    pub available: bool,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    #[serde(default)]
+    pub bytes: Option<u64>,
+    pub checked_at: i64,
+    /// Why it is unavailable or unchecked; empty when available.
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// A typed, addressable link from planning work to a durable document
+/// (format 17). Content is reference data: it is read on demand, is never
+/// Theoria guidance and never grants tool authority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextLink {
+    pub id: String,
+    pub target_kind: ContextTargetKind,
+    /// Issue key, or project/goal/release ID.
+    pub target: String,
+    pub source: ContextSource,
+    pub title: String,
+    #[serde(default)]
+    pub note: String,
+    /// The source system's own identifier, when known (e.g. the Linear document ID).
+    #[serde(default)]
+    pub source_id: Option<String>,
+    /// The original address, when known.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Fingerprint recorded when the link was made; rechecks never rewrite it.
+    #[serde(default)]
+    pub pinned_fingerprint: Option<String>,
+    pub observation: ContextObservation,
+    pub version: u64,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claim {
     pub actor: String,
@@ -799,6 +867,8 @@ pub enum DeletionBlockerKind {
     ReleaseEvidence,
     /// Customer requests linked to the issue (removable) or promoted into it (retained).
     CustomerSignals,
+    /// Context documents attached directly to the issue (removable).
+    ContextLinks,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1295,6 +1365,30 @@ pub enum Command {
         expected_version: u64,
         archived: bool,
     },
+    /// Owner only: attach a context document to an issue, project, goal or release (DIR-23).
+    AddContextLink {
+        target_kind: ContextTargetKind,
+        target: String,
+        source: ContextSource,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        note: String,
+    },
+    /// Owner only.
+    RemoveContextLink {
+        id: String,
+        expected_version: u64,
+    },
+    /// Re-observe availability and fingerprint now; the pinned fingerprint is kept.
+    CheckContextLink {
+        id: String,
+        expected_version: u64,
+    },
+    /// Read a context document's current content on demand (read-only).
+    ReadContextLink {
+        id: String,
+    },
     CreateIssue {
         product: String,
         title: String,
@@ -1479,6 +1573,9 @@ pub struct Archive {
     /// Customer requests (format 16). Distinct from `requests`, which is command idempotency.
     #[serde(default)]
     pub customer_signals: Vec<CustomerSignal>,
+    /// Context document links (format 17). Obsidian content is never archived.
+    #[serde(default)]
+    pub context_links: Vec<ContextLink>,
     #[serde(default)]
     pub projects: Vec<Project>,
     #[serde(default)]

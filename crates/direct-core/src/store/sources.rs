@@ -648,6 +648,30 @@ const READABLE_FIELDS: &[&str] = &[
 ];
 
 /// One record with its exact original bytes, readable text fields and files.
+/// A retained record and its exact bytes (bounded), for context-document links.
+pub(crate) fn record_bytes(
+    conn: &Connection,
+    id: &str,
+    max: u64,
+) -> Result<(SourceRecord, Vec<u8>)> {
+    let data: Option<String> = conn
+        .query_row("SELECT data FROM source_records WHERE id=?1", [id], |row| {
+            row.get(0)
+        })
+        .optional()?;
+    let record: SourceRecord =
+        serde_json::from_str(&data.ok_or_else(|| err("not_found", "Unknown retained record"))?)?;
+    if record.end - record.start > max {
+        return Err(err(
+            "invalid",
+            "The retained record is too large to read here",
+        ));
+    }
+    let file = file_meta(conn, &record.bundle_id, &record.file)?;
+    let bytes = read_range(conn, &file, record.start, record.end)?;
+    Ok((record, bytes))
+}
+
 pub(crate) fn record_view(conn: &Connection, id: &str) -> Result<Value> {
     let data: Option<String> = conn
         .query_row("SELECT data FROM source_records WHERE id=?1", [id], |row| {

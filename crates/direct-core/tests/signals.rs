@@ -384,7 +384,7 @@ fn signals_survive_reopen_archive_and_restore_with_format_checks() {
 
     let archive = s.export().unwrap();
     assert_eq!(archive.format, ARCHIVE_FORMAT);
-    assert_eq!(archive.format, 16);
+    assert_eq!(archive.format, 17);
     assert_eq!(archive.customer_signals.len(), 3);
     validate_archive(&archive).unwrap();
     let other = TempDir::new().unwrap();
@@ -421,8 +421,15 @@ fn signals_survive_reopen_archive_and_restore_with_format_checks() {
     };
     assert_eq!(invalid(archive.clone(), &|a| a.format = 15), "invalid");
     assert_eq!(
-        invalid(archive.clone(), &|a| a.customer_signals[0].links[0]
-            .target = "DIR-999".into()),
+        invalid(archive.clone(), &|a| {
+            // Archive order follows IDs; pick a request that actually has a link.
+            let linked = a
+                .customer_signals
+                .iter()
+                .position(|s| !s.links.is_empty())
+                .unwrap();
+            a.customer_signals[linked].links[0].target = "DIR-999".into();
+        }),
         "invalid"
     );
     assert_eq!(
@@ -477,7 +484,7 @@ fn schema_14_workspace_upgrades_in_place() {
             r.get(0)
         })
         .unwrap();
-    assert_eq!(schema, "15");
+    assert_eq!(schema, "16");
     assert!(signals(&mut s).is_empty());
     capture(&mut s, "Works after upgrade");
 }

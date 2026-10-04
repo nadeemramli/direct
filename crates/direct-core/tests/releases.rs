@@ -187,7 +187,7 @@ fn production_requires_distinct_git_preview_and_owner_verified_work() {
     assert_eq!(context["release_evidence"].as_array().unwrap().len(), 7);
 
     let archive = store.export().unwrap();
-    assert_eq!(archive.format, 16);
+    assert_eq!(archive.format, 17);
     validate_archive(&archive).unwrap();
     let before = serde_json::to_value(&archive).unwrap();
     let mut restored = Store::open(&dir.path().join("restored")).unwrap();

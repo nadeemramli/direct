@@ -2456,3 +2456,80 @@ dialog::backdrop {
   padding-top: 12px;
   border-top: 1px solid #2b3134;
 }
+
+/* Context documents (DIR-23). */
+.context-docs {
+  margin: 18px 0;
+  display: grid;
+  gap: 8px;
+}
+.context-card {
+  border: 1px solid #2f383c;
+  border-radius: 7px;
+  padding: 10px 12px;
+  display: grid;
+  gap: 4px;
+}
+.context-card.unavailable {
+  border-color: #5a3d36;
+  background: #221b19;
+}
+.context-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  font-size: 13px;
+}
+.context-via,
+.context-detail,
+.context-provenance {
+  color: #7f898e;
+  font-size: 11px;
+  overflow-wrap: anywhere;
+}
+.context-note {
+  margin: 0;
+  font-size: 12px;
+  color: #c3ccd0;
+}
+.context-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+.danger-text {
+  color: #e5b3a7;
+}
+.context-reader {
+  border-top: 1px solid #2b3134;
+  padding-top: 8px;
+}
+.context-reader pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 360px;
+  overflow-y: auto;
+  background: #15181a;
+  border: 1px solid #2a3033;
+  border-radius: 6px;
+  padding: 10px;
+  font: 12px/1.5 Consolas, monospace;
+  color: #d6dde1;
+}
+.context-add {
+  display: grid;
+  gap: 8px;
+  border: 1px dashed #3a4347;
+  border-radius: 7px;
+  padding: 10px 12px;
+}
+.context-attach {
+  justify-self: start;
+}
+.modal-context {
+  border-top: 1px solid #2b3134;
+  margin-top: 12px;
+  padding-top: 4px;
+}
