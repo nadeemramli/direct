@@ -4,6 +4,7 @@
 //! existing `direct::Client` to the running local service, and always uses
 //! `Role::Agent`. Owner-only operations (ready, review, reopen, product and
 //! project administration, launch, restore) have no tool and cannot be reached.
+pub mod remote;
 use anyhow::{bail, Result};
 use direct_core::{Command, Issue, Product, Project, Request, Role, Step};
 use rmcp::{

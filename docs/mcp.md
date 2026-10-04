@@ -4,6 +4,8 @@
 
 ## What it is
 
+For cloud sessions, use the separate, scoped read-only [`direct-remote-read` bridge](remote-reads.md). The local stdio server described here retains its existing agent workflow.
+
 - A thin wrapper. Each tool is one typed `direct-core` command sent through the existing `direct` client to the **already running** local Direct service. The service, database, versions, claims, request replay, and owner verification are unchanged. There is no second database, workspace, or source of truth.
 - Agent role only. Every call uses the agent capability. The owner capability is never read for a request, never returned, and cannot be selected.
 - Local only. The MCP client spawns `direct-mcp` on the same machine and talks to it over standard input/output. No network listener, remote endpoint, or authentication system is added.
