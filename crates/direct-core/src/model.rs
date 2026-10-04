@@ -1046,6 +1046,11 @@ pub struct Request {
 #[serde(tag = "op", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Command {
     Snapshot,
+    /// Owner-only housekeeping; preserves workflow and imported history.
+    ConsolidateHumanOwners {
+        owner: String,
+        expected_cursor: u64,
+    },
     Context {
         key: String,
     },
