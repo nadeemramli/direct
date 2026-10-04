@@ -64,6 +64,14 @@ enum Cli {
     },
     /// List owner-managed intake templates and every immutable revision (read-only).
     Templates,
+    /// Print an issue's cloud handoff packet as Markdown for one cloud session
+    /// (read-only). Defaults to the most recent handoff; it carries no service
+    /// address, grant or capability.
+    Handoff {
+        key: String,
+        #[arg(long)]
+        id: Option<String>,
+    },
     /// Claim owner-ready work with a stable request ID.
     Claim {
         key: String,
@@ -761,6 +769,25 @@ fn run() -> Result<()> {
             if matches!(other, Cli::Stop) {
                 client.stop()?;
                 println!("Direct service is stopping.");
+                return Ok(());
+            }
+            if let Cli::Handoff { key, id } = &other {
+                let context = client.call(
+                    &Request {
+                        actor: args.actor.clone(),
+                        request_id: String::new(),
+                        command: Command::Context { key: key.clone() },
+                    },
+                    Role::Agent,
+                )?;
+                let handoffs: Vec<direct_core::CloudHandoff> =
+                    serde_json::from_value(context["cloud_handoffs"].clone())?;
+                let handoff = match id {
+                    Some(id) => handoffs.iter().find(|h| h.id == *id),
+                    None => handoffs.last(),
+                }
+                .ok_or_else(|| anyhow::anyhow!("{key} has no matching cloud handoff"))?;
+                print!("{}", direct_core::cloud_packet_markdown(handoff));
                 return Ok(());
             }
             let mut output = None;

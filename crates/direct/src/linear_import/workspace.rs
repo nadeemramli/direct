@@ -2275,6 +2275,7 @@ impl<'a> Builder<'a> {
             product_sections: Vec::new(),
             customer_signals: Vec::new(),
             context_links: Vec::new(),
+            cloud_handoffs: Vec::new(),
             projects: self.projects,
             goals: self.goals,
             milestones: self.milestones,

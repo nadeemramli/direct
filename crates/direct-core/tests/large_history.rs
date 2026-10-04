@@ -143,6 +143,7 @@ fn workspace() -> Archive {
         product_sections: Vec::new(),
         customer_signals: Vec::new(),
         context_links: Vec::new(),
+        cloud_handoffs: Vec::new(),
         projects,
         goals,
         milestones,

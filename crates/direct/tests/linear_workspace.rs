@@ -402,7 +402,7 @@ fn whole_workspace_rehearsal_reconciles_preserves_restores_and_replays() {
     assert_eq!(gates["application"]["status"], "not_applied");
     assert_eq!(report["native_access"]["status"], "incomplete");
     // The isolated workspace carries the retained bundle natively.
-    assert_eq!(archive["format"], 18);
+    assert_eq!(archive["format"], 19);
     assert_eq!(archive["source_bundles"].as_array().unwrap().len(), 1);
     assert_eq!(
         archive["source_files"].as_array().unwrap().len(),
