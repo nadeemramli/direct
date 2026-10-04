@@ -338,7 +338,7 @@ fn arrangement_survives_reopen_and_archive_round_trip() {
 
     let archive = s.export().unwrap();
     assert_eq!(archive.format, ARCHIVE_FORMAT);
-    assert_eq!(archive.format, 19);
+    assert_eq!(archive.format, 20);
     assert_eq!(archive.product_sections.len(), 1);
     validate_archive(&archive).unwrap();
     let other = TempDir::new().unwrap();
@@ -407,7 +407,7 @@ fn schema_13_workspace_upgrades_in_place() {
             r.get(0)
         })
         .unwrap();
-    assert_eq!(schema, "17");
+    assert_eq!(schema, "18");
     assert_eq!(sidebar(&mut s).len(), 2);
     send(
         &mut s,

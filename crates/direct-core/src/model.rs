@@ -1237,6 +1237,72 @@ pub enum Command {
         proposal: String,
         evidence: Vec<EvidencePointer>,
     },
+    /// Register an immutable skill package revision (DIR-74).
+    RegisterSkillPackage {
+        name: String,
+        description: String,
+        trigger: String,
+        origin: SkillOrigin,
+        #[serde(default)]
+        upstream: Option<SkillUpstream>,
+        license: String,
+        #[serde(default)]
+        adaptations: String,
+        files: Vec<SkillFileInput>,
+    },
+    /// Owner only: retire a skill revision; active roles keep their history.
+    RetireSkillPackage {
+        id: String,
+        reason: String,
+    },
+    /// Register a draft role revision with pinned DOS guidance.
+    RegisterAgentRole {
+        key: String,
+        name: String,
+        responsibilities: Vec<String>,
+        inputs: Vec<String>,
+        outputs: Vec<String>,
+        #[serde(default)]
+        skills: Vec<String>,
+        runtime_compatibility: Vec<String>,
+        guidance: Vec<RoleGuidanceInput>,
+        #[serde(default)]
+        owner_direction: String,
+    },
+    /// Owner only: accept a role revision for use. Supersedes the previous active one.
+    ActivateAgentRole {
+        id: String,
+        note: String,
+    },
+    /// Owner only.
+    RetireAgentRole {
+        id: String,
+        reason: String,
+    },
+    /// Record files a project-scoped publication actually introduced.
+    RecordRolePublication {
+        role_id: String,
+        harness: String,
+        destination: String,
+        introduced: Vec<PublishedFile>,
+    },
+    /// Record a fresh harness session that used a publication.
+    RecordActivationEvidence {
+        publication_id: String,
+        session_id: String,
+        model: String,
+        #[serde(default)]
+        harness_version: String,
+        marker: String,
+        output: String,
+    },
+    /// Record a rollback that removed only introduced files.
+    RecordPublicationRollback {
+        publication_id: String,
+        removed: Vec<String>,
+        #[serde(default)]
+        kept_modified: Vec<String>,
+    },
     /// Freeze a bounded packet for one cloud session (DIR-58). Owner or the
     /// active claim holder; the issue must be claimed and is not modified.
     PrepareCloudHandoff {
@@ -1776,6 +1842,177 @@ pub struct CloudHandoff {
     pub withdrawn_reason: Option<String>,
 }
 
+/// Where a skill bundle came from (DIR-74).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SkillOrigin {
+    /// Authored for this workspace; no upstream to track.
+    Local,
+    /// Selected from an upstream repository at an immutable commit.
+    Upstream,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillUpstream {
+    pub repository: String,
+    pub commit: String,
+    #[serde(default)]
+    pub path: String,
+}
+
+/// One file of a skill bundle, stored so a publication is reproducible.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillFile {
+    pub path: String,
+    pub sha256: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillFileInput {
+    pub path: String,
+    pub content: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Retirement {
+    pub by: String,
+    pub at: i64,
+    pub reason: String,
+}
+
+/// An immutable revision of a selected, project-scoped skill bundle (format 20).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct SkillPackage {
+    pub id: String,
+    pub name: String,
+    pub revision: u32,
+    pub description: String,
+    pub trigger: String,
+    pub origin: SkillOrigin,
+    #[serde(default)]
+    pub upstream: Option<SkillUpstream>,
+    pub license: String,
+    #[serde(default)]
+    pub adaptations: String,
+    pub files: Vec<SkillFile>,
+    pub bundle_sha256: String,
+    pub registered_by: String,
+    pub registered_at: i64,
+    #[serde(default)]
+    pub retired: Option<Retirement>,
+}
+
+/// A DOS document a role revision depends on, pinned at registration.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoleGuidancePin {
+    pub document_id: String,
+    pub recorded_fingerprint: Option<String>,
+    /// Only an explicitly recorded version; `None` stays Unknown.
+    pub playbook_version: Option<String>,
+    /// A mandatory reference must be available before activation.
+    pub mandatory: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoleGuidanceInput {
+    pub document_id: String,
+    #[serde(default)]
+    pub playbook_version: Option<String>,
+    #[serde(default)]
+    pub mandatory: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoleStatus {
+    Draft,
+    Active,
+    /// Replaced by a later activated revision of the same role.
+    Superseded,
+    Retired,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoleActivation {
+    pub by: String,
+    pub at: i64,
+    pub note: String,
+}
+
+/// An immutable revision of an agent role contract (format 20). Text here is
+/// task context, never tool authority: service permissions do not read it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentRole {
+    pub id: String,
+    pub key: String,
+    pub revision: u32,
+    pub name: String,
+    pub responsibilities: Vec<String>,
+    pub inputs: Vec<String>,
+    pub outputs: Vec<String>,
+    /// Exact skill package revisions (IDs) the role requires.
+    pub skills: Vec<String>,
+    /// Harnesses the role is written for, e.g. `claude-code`, `codex`.
+    pub runtime_compatibility: Vec<String>,
+    pub guidance: Vec<RoleGuidancePin>,
+    /// Current owner direction for bounded use; required before activation.
+    #[serde(default)]
+    pub owner_direction: String,
+    pub status: RoleStatus,
+    pub registered_by: String,
+    pub registered_at: i64,
+    #[serde(default)]
+    pub activation: Option<RoleActivation>,
+    #[serde(default)]
+    pub retired: Option<Retirement>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PublishedFile {
+    pub path: String,
+    pub sha256: String,
+}
+
+/// A fresh harness session observed using a publication.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ActivationEvidence {
+    pub session_id: String,
+    pub model: String,
+    pub harness_version: String,
+    pub marker: String,
+    pub output_excerpt: String,
+    pub output_sha256: String,
+    pub recorded_by: String,
+    pub recorded_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PublicationRollback {
+    pub by: String,
+    pub at: i64,
+    pub removed: Vec<String>,
+    /// Introduced files left in place because they changed after publishing.
+    pub kept_modified: Vec<String>,
+}
+
+/// One project-scoped publication of a role revision and its skills (format 20).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RolePublication {
+    pub id: String,
+    pub role_id: String,
+    pub harness: String,
+    pub destination: String,
+    /// Files this publication wrote. Identical pre-existing files are not listed.
+    pub introduced: Vec<PublishedFile>,
+    pub published_by: String,
+    pub published_at: i64,
+    #[serde(default)]
+    pub evidence: Vec<ActivationEvidence>,
+    #[serde(default)]
+    pub rollback: Option<PublicationRollback>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Archive {
     pub format: u32,
@@ -1793,6 +2030,13 @@ pub struct Archive {
     /// Bounded cloud-session handoffs and reconciliations (format 19).
     #[serde(default)]
     pub cloud_handoffs: Vec<CloudHandoff>,
+    /// Skill package revisions, role revisions and publications (format 20).
+    #[serde(default)]
+    pub skill_packages: Vec<SkillPackage>,
+    #[serde(default)]
+    pub agent_roles: Vec<AgentRole>,
+    #[serde(default)]
+    pub role_publications: Vec<RolePublication>,
     #[serde(default)]
     pub projects: Vec<Project>,
     #[serde(default)]

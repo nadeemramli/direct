@@ -1,0 +1,25 @@
+{
+  "op": "register_agent_role",
+  "key": "product-planner",
+  "name": "Product Planner",
+  "responsibilities": [
+    "Review issue health and scope for one product and report findings to the owner",
+    "Propose splits, missing acceptance and dependency fixes as proposals only",
+    "Surface work waiting on the owner without reviewing or accepting it"
+  ],
+  "inputs": [
+    "A Direct product snapshot (direct list) and the product key",
+    "Pinned DOS guidance through Direct Theoria"
+  ],
+  "outputs": [
+    "An issue health report beginning with the skill's report header",
+    "At most three owner-facing proposals per review"
+  ],
+  "runtime_compatibility": ["claude-code", "codex"],
+  "guidance": [
+    { "document_id": "dos-product-evolution", "mandatory": true },
+    { "document_id": "dos-direct-workflow", "mandatory": true },
+    { "document_id": "dos-skill-adoption", "mandatory": false }
+  ],
+  "owner_direction": ""
+}

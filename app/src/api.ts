@@ -643,6 +643,70 @@ export interface MigrationPreview {
   counts: Record<string, any>;
   summary: Record<string, any>;
 }
+export interface Retirement { by: string; at: number; reason: string }
+export interface SkillFile { path: string; sha256: string; content: string }
+export interface SkillPackage {
+  id: string;
+  name: string;
+  revision: number;
+  description: string;
+  trigger: string;
+  origin: "local" | "upstream";
+  upstream: { repository: string; commit: string; path: string } | null;
+  license: string;
+  adaptations: string;
+  files: SkillFile[];
+  bundle_sha256: string;
+  registered_by: string;
+  registered_at: number;
+  retired: Retirement | null;
+}
+export interface RoleGuidancePin {
+  document_id: string;
+  recorded_fingerprint: string | null;
+  playbook_version: string | null;
+  mandatory: boolean;
+}
+export type RoleStatus = "draft" | "active" | "superseded" | "retired";
+export interface AgentRole {
+  id: string;
+  key: string;
+  revision: number;
+  name: string;
+  responsibilities: string[];
+  inputs: string[];
+  outputs: string[];
+  skills: string[];
+  runtime_compatibility: string[];
+  guidance: RoleGuidancePin[];
+  owner_direction: string;
+  status: RoleStatus;
+  registered_by: string;
+  registered_at: number;
+  activation: { by: string; at: number; note: string } | null;
+  retired: Retirement | null;
+}
+export interface ActivationEvidence {
+  session_id: string;
+  model: string;
+  harness_version: string;
+  marker: string;
+  output_excerpt: string;
+  output_sha256: string;
+  recorded_by: string;
+  recorded_at: number;
+}
+export interface RolePublication {
+  id: string;
+  role_id: string;
+  harness: string;
+  destination: string;
+  introduced: { path: string; sha256: string }[];
+  published_by: string;
+  published_at: number;
+  evidence: ActivationEvidence[];
+  rollback: { by: string; at: number; removed: string[]; kept_modified: string[] } | null;
+}
 export interface Snapshot {
   review_ready_runs?: string[];
   workspace_id: string;
@@ -650,6 +714,10 @@ export interface Snapshot {
   product_sections?: ProductSection[];
   customer_signals?: CustomerSignal[];
   context_links?: ContextLink[];
+  /** Role and skill revisions with their publications (DIR-74). */
+  skill_packages?: SkillPackage[];
+  agent_roles?: AgentRole[];
+  role_publications?: RolePublication[];
   projects: Project[];
   project_progress?: ProjectProgress[];
   goals: Goal[];
