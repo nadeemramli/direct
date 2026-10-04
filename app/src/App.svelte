@@ -1031,6 +1031,28 @@
     }
     return result;
   }
+  let consolidationAttempt: { owner: string; expected_cursor: number } | null = null;
+  let consolidationOwner = $state<string | null>(null);
+  async function consolidateOwners() {
+    if (!consolidationOwner || formPending) return;
+    const owner = consolidationAttempt?.owner || consolidationOwner;
+    consolidationAttempt ??= { owner, expected_cursor: data.cursor };
+    formPending = true;
+    try {
+      const result = await commit<{ changed_keys: string[] }>({
+        op: "consolidate_human_owners", ...consolidationAttempt,
+      });
+      consolidationAttempt = null;
+      consolidationOwner = null;
+      notice = `${result.changed_keys.length} issues now use ${owner} as their human owner.`;
+      modal = null;
+    } catch (error) {
+      if (error instanceof DirectError && error.outcome === "rejected") consolidationAttempt = null;
+      formNotice = failureText(error);
+    } finally {
+      formPending = false;
+    }
+  }
   /**
    * Send the open form. A retry of an unconfirmed send resends the captured
    * command and intent verbatim; `built` (the form as it is now) is only
@@ -4996,6 +5018,16 @@
               bind:links={draftLinks}
               refused={error.startsWith("Relation to ") ? error : ""}
             />{/if}
+          {#if ownerOptions.length > 1}
+            <p class="hint">For a workspace with one human reviewer, consolidate all existing issue owners. New issues will default to that reviewer.</p>
+            {#if consolidationOwner}
+              <p class="hint">Replace all existing named human owners with {consolidationOwner}? Unassigned issues, statuses and verification history will stay unchanged.</p>
+              <button type="button" disabled={formPending} onclick={consolidateOwners}>Confirm owner consolidation</button>
+              <button type="button" disabled={formPending} onclick={() => (consolidationOwner = null)}>Cancel owner consolidation</button>
+            {:else}
+              <button type="button" disabled={formPending || !draft.owner} onclick={() => (consolidationOwner = consolidationAttempt?.owner || draft.owner)}>Use selected owner for all issues</button>
+            {/if}
+          {/if}
           {#if modal === "edit"}
             <p class="hint">
               Editing Ready work returns it to Backlog for a fresh readiness
