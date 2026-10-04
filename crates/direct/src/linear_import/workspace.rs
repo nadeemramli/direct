@@ -2273,6 +2273,8 @@ impl<'a> Builder<'a> {
             }),
             products: self.products,
             product_sections: Vec::new(),
+            customer_signals: Vec::new(),
+            context_links: Vec::new(),
             projects: self.projects,
             goals: self.goals,
             milestones: self.milestones,

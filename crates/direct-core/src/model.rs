@@ -57,6 +57,156 @@ pub struct ProductPlacement {
     pub section_id: Option<String>,
 }
 
+/// Where a customer request came from (format 16).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalSourceKind {
+    Email,
+    Call,
+    Chat,
+    Support,
+    Sales,
+    Interview,
+    Survey,
+    Social,
+    Other,
+}
+
+/// What a customer request is linked to. Links reference work; the request
+/// text lives only on the signal.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalTargetKind {
+    Issue,
+    Project,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SignalLink {
+    pub kind: SignalTargetKind,
+    /// Issue key or project ID.
+    pub target: String,
+    #[serde(default)]
+    pub linked_by: String,
+    #[serde(default)]
+    pub linked_at: i64,
+}
+
+/// An external reference an import could not map to Direct work. It is kept
+/// even after the request is linked, so the original source stays traceable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct UnresolvedMapping {
+    pub external_source: String,
+    pub external_id: String,
+    #[serde(default)]
+    pub note: String,
+}
+
+/// A provenance-bearing customer request or feedback item (format 16). It is
+/// intake data: it never makes work Ready, sets priority or records review.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CustomerSignal {
+    pub id: String,
+    pub product_id: String,
+    pub source_kind: SignalSourceKind,
+    /// Where to find the original, e.g. a ticket number or call note title.
+    #[serde(default)]
+    pub source_reference: String,
+    /// The concise request, stored once.
+    pub summary: String,
+    pub received_at: i64,
+    /// A privacy-safe customer reference (account or segment, not contact details).
+    #[serde(default)]
+    pub customer_reference: String,
+    #[serde(default)]
+    pub external_source: Option<String>,
+    #[serde(default)]
+    pub external_id: Option<String>,
+    #[serde(default)]
+    pub unresolved_mappings: Vec<UnresolvedMapping>,
+    #[serde(default)]
+    pub links: Vec<SignalLink>,
+    /// The Inbox issue this request was promoted into, at most once.
+    #[serde(default)]
+    pub promoted_issue_key: Option<String>,
+    #[serde(default)]
+    pub archived: bool,
+    pub version: u64,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// What a context document is attached to (DIR-23).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ContextTargetKind {
+    Issue,
+    Project,
+    Goal,
+    Release,
+}
+
+/// Where a context document lives. Obsidian notes and URLs are linked, never
+/// copied; Linear documents are the read-only records already retained from
+/// the Linear capture.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ContextSource {
+    /// A note in a product's knowledge vault, as a path relative to its root.
+    Obsidian { product_id: String, path: String },
+    /// A retained source record (for example a Linear document).
+    RetainedRecord { record_id: String },
+    /// An external page. Direct does not fetch it.
+    Url { url: String },
+}
+
+/// One observation of a context document. Fingerprints are SHA-256 of the
+/// exact bytes read; URLs are never fetched, so they have no fingerprint.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextObservation {
+    pub available: bool,
+    #[serde(default)]
+    pub fingerprint: Option<String>,
+    #[serde(default)]
+    pub bytes: Option<u64>,
+    pub checked_at: i64,
+    /// Why it is unavailable or unchecked; empty when available.
+    #[serde(default)]
+    pub reason: String,
+}
+
+/// A typed, addressable link from planning work to a durable document
+/// (format 17). Content is reference data: it is read on demand, is never
+/// Theoria guidance and never grants tool authority.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ContextLink {
+    pub id: String,
+    pub target_kind: ContextTargetKind,
+    /// Issue key, or project/goal/release ID.
+    pub target: String,
+    pub source: ContextSource,
+    pub title: String,
+    #[serde(default)]
+    pub note: String,
+    /// The source system's own identifier, when known (e.g. the Linear document ID).
+    #[serde(default)]
+    pub source_id: Option<String>,
+    /// The original address, when known.
+    #[serde(default)]
+    pub url: Option<String>,
+    /// Fingerprint recorded when the link was made; rechecks never rewrite it.
+    #[serde(default)]
+    pub pinned_fingerprint: Option<String>,
+    pub observation: ContextObservation,
+    pub version: u64,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claim {
     pub actor: String,
@@ -715,6 +865,10 @@ pub enum DeletionBlockerKind {
     /// issue's project are visible in context but are not references.
     ReleaseReferences,
     ReleaseEvidence,
+    /// Customer requests linked to the issue (removable) or promoted into it (retained).
+    CustomerSignals,
+    /// Context documents attached directly to the issue (removable).
+    ContextLinks,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1150,6 +1304,19 @@ pub enum Command {
         #[serde(default)]
         vault_wsl: String,
     },
+    /// Owner only: set a product's repository and knowledge-vault paths (DIR-23).
+    /// Paths are configuration; nothing is moved and no issue changes.
+    UpdateProductPaths {
+        product: String,
+        #[serde(default)]
+        repo_windows: String,
+        #[serde(default)]
+        repo_wsl: String,
+        #[serde(default)]
+        vault_windows: String,
+        #[serde(default)]
+        vault_wsl: String,
+    },
     CreateProductSection {
         name: String,
     },
@@ -1169,6 +1336,84 @@ pub enum Command {
     ArrangeProducts {
         sections: Vec<String>,
         products: Vec<ProductPlacement>,
+    },
+    /// Record a customer request (DIR-24). Agents and the owner may capture.
+    CaptureSignal {
+        product: String,
+        source_kind: SignalSourceKind,
+        #[serde(default)]
+        source_reference: String,
+        summary: String,
+        received_at: i64,
+        #[serde(default)]
+        customer_reference: String,
+        #[serde(default)]
+        external_source: Option<String>,
+        #[serde(default)]
+        external_id: Option<String>,
+        #[serde(default)]
+        unresolved_mappings: Vec<UnresolvedMapping>,
+    },
+    /// Correct a captured request. Import provenance, links, promotion and
+    /// archive state are unchanged; the text is still stored once.
+    UpdateSignal {
+        id: String,
+        expected_version: u64,
+        source_kind: SignalSourceKind,
+        #[serde(default)]
+        source_reference: String,
+        summary: String,
+        received_at: i64,
+        #[serde(default)]
+        customer_reference: String,
+    },
+    LinkSignal {
+        id: String,
+        expected_version: u64,
+        kind: SignalTargetKind,
+        target: String,
+    },
+    UnlinkSignal {
+        id: String,
+        expected_version: u64,
+        kind: SignalTargetKind,
+        target: String,
+    },
+    /// Create one Inbox issue from the request, link it and record provenance.
+    PromoteSignal {
+        id: String,
+        expected_version: u64,
+        #[serde(default)]
+        title: Option<String>,
+    },
+    ArchiveSignal {
+        id: String,
+        expected_version: u64,
+        archived: bool,
+    },
+    /// Owner only: attach a context document to an issue, project, goal or release (DIR-23).
+    AddContextLink {
+        target_kind: ContextTargetKind,
+        target: String,
+        source: ContextSource,
+        #[serde(default)]
+        title: Option<String>,
+        #[serde(default)]
+        note: String,
+    },
+    /// Owner only.
+    RemoveContextLink {
+        id: String,
+        expected_version: u64,
+    },
+    /// Re-observe availability and fingerprint now; the pinned fingerprint is kept.
+    CheckContextLink {
+        id: String,
+        expected_version: u64,
+    },
+    /// Read a context document's current content on demand (read-only).
+    ReadContextLink {
+        id: String,
     },
     CreateIssue {
         product: String,
@@ -1351,6 +1596,12 @@ pub struct Archive {
     /// Owner-defined sidebar sections (format 15).
     #[serde(default)]
     pub product_sections: Vec<ProductSection>,
+    /// Customer requests (format 16). Distinct from `requests`, which is command idempotency.
+    #[serde(default)]
+    pub customer_signals: Vec<CustomerSignal>,
+    /// Context document links (format 17). Obsidian content is never archived.
+    #[serde(default)]
+    pub context_links: Vec<ContextLink>,
     #[serde(default)]
     pub projects: Vec<Project>,
     #[serde(default)]

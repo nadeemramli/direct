@@ -31,7 +31,7 @@ fn original_context_survives_edits_reopen_and_archive_without_polling_image_byte
             .is_none()
     );
     let archive = store.export().unwrap();
-    assert_eq!(archive.format, 15);
+    assert_eq!(archive.format, 17);
     drop(store);
     let mut reopened = Store::open(&path).unwrap();
     assert_eq!(

@@ -141,6 +141,8 @@ fn workspace() -> Archive {
         workspace_id: "00000000-0000-4000-8000-00000000bbbb".into(),
         products: vec![product],
         product_sections: Vec::new(),
+        customer_signals: Vec::new(),
+        context_links: Vec::new(),
         projects,
         goals,
         milestones,

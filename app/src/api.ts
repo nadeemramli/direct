@@ -28,6 +28,78 @@ export interface Product {
   sort_order?: number;
   section_id?: string | null;
 }
+/** Context documents (DIR-23): typed links to durable documents. */
+export type ContextTargetKind = "issue" | "project" | "goal" | "release";
+export type ContextSource =
+  | { kind: "obsidian"; product_id: string; path: string }
+  | { kind: "retained_record"; record_id: string }
+  | { kind: "url"; url: string };
+export interface ContextObservation {
+  available: boolean;
+  fingerprint?: string | null;
+  bytes?: number | null;
+  checked_at: number;
+  reason: string;
+}
+export interface ContextLink {
+  id: string;
+  target_kind: ContextTargetKind;
+  target: string;
+  source: ContextSource;
+  title: string;
+  note: string;
+  source_id?: string | null;
+  url?: string | null;
+  pinned_fingerprint?: string | null;
+  observation: ContextObservation;
+  version: number;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+}
+/** Customer requests captured as provenance-bearing signals (DIR-24). */
+export type SignalSourceKind =
+  | "email"
+  | "call"
+  | "chat"
+  | "support"
+  | "sales"
+  | "interview"
+  | "survey"
+  | "social"
+  | "other";
+export type SignalTargetKind = "issue" | "project";
+export interface SignalLink {
+  kind: SignalTargetKind;
+  /** Issue key or project ID. */
+  target: string;
+  linked_by: string;
+  linked_at: number;
+}
+export interface UnresolvedMapping {
+  external_source: string;
+  external_id: string;
+  note: string;
+}
+export interface CustomerSignal {
+  id: string;
+  product_id: string;
+  source_kind: SignalSourceKind;
+  source_reference: string;
+  summary: string;
+  received_at: number;
+  customer_reference: string;
+  external_source?: string | null;
+  external_id?: string | null;
+  unresolved_mappings: UnresolvedMapping[];
+  links: SignalLink[];
+  promoted_issue_key?: string | null;
+  archived: boolean;
+  version: number;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+}
 /** An owner-defined sidebar group of products (DIR-71). */
 export interface ProductSection {
   id: string;
@@ -397,6 +469,11 @@ export interface DeletionEligibility {
 }
 export interface Context {
   deletion?: DeletionEligibility;
+  /** Customer requests linked to or promoted into this issue (DIR-24). */
+  customer_signals?: CustomerSignal[];
+  /** Context documents on the issue and inherited from its project, goals and releases. */
+  context_links?: ContextLink[];
+  context_authority?: string;
   issue: Issue;
   product: Product;
   project: Project | null;
@@ -505,6 +582,8 @@ export interface Snapshot {
   workspace_id: string;
   products: Product[];
   product_sections?: ProductSection[];
+  customer_signals?: CustomerSignal[];
+  context_links?: ContextLink[];
   projects: Project[];
   project_progress?: ProjectProgress[];
   goals: Goal[];
