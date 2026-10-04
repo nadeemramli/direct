@@ -77,9 +77,11 @@ try {
     Copy-Item -LiteralPath (Join-Path $repo 'scripts\smoke-windows-package.ps1') -Destination (Join-Path $packageDir 'Test-DirectPackage.ps1')
     Copy-Item -LiteralPath (Join-Path $repo 'packaging\windows\README.txt') -Destination (Join-Path $packageDir 'README.txt')
 
+    # Windows PowerShell 5.1 lacks [IO.Path]::GetRelativePath; files are all beneath $packageDir.
+    $prefix = $packageDir.TrimEnd('\') + '\'
     $files = @(Get-ChildItem -LiteralPath $packageDir -Recurse -File | ForEach-Object {
         [ordered]@{
-            path = [IO.Path]::GetRelativePath($packageDir, $_.FullName).Replace('\', '/')
+            path = $_.FullName.Substring($prefix.Length).Replace('\', '/')
             length = $_.Length
             sha256 = (Get-FileHash -LiteralPath $_.FullName -Algorithm SHA256).Hash.ToLowerInvariant()
         }

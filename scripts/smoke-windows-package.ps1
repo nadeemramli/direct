@@ -14,11 +14,18 @@ $desktopProcess = $null
 $checks = [System.Collections.Generic.List[string]]::new()
 $started = [DateTime]::UtcNow
 
+# Windows PowerShell 5.1 turns redirected native stderr into a terminating error
+# under 'Stop', so a not-yet-ready service would abort the readiness poll.
+function Invoke-NativeQuiet([string]$Cli, [string[]]$Arguments) {
+    $ErrorActionPreference = 'Continue'
+    & $Cli @Arguments *> $null
+    return $LASTEXITCODE
+}
+
 function Wait-ForService([string]$Cli, [string]$Workspace, [int]$Seconds = 20) {
     $deadline = [DateTime]::UtcNow.AddSeconds($Seconds)
     do {
-        & $Cli --data-dir $Workspace list *> $null
-        if ($LASTEXITCODE -eq 0) { return }
+        if ((Invoke-NativeQuiet $Cli @('--data-dir', $Workspace, 'list')) -eq 0) { return }
         Start-Sleep -Milliseconds 150
     } while ([DateTime]::UtcNow -lt $deadline)
     throw 'The packaged service did not become ready'
@@ -55,8 +62,7 @@ function Close-NativeDesktop([Diagnostics.Process]$Process) {
 }
 
 function Stop-Service([string]$Cli, [string]$Workspace) {
-    & $Cli --data-dir $Workspace stop *> $null
-    if ($LASTEXITCODE -ne 0) { throw 'The packaged service did not accept a graceful stop' }
+    if ((Invoke-NativeQuiet $Cli @('--data-dir', $Workspace, 'stop')) -ne 0) { throw 'The packaged service did not accept a graceful stop' }
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
     do {
         if (-not (Test-Path -LiteralPath (Join-Path $Workspace 'endpoint.json'))) { return }
@@ -105,8 +111,7 @@ try {
 
     Close-NativeDesktop $desktopProcess
     $desktopProcess = $null
-    & $cli --data-dir $dataDir list *> $null
-    if ($LASTEXITCODE -ne 0) { throw 'Agent access failed after the relaunched desktop closed' }
+    if ((Invoke-NativeQuiet $cli @('--data-dir', $dataDir, 'list')) -ne 0) { throw 'Agent access failed after the relaunched desktop closed' }
     $checks.Add('second desktop close again left agent access available')
 
     & $installer -PackageDir $PackageDir -InstallDir $installDir -DataDir $dataDir -NoShortcut -NoLaunch | Out-Null
