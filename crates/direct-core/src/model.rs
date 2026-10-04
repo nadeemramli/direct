@@ -928,6 +928,14 @@ pub enum IssueLinkKind {
     LegacyVerification,
 }
 
+/// A relation requested while creating an issue; the new issue is its source.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct NewIssueLink {
+    pub target_key: String,
+    pub kind: IssueLinkKind,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct IssueLink {
     pub id: String,
@@ -1435,6 +1443,10 @@ pub enum Command {
         template: Option<TemplateSelection>,
         #[serde(default, skip_serializing_if = "Option::is_none")]
         intake: Option<IntakeContext>,
+        /// Relations written atomically with the issue under the same rules as
+        /// `CreateIssueLink`. Omitted from the request hash when empty.
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        links: Vec<NewIssueLink>,
     },
     UpdateIssue {
         key: String,

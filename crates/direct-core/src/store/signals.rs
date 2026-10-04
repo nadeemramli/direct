@@ -429,6 +429,7 @@ pub(crate) fn mutate(
                     priority: "medium".into(),
                     planning_scope: PlanningScope::Inbox,
                     project_id: None,
+                    links: vec![],
                     template: None,
                     intake: None,
                 },

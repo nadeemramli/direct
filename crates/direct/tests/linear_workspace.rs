@@ -545,6 +545,7 @@ fn whole_workspace_rehearsal_reconciles_preserves_restores_and_replays() {
                         planning_scope: direct_core::PlanningScope::Inbox,
                         project_id: None,
                         template: None,
+                        links: vec![],
                     },
                 },
                 Role::Human,
