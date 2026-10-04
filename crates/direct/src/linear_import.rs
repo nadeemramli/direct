@@ -220,7 +220,7 @@ pub fn dry_run(
         })
         .sum();
     let archive = Archive {
-        format: 13,
+        format: 14,
         workspace_id: project_id.to_owned(),
         products: vec![product],
         projects: vec![project],
@@ -600,6 +600,7 @@ fn import_issue(
         history,
     };
     Ok(Issue {
+        intake: None,
         labels: vec![],
         template: None,
         id: required_string(value, "id")?,

@@ -22,6 +22,7 @@
     saveLayout,
   } from "./layout";
   import type { ScrollAnchor, Section } from "./layout";
+  import DraftAssistant from "./DraftAssistant.svelte";
   import TemplatePicker from "./TemplatePicker.svelte";
   import type { Applied as TemplateApplied } from "./TemplatePicker.svelte";
   import TemplatesView from "./TemplatesView.svelte";
@@ -282,6 +283,7 @@
     if (!touched.priority) projectDraft.priority = applied.priority || formDefaults.priority;
   }
   let draft = $state({
+    intake: "",
     title: "",
     body: "",
     acceptance: "",
@@ -344,6 +346,7 @@
   const BRIEF_FIELDS = [
     ["title", "Title"],
     ["body", "Problem & expected outcome"],
+    ["intake", "Original task context"],
     ["acceptance", "Acceptance criteria"],
     ["owner", "Human owner"],
     ["priority", "Priority"],
@@ -351,6 +354,7 @@
   ] as const;
   type BriefField = (typeof BRIEF_FIELDS)[number][0];
   let editBase: Record<BriefField, string> = {
+    intake: "",
     title: "",
     body: "",
     acceptance: "",
@@ -1083,6 +1087,7 @@
   }
   function briefOf(i: Issue): Record<BriefField, string> {
     return {
+      intake: i.intake ? JSON.stringify(i.intake) : "",
       title: i.title,
       body: i.body,
       acceptance: i.acceptance,
@@ -1175,8 +1180,10 @@
     }
   }
   function edit(i: Issue) {
+    if (context?.issue.key === i.key) i = context.issue;
     editBase = briefOf(i);
     draft = {
+      intake: i.intake ? JSON.stringify(i.intake) : "",
       title: i.title,
       body: i.body,
       acceptance: i.acceptance,
@@ -1196,6 +1203,7 @@
       data.products.find((p) => p.id === product) || data.products[0];
     const inheritedProject = selectedProject?.id || "";
     draft = {
+      intake: "",
       title: "",
       body: "",
       acceptance: "",
@@ -1223,6 +1231,7 @@
               product: draft.product,
               title: draft.title,
               body: draft.body,
+              ...(draft.intake ? {intake: JSON.parse(draft.intake)} : {}),
               acceptance: draft.acceptance,
               owner: draft.owner,
               priority: draft.priority,
@@ -1239,6 +1248,7 @@
               expected_version: draft.version,
               title: draft.title,
               body: draft.body,
+              ...(draft.intake ? {intake: JSON.parse(draft.intake)} : {}),
               acceptance: draft.acceptance,
               owner: draft.owner,
               priority: draft.priority,
@@ -1263,16 +1273,6 @@
       // Intake can start from the template manager; show the new issue in the work list.
       if (view === "templates") view = "all";
       await choose(result.key);
-    }
-  }
-  function draftBriefFromTitle() {
-    const subject = draft.title.trim().replace(/[.!?]+$/, "");
-    if (!subject) return;
-    if (!draft.body.trim()) {
-      draft.body = `Problem\n${subject}.\n\nExpected outcome\nThe affected workflow handles this clearly and reliably for the user.`;
-    }
-    if (!draft.acceptance.trim()) {
-      draft.acceptance = `- ${subject} is demonstrated through the complete user-facing workflow.\n- The agent records actions, expected and observed results for each criterion, including relevant failure paths and persistence.\n- Relevant automated checks pass.\n- The exact tested build is integrated, installed, and smoke-tested at the owner's entrypoint before requesting verification.`;
     }
   }
   function makeReady(i: Issue) {
@@ -3246,6 +3246,16 @@
                 {current.body ||
                   "Start with the problem this work should solve."}
               </p>
+              {#if context?.issue.intake && (context.issue.intake.text || context.issue.intake.images.length)}
+                <details class="saved-intake">
+                  <summary>Original task context · {context.issue.intake.images.length} screenshots</summary>
+                  <p class="prose">{context.issue.intake.text}</p>
+                  {#each context.issue.intake.images as image, index}
+                    <figure class="intake-image"><img src={image.data_url} alt={image.caption || `Context screenshot ${index+1}`} />
+                      <figcaption>{image.caption || `Screenshot ${index+1}`}</figcaption></figure>
+                  {/each}
+                </details>
+              {/if}
               <div class="section-label">ACCEPTANCE CRITERIA</div>
               <p class="prose" class:muted={!current.acceptance}>
                 {current.acceptance ||
@@ -4519,15 +4529,12 @@
               bind:value={draft.title}
               placeholder="What needs to change?"
             /></label
-          ><div class="draft-assist">
-            <button
-              type="button"
-              class="secondary"
-              disabled={!draft.title.trim()}
-              onclick={draftBriefFromTitle}>✦ Draft from title</button
-            ><small>Private local starter—review it before saving. No issue data leaves Direct.</small>
-          </div
-          ><label class="field"
+          >{#key `${modal}:${draft.key}`}
+            <DraftAssistant title={draft.title} bind:body={draft.body} bind:acceptance={draft.acceptance}
+              bind:intake={draft.intake} product={draft.product || data.products.find(p => p.id === current?.product_id)?.name || ""}
+              project={data.projects.find(p => p.id === draft.project_id)?.name || ""} disabled={busy} />
+          {/key}
+          <label class="field"
             >Problem & expected outcome<textarea
               rows="4"
               required={modal === "edit"}

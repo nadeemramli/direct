@@ -1,3 +1,4 @@
+use crate::IntakeContext;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -642,6 +643,9 @@ pub struct Issue {
     pub labels: Vec<String>,
     pub title: String,
     pub body: String,
+    /// Original owner context and pasted screenshots, distinct from the shaped brief.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub intake: Option<IntakeContext>,
     pub acceptance: String,
     pub owner: String,
     pub priority: String,
@@ -1137,6 +1141,8 @@ pub enum Command {
         /// Omitted from the request hash when absent so legacy retries replay exactly.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         template: Option<TemplateSelection>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        intake: Option<IntakeContext>,
     },
     UpdateIssue {
         key: String,
@@ -1148,6 +1154,9 @@ pub enum Command {
         priority: String,
         #[serde(default)]
         planning_scope: Option<PlanningScope>,
+        /// Omission preserves context; an empty object explicitly clears it.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        intake: Option<IntakeContext>,
     },
     DeleteIssue {
         key: String,

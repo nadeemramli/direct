@@ -179,7 +179,7 @@ fn issue_guidance_and_method_proposals_are_traceable_without_becoming_decisions(
     );
 
     let archive = store.export().unwrap();
-    assert_eq!(archive.format, 13);
+    assert_eq!(archive.format, 14);
     validate_archive(&archive).unwrap();
     drop(store);
     let reopened = Store::open(&path).unwrap();
@@ -319,6 +319,7 @@ fn malformed_or_cross_product_theoria_records_are_rejected() {
     .unwrap();
     let mut broken = store.export().unwrap();
     broken.issues.push(Issue {
+        intake: None,
         id: uuid::Uuid::new_v4().to_string(),
         key: "DIR-1".into(),
         product_id: broken.products[0].id.clone(),

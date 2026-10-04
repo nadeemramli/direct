@@ -2228,6 +2228,15 @@ dialog::backdrop {
   flex-direction: row;
   align-items: center;
 }
+.ai-intake { display: grid; gap: 12px; margin: 10px 0 18px; min-width: 0; }
+.ai-intake small { color: #9ba6ad; line-height: 1.5; }
+.context-example, .ai-preview, .saved-intake { border: 1px solid #343d3f; border-radius: 8px; padding: 14px; margin: 8px 0; }
+.context-example summary, .saved-intake summary { cursor: pointer; }
+.ai-preview h4 { margin: 18px 0 6px; }
+.ai-preview li { margin: 8px 0; line-height: 1.5; }
+.intake-image { margin: 8px 0; display: grid; gap: 10px; min-width: 0; }
+.intake-image img { max-width: 100%; max-height: 400px; object-fit: contain; border-radius: 6px; }
+.intake-image figcaption { color: #9ba6ad; overflow-wrap: anywhere; }
 
 /* Workflow icons and segmented progress */
 .wf-icon {

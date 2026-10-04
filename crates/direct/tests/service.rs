@@ -41,6 +41,50 @@ fn req(mut value: Value) -> Request {
     serde_json::from_value(value).unwrap()
 }
 
+#[test]
+fn draft_route_rejects_agent_foreign_origin_and_invalid_input_before_model_execution() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("workspace");
+    let _service = start(&dir);
+    let endpoint = endpoint(&dir).unwrap();
+    let http = reqwest::blocking::Client::builder()
+        .no_proxy()
+        .build()
+        .unwrap();
+    let url = format!("http://127.0.0.1:{}/api/draft-brief", endpoint.port);
+    let input = json!({"title":"Test title"});
+    assert_eq!(
+        http.post(&url)
+            .bearer_auth(&endpoint.agent_token)
+            .json(&input)
+            .send()
+            .unwrap()
+            .status(),
+        403
+    );
+    assert_eq!(
+        http.post(&url)
+            .bearer_auth(&endpoint.owner_token)
+            .header("Origin", "https://unrelated.example")
+            .json(&input)
+            .send()
+            .unwrap()
+            .status(),
+        403
+    );
+    let rejected = http
+        .post(&url)
+        .bearer_auth(&endpoint.owner_token)
+        .json(&json!({"title":""}))
+        .send()
+        .unwrap();
+    assert_eq!(rejected.status(), 400);
+    assert!(rejected.json::<Value>().unwrap()["message"]
+        .as_str()
+        .unwrap()
+        .contains("title"));
+}
+
 fn native(dir: &Path, args: &[&str]) -> Value {
     let output = Process::new(env!("CARGO_BIN_EXE_direct"))
         .arg("--data-dir")
@@ -274,7 +318,7 @@ fn templates_cross_the_wire_owner_defines_agents_apply_and_restart_preserves_pro
     let before = client
         .call(&req(json!({"op":"export"})), Role::Agent)
         .unwrap();
-    assert_eq!(before["format"], 13);
+    assert_eq!(before["format"], 14);
     drop(service);
     let _restart = start(&dir);
     let after = Client::new(&dir)

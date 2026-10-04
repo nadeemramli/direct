@@ -29,6 +29,40 @@ struct App {
     endpoint: Endpoint,
     grants: Arc<Mutex<HashMap<String, i64>>>,
     sessions: Arc<Mutex<HashMap<String, i64>>>,
+    drafting: Arc<tokio::sync::Semaphore>,
+}
+async fn draft_brief(
+    State(app): State<App>,
+    headers: HeaderMap,
+    Json(input): Json<crate::drafting::DraftRequest>,
+) -> Response {
+    match role(&app, &headers) {
+        Some(Role::Human) => (),
+        _ => {
+            return fail(
+                StatusCode::FORBIDDEN,
+                "AI drafting is available from the owner interface only",
+            )
+        }
+    }
+    let Ok(_permit) = app.drafting.try_acquire() else {
+        return (StatusCode::TOO_MANY_REQUESTS, Json(json!({"code":"busy","message":"Another AI draft is running. Try again when it finishes."}))).into_response();
+    };
+    if let Err(error) = crate::drafting::input_message(&input) {
+        return (
+            StatusCode::BAD_REQUEST,
+            Json(json!({"code":"invalid","message":error.to_string()})),
+        )
+            .into_response();
+    }
+    match crate::drafting::generate(input).await {
+        Ok(value) => Json(value).into_response(),
+        Err(error) => (
+            StatusCode::BAD_GATEWAY,
+            Json(json!({"code":"draft_failed","message":error.to_string()})),
+        )
+            .into_response(),
+    }
 }
 fn fail(code: StatusCode, message: &str) -> Response {
     (code,Json(json!({"code":if code==StatusCode::FORBIDDEN{"forbidden"}else{"unauthorized"},"message":message}))).into_response()
@@ -373,13 +407,15 @@ pub async fn serve(dir: &Path, port: u16, assets: &Path) -> Result<()> {
         endpoint: endpoint.clone(),
         grants: Arc::new(Mutex::new(HashMap::new())),
         sessions: Arc::new(Mutex::new(HashMap::new())),
+        drafting: Arc::new(tokio::sync::Semaphore::new(1)),
     };
     let migration_limit = DefaultBodyLimit::max(direct_core::MAX_MIGRATION_ARTIFACT_BYTES);
     let router=Router::new().route("/api/command",post(command)).route("/api/launch",post(launch)).route("/api/health",post(health)).route("/api/session",post(session))
       .route("/api/source-file",post(source_file))
+      .route("/api/draft-brief",post(draft_brief))
       .route("/api/migration/preview",post(migration_preview).layer(migration_limit).layer(middleware::from_fn_with_state(app.clone(), require_owner)))
       .route("/api/migration/apply",post(migration_apply).layer(migration_limit).layer(middleware::from_fn_with_state(app.clone(), require_owner)))
-      .fallback_service(ServeDir::new(assets)).layer(DefaultBodyLimit::max(1024*1024))
+      .fallback_service(ServeDir::new(assets)).layer(DefaultBodyLimit::max(5*1024*1024))
       .layer(SetResponseHeaderLayer::overriding(axum::http::header::CACHE_CONTROL,axum::http::HeaderValue::from_static("no-store")))
       .layer(SetResponseHeaderLayer::overriding(axum::http::header::CONTENT_SECURITY_POLICY,axum::http::HeaderValue::from_static("default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data:; object-src 'none'; frame-ancestors 'none'; base-uri 'none'")))
       .with_state(app);

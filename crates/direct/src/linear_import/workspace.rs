@@ -1725,6 +1725,7 @@ impl<'a> Builder<'a> {
             };
             let status = mapped.status;
             self.issues.push(Issue {
+                intake: None,
                 labels: labels.into_iter().collect(),
                 id: id.clone(),
                 key: key.clone(),
@@ -2258,7 +2259,7 @@ impl<'a> Builder<'a> {
         }
 
         let mut archive = Archive {
-            format: 13,
+            format: 14,
             workspace_id: deterministic_uuid("linear-workspace", &{
                 let mut ids: Vec<_> = self
                     .products

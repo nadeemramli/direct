@@ -91,6 +91,7 @@ fn workspace() -> Archive {
         .collect();
     let issues: Vec<Issue> = (0..ISSUES)
         .map(|index| Issue {
+            intake: None,
             id: format!("issue-{index:04}"),
             key: format!("ENG-{}", index + 1),
             product_id: product.id.clone(),
@@ -134,7 +135,7 @@ fn workspace() -> Archive {
         })
         .collect();
     Archive {
-        format: 13,
+        format: 14,
         workspace_id: "00000000-0000-4000-8000-00000000bbbb".into(),
         products: vec![product],
         projects,
@@ -243,6 +244,7 @@ fn snapshot_stays_small_and_fast_with_large_imported_history() {
                 actor: "owner".into(),
                 request_id: "edit-1".into(),
                 command: Command::UpdateIssue {
+                    intake: None,
                     key: "ENG-7".into(),
                     expected_version: 1,
                     title: "Edited".into(),

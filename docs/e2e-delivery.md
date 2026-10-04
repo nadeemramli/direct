@@ -13,6 +13,8 @@ Current data already separates these facts: `Verification.e2e.outcome` is the ag
 
 Verification scales to the deliverable. A documentation-only change needs source, link, consistency and delivery checks; it does not need an unrelated application test suite. UI/client changes must exercise their actual flow. Native-specific acceptance still needs native evidence.
 
+Owner decision, 4 October 2026: Direct's agent-passed delivered build may be used for authorized real project work while the owner performs the human second pass during normal use. Record the decision's scope and build in DIR-9; pending human reviews and the prior ten-delivery threshold are not blockers to that operational adoption. Issues remain Verify with human outcomes pending until genuine review. This changes review timing, not first-pass E2E requirements, per-task readiness, formal release-promotion rules or migration/cutover evidence. Fail/Blocked remains agent work. The maintained DOS source is `Sources/2026-10-04 - Operational Use and Deferred Human Acceptance.md`.
+
 ## Before submission
 
 1. Read the issue acceptance and previous failed reviews. Write an executable scenario for each criterion: entrypoint, setup, action, expected result, observed result, and evidence location. An unclear criterion remains unresolved, not passed.
