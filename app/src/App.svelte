@@ -25,6 +25,10 @@
   import TemplatePicker from "./TemplatePicker.svelte";
   import type { Applied as TemplateApplied } from "./TemplatePicker.svelte";
   import TemplatesView from "./TemplatesView.svelte";
+  import ProgressBar from "./ProgressBar.svelte";
+  import StatusIcon from "./StatusIcon.svelte";
+  import WorkflowView from "./WorkflowView.svelte";
+  import { WORKFLOW_STATES, breakdown, isWorkflowState, workflowState } from "./workflow";
   import { provenanceLabel } from "./templates";
   import {
     STATE_NOTE,
@@ -485,15 +489,6 @@
     legacy_completed: "Legacy done",
     canceled: "Canceled",
   };
-  const glyphs: Record<Status, string> = {
-    backlog: "◌",
-    ready: "○",
-    doing: "◐",
-    verify: "◈",
-    done: "✓",
-    legacy_completed: "◇",
-    canceled: "⊘",
-  };
   let parents = $derived(data.issues.filter((i) => !i.parent));
   let ownerOptions = $derived(
     data.issues.some((issue) => issue.owner.trim())
@@ -572,7 +567,7 @@
                 ? ["ready", "doing"].includes(i.status)
                 : view === "done"
                   ? ["done", "legacy_completed"].includes(i.status)
-                  : i.status === view))) &&
+                  : workflowState(i) === view))) &&
           `${i.key} ${i.title} ${i.body} ${labelNames(i.labels).join(" ")} ${data.releases
             .filter(
               (release) =>
@@ -620,6 +615,8 @@
   let title = $derived(
     view === "theoria"
       ? "Theoria"
+      : view === "workflow"
+      ? "Workflow"
       : view === "templates"
       ? "Intake templates"
       : view === "sources"
@@ -634,7 +631,9 @@
             ? "Inbox"
             : view === "done"
               ? "Completed"
-              : "All work",
+              : isWorkflowState(view)
+                ? WORKFLOW_STATES[view].name
+                : "All work",
   );
   function date(at: number) {
     return new Date(at * 1000).toLocaleString(undefined, {
@@ -705,6 +704,33 @@
   function releaseProgress(id: string) {
     return data.release_progress.find((progress) => progress.release_id === id);
   }
+  // Per-state breakdowns for progress bars. They use the same parent-issue sets as
+  // the service's progress records, which remain the source of the headline percent.
+  let projectBreakdowns = $derived.by(() => {
+    const groups = new Map<string, Issue[]>();
+    for (const issue of parents)
+      if (issue.project_id) groups.set(issue.project_id, [...(groups.get(issue.project_id) || []), issue]);
+    return new Map([...groups].map(([id, issues]) => [id, breakdown(issues)]));
+  });
+  function projectBreakdown(id: string) {
+    return projectBreakdowns.get(id) || breakdown([]);
+  }
+  function goalBreakdown(goal: Goal) {
+    return breakdown(parents.filter((issue) => !!issue.project_id && goal.project_ids.includes(issue.project_id)));
+  }
+  function milestoneBreakdown(id: string) {
+    return breakdown(parents.filter((issue) => issue.milestone_id === id));
+  }
+  function releaseBreakdown(release: ReleaseRecord) {
+    return breakdown(
+      parents.filter(
+        (issue) =>
+          release.issue_keys.includes(issue.key) ||
+          (!!issue.project_id && release.project_ids.includes(issue.project_id)),
+      ),
+    );
+  }
+  let visibleBreakdown = $derived(breakdown(visible));
   function workflowForProductKey(key: string) {
     const product = data.products.find((candidate) => candidate.key === key);
     return data.release_workflows.find((workflow) => workflow.product_id === product?.id);
@@ -2017,7 +2043,7 @@
     class="issue-row"
     class:selected={selected === i.key}
     onclick={() => choose(i.key)}
-    ><span class="state-icon {i.status}">{glyphs[i.status]}</span>
+    ><span class="state-icon"><StatusIcon state={workflowState(i)} size={15} /></span>
     <div class="row-content">
       <div class="issue-title">{i.title}</div>
       <div class="issue-meta">
@@ -2144,6 +2170,15 @@
             view = "done";
             product = "all";
           }}><span>✓</span> Completed</button
+        >
+        <button
+          title="Workflow states and progress"
+          class:active={view === "workflow"}
+          onclick={() => {
+            view = "workflow";
+            selected = "";
+            context = null;
+          }}><span>◎</span> Workflow</button
         >
         <button
           title="Intake templates"
@@ -2453,6 +2488,26 @@
               <p>Run the explicit Theoria sync contract to populate the cache.</p>
             </div>{/if}
         </aside>
+      {:else if view === "workflow"}
+        <WorkflowView
+          issues={parents}
+          products={data.products}
+          projects={data.projects}
+          reviewReady={data.review_ready_runs || []}
+          bind:product
+          onstate={(state) => {
+            view = state;
+            projectFilter = "all";
+            labelFilter = "all";
+            search = "";
+          }}
+          onproject={(id) => {
+            view = "all";
+            projectFilter = id;
+            labelFilter = "all";
+            search = "";
+          }}
+        />
       {:else if view === "templates"}
         <TemplatesView {data} {connected} {commit} controls={detailControls} />
       {:else if view === "sources"}
@@ -2777,7 +2832,8 @@
                 {@const progress = releaseProgress(release.id)}
                 <button class="release-chip" onclick={() => editRelease(release)}>
                   <span><b>{release.version_label}</b> · {release.name}</span>
-                  <small>{release.status} · {progress?.completed || 0} done · {progress?.pending_verification || 0} verify · {progress?.failed_verification || 0} failed</small>
+                  <small>{release.status} · {progress?.completion_percent || 0}% · {progress?.completed || 0} done · {progress?.pending_verification || 0} verify · {progress?.failed_verification || 0} failed</small>
+                  <ProgressBar data={releaseBreakdown(release)} label={`${release.version_label} progress`} size="xs" />
                 </button>
               {/each}
             </div>
@@ -2837,8 +2893,8 @@
                 >{progress.completed}/{progress.total - progress.canceled - legacyCompleted} verified done · {legacyCompleted} legacy done · {progress.pending_verification} verify · {progress.canceled} canceled</span
               >
             </div>
-            <div class="progress-track" aria-label="Project completion">
-              <span style={`width: ${progress.completion_percent}%`}></span>
+            <div class="project-progress-bar">
+              <ProgressBar data={projectBreakdown(selectedProject.id)} label="Project completion" size="md" legend />
             </div>
             <div class="project-planning-links">
               <div>
@@ -2848,7 +2904,7 @@
                   <button class="planning-link" onclick={() => editGoal(goal)}
                     ><b>{goal.name}</b><small
                       >{goal.status} · {goal.priority} · {progress?.completion_percent || 0}%</small
-                    ></button
+                    ><ProgressBar data={goalBreakdown(goal)} label={`${goal.name} progress`} size="xs" /></button
                   >
                 {:else}<small>No goals link this project yet.</small>{/each}
               </div>
@@ -2859,7 +2915,7 @@
                   <button class="planning-link" onclick={() => editMilestone(milestone)}
                     ><b>{milestone.name}</b><small
                       >order {milestone.sort_order} · {progress?.completion_percent || 0}% · {progress?.pending_verification || 0} verify</small
-                    ></button
+                    ><ProgressBar data={milestoneBreakdown(milestone.id)} label={`${milestone.name} progress`} size="xs" /></button
                   >
                 {:else}<small>No milestones in this project yet.</small>{/each}
                 <button class="text-button add-planning" onclick={() => editMilestone()}
@@ -2873,7 +2929,7 @@
                   <button class="planning-link" onclick={() => editRelease(release)}
                     ><b>{release.version_label} · {release.name}</b><small
                       >{release.status} · {progress?.completion_percent || 0}% · {progress?.pending_verification || 0} verify · {progress?.failed_verification || 0} failed</small
-                    ></button
+                    ><ProgressBar data={releaseBreakdown(release)} label={`${release.version_label} progress`} size="xs" /></button
                   >
                 {:else}<small>No releases link this project yet.</small>{/each}
               </div>
@@ -2891,6 +2947,12 @@
             </div>
           </div>
         {/if}
+        {#if !selectedProject && visible.length}<div class="list-progress">
+            <div class="list-progress-head">
+              <b>{visibleBreakdown.percent}%</b> verified done · {visibleBreakdown.counts.done} of {visibleBreakdown.eligible} counted
+            </div>
+            <ProgressBar data={visibleBreakdown} label={`${title} progress`} size="sm" legend />
+          </div>{/if}
         <div class="list-label"><span>ISSUE</span><span>STATUS</span></div>
         <div class="issue-list">
           {#if visible.length && listMode === "project"}
@@ -2909,9 +2971,11 @@
                         >Explicitly ungrouped work</span
                       >{/if}
                   </div>
-                  {#if progress}<small
-                      >{progress.completion_percent}% · {progress.completed} done · {progress.pending_verification} verify</small
-                    >{:else}<small>{group.issues.length} items</small>{/if}
+                  {#if progress}<div class="group-progress">
+                      <small
+                        >{progress.completion_percent}% · {progress.completed} done · {progress.pending_verification} verify</small
+                      ><ProgressBar data={projectBreakdown(group.project?.id || "")} label={`${group.name} progress`} size="xs" />
+                    </div>{:else}<small>{group.issues.length} items</small>{/if}
                 </header>
                 {#each group.issues as i}{@render issueRow(i)}{/each}
               </section>
@@ -2971,8 +3035,9 @@
             </div>
           </div>
           <div class="detail-heading">
-            <span class="status-badge {current.status}"
-              >{glyphs[current.status]} {labels[current.status]}</span
+            <span class="status-badge {current.status}" class:needs-fix={workflowState(current) === "needs_fix"}
+              ><StatusIcon state={workflowState(current)} size={11} title={false} />
+              {WORKFLOW_STATES[workflowState(current)].name}</span
             >
             <h2>{current.title}</h2>
             <div class="properties">
@@ -3244,6 +3309,7 @@
                         {progress?.completed || 0}/{(progress?.total || 0) - (progress?.canceled || 0) - (progress?.legacy_completed || 0)} verified done ·
                         {progress?.pending_verification || 0} pending · {progress?.failed_verification || 0} failed verification
                       </p>
+                      <ProgressBar data={releaseBreakdown(release)} label={`${release.version_label} progress`} size="xs" />
                       <small>{evidence.length} evidence record{evidence.length === 1 ? "" : "s"}</small>
                       {#if release.preview_url}<p><a href={release.preview_url} target="_blank" rel="noreferrer">Open recorded preview</a></p>{/if}
                       <button class="text-button" onclick={() => editRelease(release)}>Edit release</button>

@@ -6,6 +6,21 @@
   font-size: 13px;
   color-scheme: dark;
 }
+/* Workflow state colors. The five counted states form the progress-bar palette,
+   validated against the dark surface (lightness band, chroma, adjacent CVD and
+   normal-vision separation, 3:1 contrast). Every state also has its own icon shape,
+   so color never carries the state alone. */
+:root {
+  --wf-done: #3d9a6b;
+  --wf-verify: #8d68c8;
+  --wf-needs_fix: #d0507f;
+  --wf-doing: #a88a1e;
+  --wf-ready: #4a7ad6;
+  --wf-backlog: #707b82;
+  --wf-legacy_completed: #5f8a74;
+  --wf-canceled: #68737b;
+  --wf-ink-on: #151719;
+}
 .project-toolbar {
   display: flex;
   align-items: center;
@@ -99,18 +114,6 @@
 .project-progress-copy b {
   color: #8fd1b0;
   font-size: 16px;
-}
-.progress-track {
-  grid-column: 1 / -1;
-  height: 3px;
-  overflow: hidden;
-  border-radius: 3px;
-  background: #29312f;
-}
-.progress-track span {
-  height: 100%;
-  margin: 0;
-  background: #78bf9e;
 }
 .project-assignment {
   display: flex;
@@ -1061,22 +1064,11 @@ p {
   border-left-color: #a3d4b7;
 }
 .state-icon {
-  font-size: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   width: 18px;
-  color: #818a92;
-}
-.state-icon.ready {
-  color: #9ea7d7;
-}
-.state-icon.doing {
-  color: #d0ad6b;
-}
-.state-icon.verify {
-  color: #bba1d2;
-}
-.state-icon.done,
-.state-icon.legacy_completed {
-  color: #a0cfb2;
+  flex-shrink: 0;
 }
 .row-content {
   min-width: 0;
@@ -1131,6 +1123,15 @@ p {
 }
 .fix-badge {
   color: #dfa799 !important;
+}
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.status-badge.needs-fix {
+  background: #3a2430;
+  color: #e7a9c1;
 }
 .claim-meta {
   max-width: 90px;
@@ -2226,4 +2227,340 @@ dialog::backdrop {
 .field.template-labels {
   flex-direction: row;
   align-items: center;
+}
+
+/* Workflow icons and segmented progress */
+.wf-icon {
+  display: block;
+  flex-shrink: 0;
+  color: var(--wf-backlog);
+}
+.wf-icon.ready { color: var(--wf-ready); }
+.wf-icon.needs_fix { color: var(--wf-needs_fix); }
+.wf-icon.doing { color: var(--wf-doing); }
+.wf-icon.verify { color: var(--wf-verify); }
+.wf-icon.done { color: var(--wf-done); }
+.wf-icon.legacy_completed { color: var(--wf-legacy_completed); }
+.wf-icon.canceled { color: var(--wf-canceled); }
+.wf-icon-ink { stroke: var(--wf-ink-on); }
+.wf-progress {
+  min-width: 0;
+  display: grid;
+  gap: 9px;
+}
+.wf-bar-wrap {
+  position: relative;
+  min-width: 0;
+}
+.wf-bar {
+  position: relative;
+  display: flex;
+  gap: 2px;
+  height: 6px;
+  border-radius: 4px;
+  background: #252c2e;
+}
+.wf-progress.xs .wf-bar { height: 4px; gap: 1px; }
+.wf-progress.md .wf-bar { height: 10px; }
+.wf-progress .wf-seg {
+  margin: 0;
+  display: block;
+  flex: 0 1 0;
+  min-width: 3px;
+  height: 100%;
+  background: var(--wf-backlog);
+}
+.wf-progress .wf-seg:first-child { border-radius: 4px 0 0 4px; }
+.wf-progress .wf-seg:last-child { border-radius: 0 4px 4px 0; }
+.wf-progress .wf-seg:only-child { border-radius: 4px; }
+.wf-progress .wf-seg.done { background: var(--wf-done); }
+.wf-progress .wf-seg.verify { background: var(--wf-verify); }
+.wf-progress .wf-seg.needs_fix { background: var(--wf-needs_fix); }
+.wf-progress .wf-seg.doing { background: var(--wf-doing); }
+.wf-progress .wf-seg.ready { background: var(--wf-ready); }
+.wf-progress .wf-seg.backlog { background: var(--wf-backlog); }
+.wf-progress .wf-bar:hover .wf-seg { opacity: 0.55; }
+.wf-progress .wf-bar:hover .wf-seg:hover { opacity: 1; }
+.wf-progress .wf-tooltip {
+  margin: 0;
+  position: absolute;
+  bottom: calc(100% + 7px);
+  z-index: 5;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px;
+  border: 1px solid #3a4446;
+  border-radius: 6px;
+  background: #1f2527;
+  color: #dfe5e2;
+  font-size: 10px;
+  white-space: nowrap;
+  pointer-events: none;
+  transform: translateX(-50%);
+  box-shadow: 0 6px 16px #0007;
+}
+.wf-legend {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  color: #9ba6ad;
+  font-size: 10px;
+}
+.wf-progress .wf-legend li {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+.wf-progress .wf-legend span {
+  display: inline;
+  margin: 0;
+  color: inherit;
+  font-size: inherit;
+}
+.wf-progress .wf-legend b {
+  color: #dfe5e2;
+  font-weight: 550;
+}
+.wf-progress .wf-legend small {
+  color: #6b797f;
+}
+.wf-progress .wf-legend .excluded {
+  color: #6b797f;
+}
+.project-progress-bar {
+  grid-column: 1 / -1;
+}
+.list-progress {
+  display: grid;
+  gap: 8px;
+  margin: 0 32px 16px;
+}
+.list-progress-head {
+  color: #828d94;
+  font-size: 10px;
+}
+.list-progress-head b {
+  color: #dfe5e2;
+  font-size: 12px;
+  font-weight: 600;
+}
+.group-progress {
+  display: grid;
+  justify-items: end;
+  gap: 5px;
+  min-width: 120px;
+}
+.group-progress .wf-progress {
+  width: 120px;
+}
+.release-chip .wf-progress {
+  margin-top: 3px;
+}
+.planning-link {
+  flex-wrap: wrap;
+}
+.planning-link .wf-progress {
+  flex-basis: 100%;
+}
+.info-card .wf-progress {
+  max-width: 260px;
+  margin: 6px 0;
+}
+
+/* Workflow page */
+.wf-overview {
+  display: grid;
+  gap: 14px;
+  margin: 0 32px 20px;
+  padding: 16px 18px;
+  border: 1px solid #293532;
+  border-radius: 10px;
+  background: #171c1b;
+}
+.wf-overview-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px 16px;
+}
+.wf-overview-head > div {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.wf-overview-label {
+  color: #9ba6ad;
+  font-size: 11px;
+}
+.wf-overview-head b {
+  color: #dfe5e2;
+  font-size: 22px;
+  font-weight: 600;
+}
+.wf-overview-note {
+  color: #71817b;
+  font-size: 10px;
+}
+.wf-board {
+  margin: 0 32px 22px;
+  padding: 8px;
+  border: 1px solid #262d30;
+  border-radius: 12px;
+  background: #191c1e;
+}
+.wf-category {
+  margin: 6px 0 2px;
+  padding: 10px 14px;
+  border-radius: 7px;
+  background: #1f2325;
+  color: #9ba6ad;
+  font-size: 11px;
+}
+.wf-category:first-child {
+  margin-top: 0;
+}
+.wf-state-row {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  padding: 11px 14px;
+  border-bottom: 1px solid #23292c;
+  border-radius: 7px;
+  text-align: left;
+}
+.wf-state-row:last-child {
+  border-bottom: 0;
+}
+.wf-state-row:hover,
+.wf-state-row:focus-visible {
+  background: #1f2527;
+}
+.wf-tile {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  flex-shrink: 0;
+  border-radius: 8px;
+  background: #262c2f;
+}
+.wf-tile.ready { background: #1f2638; }
+.wf-tile.needs_fix { background: #34202a; }
+.wf-tile.doing { background: #2e2a1a; }
+.wf-tile.verify { background: #2a2236; }
+.wf-tile.done { background: #1c2d24; }
+.wf-tile.legacy_completed { background: #212a26; }
+.wf-state-copy {
+  min-width: 0;
+  flex: 1;
+  display: grid;
+  gap: 4px;
+}
+.wf-state-name {
+  color: #e9ebed;
+  font-size: 12px;
+  font-weight: 550;
+}
+.wf-default {
+  color: #828d94;
+  font-weight: 400;
+}
+.wf-state-sub {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 6px;
+  color: #828d94;
+  font-size: 10px;
+}
+.wf-share {
+  color: #9ba6ad;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+}
+.wf-open {
+  color: #4f5a60;
+  font-size: 14px;
+}
+.wf-section {
+  margin: 0 32px;
+}
+.wf-projects {
+  display: grid;
+  gap: 2px;
+  margin: 8px 32px 32px;
+}
+.wf-project-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(120px, 2fr) 44px;
+  align-items: center;
+  gap: 16px;
+  padding: 10px 12px;
+  border-radius: 7px;
+  text-align: left;
+}
+.wf-project-row:hover,
+.wf-project-row:focus-visible {
+  background: #1d2225;
+}
+.wf-project-name {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+}
+.wf-project-name b {
+  overflow: hidden;
+  color: #dfe5e2;
+  font-size: 11px;
+  font-weight: 500;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-project-name small {
+  overflow: hidden;
+  color: #71817b;
+  font-size: 9px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.wf-project-percent {
+  color: #9ba6ad;
+  font-size: 11px;
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+}
+.wf-empty {
+  color: #71817b;
+  font-size: 11px;
+}
+@container list-pane (max-width: 520px) {
+  .wf-overview,
+  .wf-board,
+  .list-progress {
+    margin-left: 16px;
+    margin-right: 16px;
+  }
+  .wf-section {
+    margin: 0 16px;
+  }
+  .wf-projects {
+    margin-left: 16px;
+    margin-right: 16px;
+  }
+  .wf-project-row {
+    grid-template-columns: minmax(0, 1fr) 44px;
+  }
+  .wf-project-row .wf-progress {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+}
+@media (forced-colors: active) {
+  .wf-progress .wf-seg { forced-color-adjust: none; border: 1px solid CanvasText; }
 }
