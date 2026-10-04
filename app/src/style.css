@@ -2564,3 +2564,31 @@ dialog::backdrop {
 @media (forced-colors: active) {
   .wf-progress .wf-seg { forced-color-adjust: none; border: 1px solid CanvasText; }
 }
+
+/* Status filter */
+.project-filter select.filtered {
+  border-color: #4d6a5e;
+  color: #cfe1d8;
+}
+.wf-progress .wf-legend-item {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin: -3px -6px;
+  padding: 3px 6px;
+  border: 1px solid transparent;
+  border-radius: 5px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.wf-progress .wf-legend-item:hover,
+.wf-progress .wf-legend-item:focus-visible {
+  background: #232a2c;
+  color: #dfe5e2;
+}
+.wf-progress .wf-legend .selected .wf-legend-item {
+  border-color: #4d6a5e;
+  background: #22302a;
+  color: #dfe5e2;
+}

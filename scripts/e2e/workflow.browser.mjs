@@ -185,7 +185,7 @@ try {
   await page.waitForSelector(".issue-row");
   const fixRows = await page.locator(".issue-row").count();
   check("Needs fix opens a list of exactly the failed-verification issue", fixRows === 1 && (await page.locator(".issue-row").innerText()).includes(fixture.needsFixKey), fixRows);
-  check("The list is titled with the state", (await page.locator(".page-heading h1").innerText()) === "Needs fix");
+  check("Selecting a state sets the list's status filter", (await page.locator('select[aria-label="Filter by status"]').inputValue()) === "needs_fix");
   await page.locator('nav[aria-label="Praxis"] button[title="Workflow states and progress"]').click();
   await page.locator(".wf-state-row", { has: page.locator(".wf-state-name", { hasText: /^Doing/ }) }).click();
   check("Doing excludes the needs-fix issue", (await page.locator(".issue-row").count()) === 2);
@@ -202,12 +202,48 @@ try {
   check("Project summary legend names every counted state", ["Done", "Verify", "Needs fix", "Doing", "Ready", "Backlog"].every((n) => legend.includes(n)), legend.replace(/\n/g, " "));
   await page.screenshot({ path: join(evidence, "project-summary.png") });
 
+  // Status filter within a project
+  const status = page.locator('select[aria-label="Filter by status"]');
+  const rows = () => page.locator(".issue-row").count();
+  const options = await status.locator("option").allInnerTexts();
+  check("Status options show counts for the project scope", ["All statuses · 12", "Open · 9", "Backlog · 2", "Ready · 2", "Needs fix · 1", "Doing · 2", "Verify · 2", "Done · 3", "Canceled · 0"].every((o) => options.includes(o)), options.join(" | "));
+  for (const [value, count] of [["doing", 2], ["backlog", 2], ["verify", 2], ["done", 3], ["open", 9], ["all", 12]]) {
+    await status.selectOption(value);
+    check(`Status filter ${value} shows ${count} project issues`, (await rows()) === count, await rows());
+  }
+  await status.selectOption("doing");
+  const doingStates = await page.locator(".issue-row .wf-icon").evaluateAll((els) => els.map((el) => el.getAttribute("aria-label")));
+  check("Filtered rows are all in the chosen state", doingStates.length === 2 && doingStates.every((n) => n === "Doing"), doingStates.join(","));
+  check("Footer reports the filtered share", (await page.locator(".list-footer").innerText()).includes("2 work items · Doing of 12"));
+  await page.screenshot({ path: join(evidence, "status-filter-doing.png") });
+  await status.selectOption("all");
+  const verifyLegend = page.locator(".project-summary .wf-legend-item", { hasText: "Verify" });
+  await verifyLegend.click();
+  check("Clicking a legend entry filters to that state", (await status.inputValue()) === "verify" && (await rows()) === 2 && (await verifyLegend.getAttribute("aria-pressed")) === "true");
+  await verifyLegend.click();
+  check("Clicking the active legend entry clears the filter", (await status.inputValue()) === "all" && (await rows()) === 12);
+  await status.selectOption("canceled");
+  check("An empty status shows a clear empty state", (await page.locator(".empty h2").innerText()) === "No canceled issues here");
+  await page.getByRole("button", { name: "Show all statuses" }).click();
+  check("Show all statuses restores the list", (await status.inputValue()) === "all" && (await rows()) === 12);
+  await status.selectOption("doing");
+  await page.locator('nav[aria-label="Praxis"] button[title="Inbox"]').click();
+  check("Sidebar views reset the status filter (project filter kept)", (await status.inputValue()) === "all" && (await rows()) === 2, await rows());
+  await page.locator('nav[aria-label="Praxis"] button[title="All work"]').click();
+  await page.selectOption('select[aria-label="Filter by project"]', fixture.a.id);
+
   // By-project grouping shows a bar per group; All work shows a scope strip.
   await page.selectOption('select[aria-label="Filter by project"]', "all");
   await page.getByRole("button", { name: "By project" }).click();
   check("Each project group header has a progress bar", (await page.locator(".issue-group .group-progress .wf-bar").count()) === 2);
   check("Unfiltered list shows a scope progress strip", (await page.locator(".list-progress .wf-bar").count()) === 1);
   await page.screenshot({ path: join(evidence, "by-project.png") });
+  await status.selectOption("backlog");
+  const groups = await page.locator(".issue-group > header strong").allInnerTexts();
+  check("By-project grouping applies the status filter per project", JSON.stringify(groups) === JSON.stringify(["Workflow alpha", "Workflow bravo"]) && (await rows()) === 3, `${groups.join(",")} · ${await rows()} rows`);
+  check("The scope strip keeps the unfiltered distribution", (await page.locator(".list-progress-head").innerText()).includes("4 of 14 counted"));
+  await page.screenshot({ path: join(evidence, "by-project-backlog.png") });
+  await status.selectOption("all");
 
   // Reload keeps counts (persisted state, not client-only)
   await page.reload();

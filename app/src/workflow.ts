@@ -96,6 +96,19 @@ export function workflowState(issue: Pick<Issue, "status" | "needs_fix">): Workf
   return issue.status;
 }
 
+/** Issue-list status filter: every state, open work only, or one workflow state. */
+export type StatusFilter = "all" | "open" | WorkflowState;
+
+export function isStatusFilter(value: string): value is StatusFilter {
+  return value === "all" || value === "open" || isWorkflowState(value);
+}
+
+export function matchesStatusFilter(issue: Pick<Issue, "status" | "needs_fix">, filter: StatusFilter) {
+  if (filter === "all") return true;
+  if (filter === "open") return !TERMINAL.includes(issue.status);
+  return workflowState(issue) === filter;
+}
+
 export interface WorkflowBreakdown {
   counts: Record<WorkflowState, number>;
   total: number;

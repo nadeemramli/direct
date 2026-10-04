@@ -17,13 +17,20 @@
     label = "Progress",
     size = "sm",
     legend = false,
+    selected = null,
+    onselect,
   }: {
     data: WorkflowBreakdown;
     label?: string;
     size?: "xs" | "sm" | "md";
     legend?: boolean;
+    /** Highlights this state's legend entry (an active filter). */
+    selected?: WorkflowState | null;
+    /** Makes legend entries buttons that choose a state. */
+    onselect?: (state: WorkflowState) => void;
   } = $props();
 
+  const EXCLUDED: WorkflowState[] = ["legacy_completed", "canceled"];
   let segments = $derived(progressSegments(data));
   let hover = $state<{ state: WorkflowState; x: number } | null>(null);
   let hovered = $derived(hover ? segments.find((s) => s.state === hover?.state) : undefined);
@@ -37,6 +44,21 @@
     return `${WORKFLOW_STATES[state].name} · ${count} of ${data.eligible} (${percentLabel(count, data.eligible)})`;
   }
 </script>
+
+{#snippet entry(state: WorkflowState, count: number, note: string)}
+  <StatusIcon {state} size={11} title={false} />
+  <span>{WORKFLOW_STATES[state].name}</span>
+  <b>{count}</b>
+  <small>{note}</small>
+{/snippet}
+{#snippet item(state: WorkflowState, count: number, note: string)}
+  {#if onselect}<button
+      class="wf-legend-item"
+      aria-pressed={selected === state}
+      title={selected === state ? "Show all statuses" : `Show only ${WORKFLOW_STATES[state].name}`}
+      onclick={() => onselect(state)}>{@render entry(state, count, note)}</button
+    >{:else}{@render entry(state, count, note)}{/if}
+{/snippet}
 
 <div class="wf-progress {size}">
   <div class="wf-bar-wrap">
@@ -62,21 +84,15 @@
   {#if legend}
     <ul class="wf-legend" aria-label={`${label} by state`}>
       {#each segments as segment (segment.state)}
-        <li>
-          <StatusIcon state={segment.state} size={11} title={false} />
-          <span>{WORKFLOW_STATES[segment.state].name}</span>
-          <b>{segment.count}</b>
-          <small>{percentLabel(segment.count, data.eligible)}</small>
+        <li class:selected={selected === segment.state}>
+          {@render item(segment.state, segment.count, percentLabel(segment.count, data.eligible))}
         </li>
       {/each}
-      {#if data.counts.legacy_completed}<li class="excluded">
-          <StatusIcon state="legacy_completed" size={11} title={false} />
-          <span>Legacy done</span><b>{data.counts.legacy_completed}</b><small>not counted</small>
-        </li>{/if}
-      {#if data.counts.canceled}<li class="excluded">
-          <StatusIcon state="canceled" size={11} title={false} />
-          <span>Canceled</span><b>{data.counts.canceled}</b><small>not counted</small>
-        </li>{/if}
+      {#each EXCLUDED as state (state)}
+        {#if data.counts[state]}<li class="excluded" class:selected={selected === state}>
+            {@render item(state, data.counts[state], "not counted")}
+          </li>{/if}
+      {/each}
       {#if !data.total}<li class="excluded"><span>No issues yet</span></li>{/if}
     </ul>
   {/if}

@@ -28,7 +28,17 @@
   import ProgressBar from "./ProgressBar.svelte";
   import StatusIcon from "./StatusIcon.svelte";
   import WorkflowView from "./WorkflowView.svelte";
-  import { WORKFLOW_STATES, breakdown, isWorkflowState, workflowState } from "./workflow";
+  import {
+    WORKFLOW_CATEGORIES,
+    WORKFLOW_STATES,
+    breakdown,
+    isStatusFilter,
+    isWorkflowState,
+    matchesStatusFilter,
+    workflowState,
+    type StatusFilter,
+    type WorkflowState,
+  } from "./workflow";
   import { provenanceLabel } from "./templates";
   import {
     STATE_NOTE,
@@ -88,6 +98,7 @@
   let view = $state("all");
   let product = $state("all");
   let projectFilter = $state("all");
+  let statusFilter = $state<StatusFilter>("all");
   let labelFilter = $state("all");
   let listMode = $state<"flat" | "project">("flat");
   let sortMode = $state<"updated" | "key">("updated");
@@ -453,6 +464,7 @@
     view: string;
     product: string;
     projectFilter: string;
+    statusFilter: StatusFilter;
     labelFilter: string;
     search: string;
     listMode: "flat" | "project";
@@ -545,7 +557,8 @@
     );
   }
   let attention = $derived(parents.filter(needsMe).length);
-  let visible = $derived(
+  // Every list filter except status; the status filter and its counts apply on top.
+  let scopedIssues = $derived(
     parents
       .filter(
         (i) =>
@@ -585,6 +598,16 @@
           : b.updated_at - a.updated_at || a.key.localeCompare(b.key),
       ),
   );
+  let visible = $derived(
+    exactSearchKey ? scopedIssues : scopedIssues.filter((i) => matchesStatusFilter(i, statusFilter)),
+  );
+  let scopedBreakdown = $derived(breakdown(scopedIssues));
+  let statusFilterLabel = $derived(
+    statusFilter === "all" ? "" : statusFilter === "open" ? "Open" : WORKFLOW_STATES[statusFilter].name,
+  );
+  function toggleStatusFilter(state: WorkflowState) {
+    statusFilter = statusFilter === state ? "all" : state;
+  }
   let visibleReleases = $derived(
     data.releases
       .filter(
@@ -730,7 +753,6 @@
       ),
     );
   }
-  let visibleBreakdown = $derived(breakdown(visible));
   function workflowForProductKey(key: string) {
     const product = data.products.find((candidate) => candidate.key === key);
     return data.release_workflows.find((workflow) => workflow.product_id === product?.id);
@@ -876,6 +898,7 @@
         view,
         product,
         projectFilter,
+        statusFilter,
         labelFilter,
         search,
         listMode,
@@ -897,6 +920,7 @@
     view = point.view;
     product = point.product;
     projectFilter = point.projectFilter;
+    statusFilter = point.statusFilter;
     labelFilter = point.labelFilter;
     search = point.search;
     listMode = point.listMode;
@@ -2132,6 +2156,7 @@
           onclick={() => {
             view = "all";
             product = "all";
+            statusFilter = "all";
           }}><span>▤</span> All work <small>{parents.length}</small></button
         >
         <button
@@ -2140,6 +2165,7 @@
           onclick={() => {
             view = "needs";
             product = "all";
+            statusFilter = "all";
           }}
           ><span>◈</span> Needs me
           <small class:highlight={attention > 0}>{attention}</small></button
@@ -2150,6 +2176,7 @@
           onclick={() => {
             view = "backlog";
             product = "all";
+            statusFilter = "all";
           }}
           ><span>▧</span> Inbox
           <small>{parents.filter((i) => i.status === "backlog").length}</small
@@ -2161,6 +2188,7 @@
           onclick={() => {
             view = "active";
             product = "all";
+            statusFilter = "all";
           }}><span>◐</span> Ready & doing</button
         >
         <button
@@ -2169,6 +2197,7 @@
           onclick={() => {
             view = "done";
             product = "all";
+            statusFilter = "all";
           }}><span>✓</span> Completed</button
         >
         <button
@@ -2496,13 +2525,15 @@
           reviewReady={data.review_ready_runs || []}
           bind:product
           onstate={(state) => {
-            view = state;
+            view = "all";
+            statusFilter = state;
             projectFilter = "all";
             labelFilter = "all";
             search = "";
           }}
           onproject={(id) => {
             view = "all";
+            statusFilter = "all";
             projectFilter = id;
             labelFilter = "all";
             search = "";
@@ -2781,6 +2812,31 @@
                 >{/each}
             </select>
           </label>
+          <label class="project-filter"
+            >Status
+            <select
+              aria-label="Filter by status"
+              class:filtered={statusFilter !== "all"}
+              value={statusFilter}
+              onchange={(event) => {
+                const value = event.currentTarget.value;
+                statusFilter = isStatusFilter(value) ? value : "all";
+              }}
+            >
+              <option value="all">All statuses · {scopedBreakdown.total}</option>
+              <option value="open"
+                >Open · {scopedBreakdown.total -
+                  scopedBreakdown.counts.done -
+                  scopedBreakdown.counts.legacy_completed -
+                  scopedBreakdown.counts.canceled}</option
+              >
+              {#each WORKFLOW_CATEGORIES as category (category.id)}<optgroup label={category.name}>
+                  {#each category.states as state (state)}<option value={state}
+                      >{WORKFLOW_STATES[state].name} · {scopedBreakdown.counts[state]}</option
+                    >{/each}
+                </optgroup>{/each}
+            </select>
+          </label>
           <button
             class="text-button"
             disabled={!connected || busy}
@@ -2894,7 +2950,14 @@
               >
             </div>
             <div class="project-progress-bar">
-              <ProgressBar data={projectBreakdown(selectedProject.id)} label="Project completion" size="md" legend />
+              <ProgressBar
+                data={projectBreakdown(selectedProject.id)}
+                label="Project completion"
+                size="md"
+                legend
+                selected={isWorkflowState(statusFilter) ? statusFilter : null}
+                onselect={toggleStatusFilter}
+              />
             </div>
             <div class="project-planning-links">
               <div>
@@ -2947,11 +3010,18 @@
             </div>
           </div>
         {/if}
-        {#if !selectedProject && visible.length}<div class="list-progress">
+        {#if !selectedProject && scopedIssues.length}<div class="list-progress">
             <div class="list-progress-head">
-              <b>{visibleBreakdown.percent}%</b> verified done · {visibleBreakdown.counts.done} of {visibleBreakdown.eligible} counted
+              <b>{scopedBreakdown.percent}%</b> verified done · {scopedBreakdown.counts.done} of {scopedBreakdown.eligible} counted
             </div>
-            <ProgressBar data={visibleBreakdown} label={`${title} progress`} size="sm" legend />
+            <ProgressBar
+              data={scopedBreakdown}
+              label={`${title} progress`}
+              size="sm"
+              legend
+              selected={isWorkflowState(statusFilter) ? statusFilter : null}
+              onselect={toggleStatusFilter}
+            />
           </div>{/if}
         <div class="list-label"><span>ISSUE</span><span>STATUS</span></div>
         <div class="issue-list">
@@ -2982,6 +3052,12 @@
             {/each}
           {:else if visible.length}
             {#each visible as i}{@render issueRow(i)}{/each}
+          {:else if statusFilter !== "all" && scopedIssues.length}<div class="empty">
+              <div class="empty-symbol">◎</div>
+              <h2>No {statusFilterLabel.toLowerCase()} issues here</h2>
+              <p>{scopedIssues.length} issue{scopedIssues.length === 1 ? "" : "s"} match the other filters in a different status.</p>
+              <button class="secondary" onclick={() => (statusFilter = "all")}>Show all statuses</button>
+            </div>
           {:else}<div class="empty">
               <div class="empty-symbol">
                 {search ? "⌕" : view === "needs" ? "✓" : "↗"}
@@ -3009,7 +3085,9 @@
         </div>
         <div class="list-footer">
           <span
-            >{visible.length} work item{visible.length === 1 ? "" : "s"}</span
+            >{visible.length} work item{visible.length === 1 ? "" : "s"}{statusFilter !== "all"
+              ? ` · ${statusFilterLabel} of ${scopedIssues.length}`
+              : ""}</span
           ><span
             >Changes appear automatically <span
               class="connection-dot"

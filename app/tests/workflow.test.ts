@@ -5,7 +5,9 @@ import {
   WORKFLOW_CATEGORIES,
   WORKFLOW_STATES,
   breakdown,
+  isStatusFilter,
   isWorkflowState,
+  matchesStatusFilter,
   percentLabel,
   progressSegments,
   progressSummary,
@@ -74,4 +76,18 @@ test("percent labels never round a nonzero share to zero", () => {
   assert.equal(percentLabel(0, 300), "0%");
   assert.equal(percentLabel(1, 3), "33%");
   assert.equal(percentLabel(1, 0), "0%");
+});
+
+test("status filter matches open work and single workflow states", () => {
+  assert.ok(matchesStatusFilter(issue("doing", true), "needs_fix"));
+  assert.ok(!matchesStatusFilter(issue("doing", true), "doing"));
+  assert.ok(matchesStatusFilter(issue("doing"), "doing"));
+  for (const status of ["backlog", "ready", "doing", "verify"] as Status[])
+    assert.ok(matchesStatusFilter(issue(status), "open"), status);
+  for (const status of ["done", "legacy_completed", "canceled"] as Status[]) {
+    assert.ok(!matchesStatusFilter(issue(status), "open"), status);
+    assert.ok(matchesStatusFilter(issue(status), "all"), status);
+  }
+  assert.ok(isStatusFilter("open") && isStatusFilter("all") && isStatusFilter("verify"));
+  assert.ok(!isStatusFilter("needs") && !isStatusFilter("constructor"));
 });
