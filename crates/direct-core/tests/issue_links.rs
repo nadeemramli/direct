@@ -263,3 +263,214 @@ fn direct_verification_runs_remain_distinct_from_imported_legacy_links() {
     );
     validate_archive(&archive).unwrap();
 }
+
+#[test]
+fn create_issue_writes_requested_relations_atomically_and_replays_exactly() {
+    let dir = TempDir::new().unwrap();
+    let mut store = Store::open(&dir.path().join("db")).unwrap();
+    let parent = issue(&mut store, "DIR", "Parent");
+    let blocker = issue(&mut store, "DIR", "Blocker");
+    let related = issue(&mut store, "DIR", "Related");
+    let create = json!({
+        "op":"create_issue","product":"DIR","title":"Child","request_id":"create-with-links",
+        "links":[
+            {"target_key":parent["key"],"kind":"parent"},
+            {"target_key":blocker["key"],"kind":"blocked_by"},
+            {"target_key":related["key"],"kind":"related"}
+        ]
+    });
+    let created = send(&mut store, create.clone(), Role::Human).unwrap();
+    assert_eq!(created["version"], 1);
+    assert_eq!(created["status"], "backlog");
+
+    let context = send(
+        &mut store,
+        json!({"op":"context","key":created["key"]}),
+        Role::Agent,
+    )
+    .unwrap();
+    let links = context["issue_links"].as_array().unwrap();
+    assert_eq!(links.len(), 3);
+    for (target, kind) in [
+        (&parent, "parent"),
+        (&blocker, "blocked_by"),
+        (&related, "related"),
+    ] {
+        assert!(links.iter().any(|link| link["direction"] == "outgoing"
+            && link["kind"] == kind
+            && link["issue"]["key"] == target["key"]
+            && link["created_by"] == "relation-builder"));
+        let incoming = send(
+            &mut store,
+            json!({"op":"context","key":target["key"]}),
+            Role::Agent,
+        )
+        .unwrap();
+        assert!(incoming["issue_links"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|link| link["direction"] == "incoming"
+                && link["kind"] == kind
+                && link["issue"]["key"] == created["key"]));
+        // Linking from a new issue never edits the target.
+        assert_eq!(incoming["issue"]["version"], 1);
+    }
+
+    // An exact retry replays the stored response and adds nothing.
+    let replay = send(&mut store, create.clone(), Role::Human).unwrap();
+    assert_eq!(replay, created);
+    let archive = store.export().unwrap();
+    assert_eq!(archive.issue_links.len(), 3);
+    assert_eq!(archive.issues.len(), 4);
+    validate_archive(&archive).unwrap();
+    let mut changed = create;
+    changed["links"].as_array_mut().unwrap().pop();
+    assert_eq!(
+        send(&mut store, changed, Role::Human).unwrap_err().code,
+        "conflict"
+    );
+
+    // The created relations obey the same rules afterwards: a second parent is refused.
+    assert_eq!(
+        send(
+            &mut store,
+            json!({"op":"create_issue_link","key":created["key"],"expected_version":1,"target_key":related["key"],"kind":"parent"}),
+            Role::Agent,
+        )
+        .unwrap_err()
+        .code,
+        "conflict"
+    );
+}
+
+#[test]
+fn a_rejected_relation_rejects_the_whole_create() {
+    let dir = TempDir::new().unwrap();
+    let mut store = Store::open(&dir.path().join("db")).unwrap();
+    let a = issue(&mut store, "DIR", "A");
+    let b = issue(&mut store, "DIR", "B");
+    send(
+        &mut store,
+        json!({"op":"create_product","key":"ALT","name":"Other"}),
+        Role::Human,
+    )
+    .unwrap();
+    let other = issue(&mut store, "ALT", "Other");
+    // A new issue has no incoming links, so it cannot close a cycle; every other rule applies.
+    let cases = [
+        (
+            json!([{"target_key":other["key"],"kind":"related"}]),
+            "invalid",
+            "same product",
+        ),
+        (
+            json!([{"target_key":"DIR-99","kind":"related"}]),
+            "not_found",
+            "",
+        ),
+        (
+            json!([{"target_key":a["key"],"kind":"related"},{"target_key":a["key"],"kind":"related"}]),
+            "conflict",
+            "already exists",
+        ),
+        (
+            json!([{"target_key":a["key"],"kind":"parent"},{"target_key":b["key"],"kind":"parent"}]),
+            "conflict",
+            "only one parent",
+        ),
+        (
+            json!([{"target_key":a["key"],"kind":"legacy_verification"}]),
+            "invalid",
+            "external provenance",
+        ),
+        (json!([{"target_key":a["key"],"kind":"sibling"}]), "", ""),
+    ];
+    for (links, code, message) in cases {
+        let request = json!({"op":"create_issue","product":"DIR","title":"Rejected","links":links});
+        if code.is_empty() {
+            // Unknown kinds fail to parse before reaching the store.
+            assert!(serde_json::from_value::<Request>(json!({
+                "actor":"a","request_id":"r","op":"create_issue","product":"DIR","title":"x","links":links
+            }))
+            .is_err());
+            continue;
+        }
+        let error = send(&mut store, request, Role::Human).unwrap_err();
+        assert_eq!(error.code, code, "{links}");
+        assert!(
+            error.message.starts_with("Relation to "),
+            "{}",
+            error.message
+        );
+        assert!(error.message.contains(message), "{}", error.message);
+    }
+    let archive = store.export().unwrap();
+    assert_eq!(archive.issues.len(), 3);
+    assert!(archive.issue_links.is_empty());
+    // No key was consumed by the rejected attempts.
+    let next = issue(&mut store, "DIR", "Next");
+    assert_eq!(next["key"], "DIR-3");
+}
+
+#[test]
+fn verification_children_cannot_be_related_at_creation() {
+    let dir = TempDir::new().unwrap();
+    let mut store = Store::open(&dir.path().join("db")).unwrap();
+    let delivery = issue(&mut store, "DIR", "Delivery");
+    let key = delivery["key"].as_str().unwrap();
+    send(
+        &mut store,
+        json!({"op":"update_issue","key":key,"expected_version":1,"title":"Delivery","body":"Build it","acceptance":"It works","owner":"owner","priority":"high"}),
+        Role::Agent,
+    )
+    .unwrap();
+    send(
+        &mut store,
+        json!({"op":"ready","key":key,"expected_version":2}),
+        Role::Human,
+    )
+    .unwrap();
+    send(
+        &mut store,
+        json!({"op":"claim","key":key,"expected_version":3}),
+        Role::Agent,
+    )
+    .unwrap();
+    let submitted = send(
+        &mut store,
+        json!({"op":"submit","key":key,"expected_version":4,"build_ref":"build","e2e":{"build_ref":"build","environment":"isolated fixture","entrypoint":"fixture client","scenarios":"Fixture workflow observed","outcome":"passed","delivered_build_ref":"build","delivery_check":"Fixture build"},"delivery_ref":"branch","summary":"Done","checks":"Passed","steps":[{"instruction":"Try it","expected":"Works"}]}),
+        Role::Agent,
+    )
+    .unwrap();
+    let child = submitted["verification_key"].as_str().unwrap();
+    let error = send(
+        &mut store,
+        json!({"op":"create_issue","product":"DIR","title":"Rejected","links":[{"target_key":child,"kind":"related"}]}),
+        Role::Human,
+    )
+    .unwrap_err();
+    assert_eq!(error.code, "invalid");
+    assert!(error.message.contains("verification children"));
+    assert!(store.export().unwrap().issue_links.is_empty());
+}
+
+#[test]
+fn creates_without_relations_keep_their_request_hash() {
+    let dir = TempDir::new().unwrap();
+    let mut store = Store::open(&dir.path().join("db")).unwrap();
+    let legacy = json!({"op":"create_issue","product":"DIR","title":"Plain","request_id":"plain"});
+    let created = send(&mut store, legacy.clone(), Role::Human).unwrap();
+    // An explicit empty list is the same logical command as an omitted one.
+    let mut explicit = legacy;
+    explicit["links"] = json!([]);
+    assert_eq!(send(&mut store, explicit, Role::Human).unwrap(), created);
+    let request: Request = serde_json::from_value(json!({
+        "actor":"a","request_id":"r","op":"create_issue","product":"DIR","title":"Plain"
+    }))
+    .unwrap();
+    assert!(serde_json::to_value(&request.command)
+        .unwrap()
+        .get("links")
+        .is_none());
+}

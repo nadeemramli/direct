@@ -1645,6 +1645,54 @@ fn issue_link_context(conn: &Connection, key: &str) -> Result<Vec<Value>> {
     });
     Ok(result)
 }
+/// The rules every new link must satisfy, shared by `CreateIssueLink` and the
+/// relations requested with `CreateIssue`. `links` must include links already
+/// accepted earlier in the same transaction.
+fn check_issue_link(
+    conn: &Connection,
+    links: &[IssueLink],
+    source: &Issue,
+    target_key: &str,
+    kind: &IssueLinkKind,
+    external_source: Option<&str>,
+    external_id: Option<&str>,
+) -> Result<()> {
+    let key = source.key.as_str();
+    if key == target_key {
+        return Err(err("invalid", "An issue cannot link to itself"));
+    }
+    let target = issue(conn, target_key)?;
+    if target.parent.is_some() {
+        return Err(err(
+            "invalid",
+            "Generated verification children cannot be linked as general work",
+        ));
+    }
+    if target.product_id != source.product_id {
+        return Err(err(
+            "invalid",
+            "Linked issues must belong to the same product",
+        ));
+    }
+    validate_external_provenance(kind, external_source, external_id)?;
+    if links
+        .iter()
+        .any(|link| same_logical_link(link, key, target_key, kind))
+    {
+        return Err(err("conflict", "This issue link already exists"));
+    }
+    if *kind == IssueLinkKind::Parent
+        && links
+            .iter()
+            .any(|link| link.kind == IssueLinkKind::Parent && link.source_key == key)
+    {
+        return Err(err("conflict", "An issue can have only one parent"));
+    }
+    if would_create_cycle(links, key, target_key, kind) {
+        return Err(err("invalid", "Issue link would create a dependency cycle"));
+    }
+    Ok(())
+}
 fn same_logical_link(
     link: &IssueLink,
     source_key: &str,
@@ -2363,40 +2411,16 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                     held(&i, actor, at)?;
                 }
             }
-            if key == target_key {
-                return Err(err("invalid", "An issue cannot link to itself"));
-            }
-            let target = issue(tx, target_key)?;
-            if target.parent.is_some() {
-                return Err(err(
-                    "invalid",
-                    "Generated verification children cannot be linked as general work",
-                ));
-            }
-            if target.product_id != i.product_id {
-                return Err(err(
-                    "invalid",
-                    "Linked issues must belong to the same product",
-                ));
-            }
-            validate_external_provenance(kind, external_source.as_deref(), external_id.as_deref())?;
             let links = all::<IssueLink>(tx, "issue_links")?;
-            if links
-                .iter()
-                .any(|link| same_logical_link(link, key, target_key, kind))
-            {
-                return Err(err("conflict", "This issue link already exists"));
-            }
-            if *kind == IssueLinkKind::Parent
-                && links
-                    .iter()
-                    .any(|link| link.kind == IssueLinkKind::Parent && link.source_key == *key)
-            {
-                return Err(err("conflict", "An issue can have only one parent"));
-            }
-            if would_create_cycle(&links, key, target_key, kind) {
-                return Err(err("invalid", "Issue link would create a dependency cycle"));
-            }
+            check_issue_link(
+                tx,
+                &links,
+                &i,
+                target_key,
+                kind,
+                external_source.as_deref(),
+                external_id.as_deref(),
+            )?;
             let link = IssueLink {
                 id: id(),
                 source_key: key.clone(),
@@ -3565,6 +3589,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             project_id,
             template,
             intake,
+            links,
         } => {
             required(title, "title")?;
             if let Some(context) = intake {
@@ -3629,8 +3654,44 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 }
                 i.template = Some(used);
             }
+            // Requested relations are checked against everything already accepted,
+            // so one bad relation rejects the whole create. The owner UI shows a
+            // "Relation to KEY:" refusal beside the relations it came from.
+            let mut accepted = all::<IssueLink>(tx, "issue_links")?;
+            let existing = accepted.len();
+            for requested in links {
+                check_issue_link(
+                    tx,
+                    &accepted,
+                    &i,
+                    &requested.target_key,
+                    &requested.kind,
+                    None,
+                    None,
+                )
+                .map_err(|e| {
+                    err(
+                        e.code,
+                        format!("Relation to {}: {}", requested.target_key, e.message),
+                    )
+                })?;
+                accepted.push(IssueLink {
+                    id: id(),
+                    source_key: i.key.clone(),
+                    target_key: requested.target_key.clone(),
+                    kind: requested.kind.clone(),
+                    external_source: None,
+                    external_id: None,
+                    created_by: actor.into(),
+                    created_at: at,
+                });
+            }
             put_issue(tx, &i)?;
             emit(tx, actor, "issue_created", &i.key, at)?;
+            for link in &accepted[existing..] {
+                put_issue_link(tx, link)?;
+                emit(tx, actor, "issue_link_created", &i.key, at)?;
+            }
             Ok(json!(i))
         }
         Command::UpdateIssue {

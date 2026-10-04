@@ -1,8 +1,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::{ArgGroup, Parser, Subcommand};
 use direct_core::{
-    Archive, Command, ExecutionMode, GitTraceKind, PlanningScope, Request, Role, Step, Store,
-    TemplateSelection, TheoriaDocumentInput,
+    Archive, Command, ExecutionMode, GitTraceKind, IssueLinkKind, NewIssueLink, PlanningScope,
+    Request, Role, Step, Store, TemplateSelection, TheoriaDocumentInput,
 };
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -191,6 +191,10 @@ enum Cli {
         /// Keep a label the template suggests (repeatable).
         #[arg(long = "keep-label", requires = "template_id")]
         keep_labels: Vec<String>,
+        /// Relate the new issue to an existing one, as KIND:KEY where KIND is parent,
+        /// blocked_by, or related (repeatable). All relations are created atomically.
+        #[arg(long = "link", value_name = "KIND:KEY")]
+        links: Vec<String>,
     },
     /// Execute a JSON agent command from a file or stdin. Human approval is unavailable here.
     Call {
@@ -477,6 +481,22 @@ fn template_selection(
         execution_mode,
         labels,
     }))
+}
+
+fn new_issue_link(spec: &str) -> Result<NewIssueLink> {
+    let (kind, target_key) = spec
+        .split_once(':')
+        .ok_or_else(|| anyhow!("--link must be KIND:KEY, for example blocked_by:DIR-4"))?;
+    let kind = match kind {
+        "parent" => IssueLinkKind::Parent,
+        "blocked_by" => IssueLinkKind::BlockedBy,
+        "related" => IssueLinkKind::Related,
+        _ => bail!("--link kind must be parent, blocked_by or related"),
+    };
+    Ok(NewIssueLink {
+        target_key: target_key.trim().to_string(),
+        kind,
+    })
 }
 
 fn workflow_request(actor: &str, command: &Cli) -> Result<Option<Request>> {
@@ -822,6 +842,7 @@ fn run() -> Result<()> {
                     template_revision,
                     execution_mode,
                     keep_labels,
+                    links,
                 } => {
                     let template = template_selection(
                         template_id,
@@ -848,6 +869,11 @@ fn run() -> Result<()> {
                             planning_scope,
                             project_id,
                             template,
+                            links: links
+                                .iter()
+                                .map(String::as_str)
+                                .map(new_issue_link)
+                                .collect::<Result<_>>()?,
                         },
                     }
                 }
