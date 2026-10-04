@@ -23,6 +23,8 @@
   } from "./layout";
   import type { ScrollAnchor, Section } from "./layout";
   import DraftAssistant from "./DraftAssistant.svelte";
+  import DraftRelations from "./DraftRelations.svelte";
+  import type { DraftRelation } from "./relations";
   import TemplatePicker from "./TemplatePicker.svelte";
   import type { Applied as TemplateApplied } from "./TemplatePicker.svelte";
   import TemplatesView from "./TemplatesView.svelte";
@@ -308,6 +310,8 @@
   });
   // Product repository and knowledge-vault paths (DIR-23 repair).
   let pathsDraft = $state({ product: "", name: "", repo_windows: "", repo_wsl: "", vault_windows: "", vault_wsl: "" });
+  // Relations chosen in the New issue form, created atomically with it.
+  let draftLinks = $state<DraftRelation[]>([]);
   let productDraft = $state({
     key: "",
     name: "",
@@ -1196,6 +1200,7 @@
       version: 0,
     };
     issueTemplate = null;
+    draftLinks = [];
     templateStarter = { brief: "", verification: "" };
     touched = { priority: false, planning_scope: false };
     formDefaults = { priority: draft.priority, planning_scope: draft.planning_scope };
@@ -1218,6 +1223,7 @@
               planning_scope: draft.planning_scope,
               project_id: draft.project_id || null,
               ...(issueTemplate ? { template: issueTemplate } : {}),
+              ...(draftLinks.length ? { links: draftLinks } : {}),
             },
             true,
           )
@@ -4840,6 +4846,12 @@
                 ></label
               >
             </div>
+          {#if modal === "issue"}<DraftRelations
+              issues={parents}
+              productId={data.products.find((p) => p.key === draft.product)?.id || ""}
+              bind:links={draftLinks}
+              refused={error.startsWith("Relation to ") ? error : ""}
+            />{/if}
           {#if modal === "edit"}
             <p class="hint">
               Editing Ready work returns it to Backlog for a fresh readiness

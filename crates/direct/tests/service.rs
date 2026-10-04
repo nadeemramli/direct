@@ -332,6 +332,67 @@ fn templates_cross_the_wire_owner_defines_agents_apply_and_restart_preserves_pro
 }
 
 #[test]
+fn native_create_relates_the_new_issue_atomically() {
+    let temp = tempfile::tempdir().unwrap();
+    let dir = temp.path().join("workspace");
+    let _service = start(&dir);
+    for title in ["Epic", "Blocker"] {
+        native(&dir, &["--actor", "relation-agent", "create", title]);
+    }
+    let issue = native(
+        &dir,
+        &[
+            "--actor",
+            "relation-agent",
+            "create",
+            "Child",
+            "--link",
+            "parent:DIR-1",
+            "--link",
+            "blocked_by:DIR-2",
+            "--link",
+            "related:DIR-2",
+        ],
+    );
+    assert_eq!(issue["key"], "DIR-3");
+    let context = native(&dir, &["context", "DIR-3"]);
+    let kinds: Vec<_> = context["issue_links"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|link| (link["kind"].clone(), link["issue"]["key"].clone()))
+        .collect();
+    assert_eq!(kinds.len(), 3);
+    for (kind, key) in [
+        ("parent", "DIR-1"),
+        ("blocked_by", "DIR-2"),
+        ("related", "DIR-2"),
+    ] {
+        assert!(kinds.contains(&(json!(kind), json!(key))), "{kinds:?}");
+    }
+    // An unknown target or kind rejects the whole create.
+    for link in ["related:DIR-99", "sibling:DIR-1", "DIR-1"] {
+        let output = Process::new(env!("CARGO_BIN_EXE_direct"))
+            .arg("--data-dir")
+            .arg(&dir)
+            .args([
+                "--actor",
+                "relation-agent",
+                "create",
+                "Rejected",
+                "--link",
+                link,
+            ])
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "{link}");
+    }
+    let snapshot = native(&dir, &["list"]);
+    assert_eq!(snapshot["issues"].as_array().unwrap().len(), 3);
+    assert_eq!(snapshot["issue_links"].as_array().unwrap().len(), 3);
+}
+
+#[test]
 fn two_real_clients_claim_once_and_http_enforces_local_capabilities() {
     let temp = tempfile::tempdir().unwrap();
     let dir = temp.path().join("workspace");
