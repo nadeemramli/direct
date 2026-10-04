@@ -739,7 +739,7 @@ impl Store {
         let (source_bundles, source_files, source_records) =
             sources::export_sources(conn, include_source_bytes)?;
         Ok(Archive {
-            format: 13,
+            format: 14,
             workspace_id: conn.query_row(
                 "SELECT value FROM meta WHERE key='workspace_id'",
                 [],
@@ -879,6 +879,8 @@ fn snapshot_issues(conn: &Connection, issues: Vec<Issue>) -> Result<Vec<Value>> 
         .map(|issue| {
             let count = entries.get(&issue.id).copied().unwrap_or(0);
             let mut value = serde_json::to_value(&issue)?;
+            // Screenshot bytes belong in selected issue context/export, never repeated in polling lists.
+            value.as_object_mut().unwrap().remove("intake");
             if let Some(external) = value.get_mut("external").and_then(Value::as_object_mut) {
                 external.insert("history_entries".into(), json!(count));
                 external.insert("history_omitted".into(), json!(count > 0));
@@ -2009,6 +2011,7 @@ fn new_issue(
         .unwrap_or(0);
     let next = current_max.max(historical_max) + 1;
     Ok(Issue {
+        intake: None,
         id: id(),
         key: format!("{}-{next}", p.key),
         product_id: p.id.clone(),
@@ -3561,8 +3564,12 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             planning_scope,
             project_id,
             template,
+            intake,
         } => {
             required(title, "title")?;
+            if let Some(context) = intake {
+                context.validate().map_err(|e| err("invalid", e))?;
+            }
             if !valid_priority(priority) {
                 return Err(err("invalid", "Unknown priority"));
             }
@@ -3586,6 +3593,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 at,
             )?;
             i.acceptance = acceptance.clone();
+            i.intake = intake.clone();
             i.owner = owner.clone();
             i.priority = priority.clone();
             // Product defaults attach the shared definition; they never copy it per product.
@@ -3634,9 +3642,14 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             owner,
             priority,
             planning_scope,
+            intake,
         } => {
             let mut i = version(tx, key, *expected_version)?;
             required(title, "title")?;
+            if let Some(context) = intake {
+                context.validate().map_err(|e| err("invalid", e))?;
+                i.intake = Some(context.clone());
+            }
             if !valid_priority(priority) {
                 return Err(err("invalid", "Unknown priority"));
             }
@@ -4235,8 +4248,19 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
 
 /// Every invariant except retained file bytes (used for merged previews).
 pub(crate) fn validate_archive_structure(a: &Archive) -> Result<()> {
-    if !matches!(a.format, 1..=13) {
+    if !matches!(a.format, 1..=14) {
         return Err(err("unsupported", "Unsupported archive format"));
+    }
+    for issue in &a.issues {
+        if let Some(context) = &issue.intake {
+            if a.format < 14 {
+                return Err(err(
+                    "invalid",
+                    "Original intake context requires archive format 14",
+                ));
+            }
+            context.validate().map_err(|e| err("invalid", e))?;
+        }
     }
     Uuid::parse_str(&a.workspace_id).map_err(|_| err("invalid", "Invalid workspace identity"))?;
     let mut keys = HashSet::new();

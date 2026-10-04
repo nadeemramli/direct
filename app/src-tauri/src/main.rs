@@ -74,9 +74,25 @@ fn main() {
     tauri::Builder::default()
         .invoke_handler(tauri::generate_handler![
             direct_command,
+            direct_draft_brief,
             direct_source_file,
             direct_migration
         ])
         .run(tauri::generate_context!())
         .expect("Unable to run Direct desktop");
+}
+
+#[tauri::command]
+async fn direct_draft_brief(
+    input: direct::drafting::DraftRequest,
+) -> Result<serde_json::Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let dir = direct::data_dir().map_err(|e| e.to_string())?;
+        direct::ensure_service(&dir).map_err(|e| e.to_string())?;
+        direct::Client::new(&dir)
+            .and_then(|client| client.draft_brief(&input))
+            .map_err(|e| e.to_string())
+    })
+    .await
+    .map_err(|e| e.to_string())?
 }

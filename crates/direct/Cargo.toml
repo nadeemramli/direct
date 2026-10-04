@@ -10,7 +10,7 @@ serde.workspace = true
 serde_json = { workspace = true, features = ["raw_value"] }
 uuid.workspace = true
 axum = "0.8"
-tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal"] }
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "process", "time", "io-util"] }
 tower-http = { version = "0.6", features = ["fs", "set-header"] }
 clap = { version = "4", features = ["derive", "env"] }
 reqwest = { version = "0.12", default-features = false, features = ["blocking", "json"] }

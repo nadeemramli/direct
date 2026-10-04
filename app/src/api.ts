@@ -36,6 +36,7 @@ export interface Issue {
   labels?: string[];
   title: string;
   body: string;
+  intake?: IntakeContext;
   acceptance: string;
   owner: string;
   priority: string;
@@ -51,6 +52,23 @@ export interface Issue {
   external?: ExternalIssueRecord | null;
   /** Exact intake template provenance; absent for untemplated work. */
   template?: TemplateUse;
+}
+export interface IntakeImage { data_url: string; caption: string }
+export interface IntakeContext { text: string; images: IntakeImage[] }
+export interface DraftBriefResult {
+  problem: string; expected_outcome: string; acceptance: string[]; questions: string[]; model: string;
+}
+export async function draftBrief(input: {
+  title: string; intake: IntakeContext; body: string; acceptance: string; product: string; project: string;
+}, signal?: AbortSignal): Promise<DraftBriefResult> {
+  if (isTauri()) return abandonable(invoke<DraftBriefResult>("direct_draft_brief", { input }), signal);
+  const response = await fetch("/api/draft-brief", {
+    method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${token}` },
+    body: JSON.stringify(input), signal,
+  });
+  const result = await response.json().catch(() => undefined);
+  if (!response.ok || !result) throw new Error(result?.message || "AI drafting failed; your input is unchanged.");
+  return result as DraftBriefResult;
 }
 export type TemplateTarget = "issue" | "project";
 export type TemplateShape = "delivery" | "discovery_probe" | "bug" | "release";

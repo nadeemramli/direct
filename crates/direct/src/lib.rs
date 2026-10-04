@@ -1,3 +1,4 @@
+pub mod drafting;
 pub mod server;
 use anyhow::{bail, Context, Result};
 use direct_core::{Request, Role};
@@ -144,6 +145,29 @@ pub struct Client {
     http: reqwest::blocking::Client,
 }
 impl Client {
+    pub fn draft_brief(&self, input: &drafting::DraftRequest) -> Result<Value> {
+        let response = self
+            .http
+            .post(format!(
+                "http://127.0.0.1:{}/api/draft-brief",
+                self.endpoint.port
+            ))
+            .bearer_auth(self.token(Role::Human))
+            .json(input)
+            .timeout(Duration::from_secs(drafting::DRAFT_TIMEOUT_SECONDS + 10))
+            .send()?;
+        let status = response.status();
+        let value: Value = response.json()?;
+        if !status.is_success() {
+            anyhow::bail!(
+                "{}",
+                value["message"]
+                    .as_str()
+                    .unwrap_or("AI drafting failed; your input is unchanged")
+            );
+        }
+        Ok(value)
+    }
     pub fn new(dir: &Path) -> Result<Self> {
         Ok(Self {
             endpoint: endpoint(dir)?,
