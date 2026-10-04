@@ -5,15 +5,15 @@
   import { STATUS_LABEL, checksByEnvironment, packetMarkdown, stateClass } from "./handoffs";
 
   let { handoffs }: { handoffs: CloudHandoff[] } = $props();
-  let copied = $state("");
+  let copied = $state<{ id: string; ok: boolean } | null>(null);
 
   const date = (at: number) => new Date(at * 1000).toLocaleString();
   async function copy(h: CloudHandoff) {
     try {
       await navigator.clipboard.writeText(packetMarkdown(h));
-      copied = h.id;
+      copied = { id: h.id, ok: true };
     } catch {
-      copied = "";
+      copied = { id: h.id, ok: false };
     }
   }
 </script>
@@ -32,9 +32,13 @@
       <div class="reference-heading">
         <span class="source-state {stateClass(h)}">{STATUS_LABEL[h.status]}</span>
         <button class="text-button" onclick={() => copy(h)}
-          >{copied === h.id ? "Copied packet" : "Copy packet"}</button
+          >{copied?.id === h.id && copied.ok ? "Copied packet" : "Copy packet"}</button
         >
       </div>
+      {#if copied?.id === h.id && !copied.ok}<p class="source-warning">
+          The clipboard is unavailable here. Print the packet with
+          <code>direct handoff {h.issue_key} --id {h.id}</code>.
+        </p>{/if}
       <dl class="evidence reference-meta">
         <dt>Repository</dt><dd><code>{h.packet.repository}</code> from <code>{h.packet.base_ref}</code></dd>
         <dt>Required model</dt><dd><code>{h.packet.required_model}</code></dd>
