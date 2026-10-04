@@ -350,6 +350,10 @@ fn human(role: Role) -> Result<()> {
     }
 }
 
+/// The archive format this build exports. Format 15 adds the sidebar
+/// arrangement (product order and sections); every older format restores.
+pub const ARCHIVE_FORMAT: u32 = 15;
+
 pub struct Store {
     conn: Connection,
 }
@@ -377,6 +381,7 @@ impl Store {
             if !matches!(
                 schema,
                 "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" | "12" | "13"
+                    | "14"
             ) {
                 return Err(err("unsupported", "Unsupported database schema"));
             }
@@ -391,6 +396,8 @@ impl Store {
                 repo_wsl: String::new(),
                 vault_windows: String::new(),
                 vault_wsl: String::new(),
+                sort_order: 0,
+                section_id: None,
             };
             conn.execute(
                 "INSERT INTO products VALUES (?1,?2,?3)",
@@ -420,7 +427,8 @@ impl Store {
              CREATE TABLE IF NOT EXISTS issue_histories (issue_id TEXT PRIMARY KEY, entries INTEGER NOT NULL, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS templates (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS template_revisions (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-             UPDATE meta SET value='13' WHERE key='schema';",
+             CREATE TABLE IF NOT EXISTS product_sections (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             UPDATE meta SET value='14' WHERE key='schema';",
         )?;
         if upgrade_legacy_project_planning {
             // Before schema 5, a project link was the only way to express project-scoped work.
@@ -483,6 +491,7 @@ impl Store {
                     "review_ready_runs":review_ready_runs,
                     "workspace_id":self.workspace_id()?,
                     "products":all::<Product>(&self.conn,"products")?,
+                    "product_sections":all::<ProductSection>(&self.conn,"product_sections")?,
                     "projects":all::<Project>(&self.conn,"projects")?,
                     "project_progress":all::<Project>(&self.conn,"projects")?.iter().map(|project| project_progress_in(&issues, &project.id)).collect::<Vec<_>>(),
                     "goals":all::<Goal>(&self.conn,"goals")?,
@@ -739,13 +748,14 @@ impl Store {
         let (source_bundles, source_files, source_records) =
             sources::export_sources(conn, include_source_bytes)?;
         Ok(Archive {
-            format: 14,
+            format: ARCHIVE_FORMAT,
             workspace_id: conn.query_row(
                 "SELECT value FROM meta WHERE key='workspace_id'",
                 [],
                 |r| r.get(0),
             )?,
             products: all(conn, "products")?,
+            product_sections: all(conn, "product_sections")?,
             projects: all(conn, "projects")?,
             goals: all(conn, "goals")?,
             milestones: all(conn, "milestones")?,
@@ -787,7 +797,7 @@ impl Store {
             }
         }
         let tx = self.conn.transaction()?;
-        tx.execute_batch("DELETE FROM labels; DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM releases; DELETE FROM release_evidence; DELETE FROM release_workflows; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events'; DELETE FROM source_record_issues; DELETE FROM source_records; DELETE FROM source_chunks; DELETE FROM source_files; DELETE FROM source_bundles; DELETE FROM issue_histories; DELETE FROM templates; DELETE FROM template_revisions;")?;
+        tx.execute_batch("DELETE FROM labels; DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM releases; DELETE FROM release_evidence; DELETE FROM release_workflows; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events'; DELETE FROM source_record_issues; DELETE FROM source_records; DELETE FROM source_chunks; DELETE FROM source_files; DELETE FROM source_bundles; DELETE FROM issue_histories; DELETE FROM templates; DELETE FROM template_revisions; DELETE FROM product_sections;")?;
         tx.execute(
             "UPDATE meta SET value=?1 WHERE key='workspace_id'",
             [a.workspace_id],
@@ -797,6 +807,9 @@ impl Store {
                 "INSERT INTO products VALUES (?1,?2,?3)",
                 params![p.id, p.key, serde_json::to_string(&p)?],
             )?;
+        }
+        for section in a.product_sections {
+            put_product_section(&tx, &section)?;
         }
         for p in a.projects {
             put_project(&tx, &p)?;
@@ -1202,6 +1215,48 @@ fn put_label(conn: &Connection, label: &Label) -> Result<()> {
         params![label.id, serde_json::to_string(label)?],
     )?;
     Ok(())
+}
+fn put_product(conn: &Connection, product: &Product) -> Result<()> {
+    conn.execute(
+        "INSERT INTO products VALUES (?1,?2,?3) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+        params![product.id, product.key, serde_json::to_string(product)?],
+    )?;
+    Ok(())
+}
+fn product_section(conn: &Connection, id: &str) -> Result<ProductSection> {
+    let data: Option<String> = conn
+        .query_row("SELECT data FROM product_sections WHERE id=?1", [id], |r| {
+            r.get(0)
+        })
+        .optional()?;
+    Ok(serde_json::from_str(
+        &data.ok_or_else(|| err("not_found", "Unknown sidebar section"))?,
+    )?)
+}
+fn put_product_section(conn: &Connection, section: &ProductSection) -> Result<()> {
+    conn.execute(
+        "INSERT INTO product_sections VALUES (?1,?2) ON CONFLICT(id) DO UPDATE SET data=excluded.data",
+        params![section.id, serde_json::to_string(section)?],
+    )?;
+    Ok(())
+}
+/// Trimmed section name, unique case-insensitively among the other sections.
+fn product_section_name(
+    existing: &[ProductSection],
+    name: &str,
+    except: Option<&str>,
+) -> Result<String> {
+    let name = name.trim();
+    required(name, "name")?;
+    if name.chars().count() > 80 {
+        return Err(err("invalid", "Section name must be at most 80 characters"));
+    }
+    if existing.iter().any(|section| {
+        Some(section.id.as_str()) != except && section.name.to_lowercase() == name.to_lowercase()
+    }) {
+        return Err(err("conflict", "A sidebar section with this name already exists"));
+    }
+    Ok(name.into())
 }
 /// Canonical names, aliases and Linear origins are unique across the whole workspace taxonomy.
 fn label_taxonomy_conflicts(
@@ -3532,10 +3587,8 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             if key.is_empty() || key.len() > 8 || !key.bytes().all(|c| c.is_ascii_uppercase()) {
                 return Err(err("invalid", "Product key must be 1–8 uppercase letters"));
             }
-            if all::<Product>(tx, "products")?
-                .iter()
-                .any(|p| p.key == *key)
-            {
+            let products = all::<Product>(tx, "products")?;
+            if products.iter().any(|p| p.key == *key) {
                 return Err(err("conflict", "Product key already exists"));
             }
             let p = Product {
@@ -3546,6 +3599,9 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 repo_wsl: repo_wsl.clone(),
                 vault_windows: vault_windows.clone(),
                 vault_wsl: vault_wsl.clone(),
+                // New products join the end of the ungrouped sidebar list.
+                sort_order: products.iter().map(|p| p.sort_order + 1).max().unwrap_or(0),
+                section_id: None,
             };
             tx.execute(
                 "INSERT INTO products VALUES (?1,?2,?3)",
@@ -3553,6 +3609,129 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             )?;
             emit(tx, actor, "product_created", key, at)?;
             Ok(json!(p))
+        }
+        Command::CreateProductSection { name } => {
+            human(role)?;
+            let sections = all::<ProductSection>(tx, "product_sections")?;
+            let section = ProductSection {
+                id: id(),
+                name: product_section_name(&sections, name, None)?,
+                sort_order: sections.iter().map(|s| s.sort_order + 1).max().unwrap_or(0),
+                version: 1,
+                created_at: at,
+                updated_at: at,
+            };
+            put_product_section(tx, &section)?;
+            emit(tx, actor, "product_section_created", &section.id, at)?;
+            Ok(json!(section))
+        }
+        Command::UpdateProductSection {
+            id,
+            expected_version,
+            name,
+        } => {
+            human(role)?;
+            let mut section = product_section(tx, id)?;
+            if section.version != *expected_version {
+                return Err(err("conflict", "Sidebar section changed; refresh and retry"));
+            }
+            let sections = all::<ProductSection>(tx, "product_sections")?;
+            section.name = product_section_name(&sections, name, Some(id))?;
+            section.version += 1;
+            section.updated_at = at;
+            put_product_section(tx, &section)?;
+            emit(tx, actor, "product_section_updated", id, at)?;
+            Ok(json!(section))
+        }
+        Command::DeleteProductSection {
+            id,
+            expected_version,
+        } => {
+            human(role)?;
+            let section = product_section(tx, id)?;
+            if section.version != *expected_version {
+                return Err(err("conflict", "Sidebar section changed; refresh and retry"));
+            }
+            let mut ungrouped = Vec::new();
+            let mut products = all::<Product>(tx, "products")?;
+            products.sort_by_key(|p| p.sort_order);
+            for mut product in products {
+                if product.section_id.as_deref() == Some(id.as_str()) {
+                    product.section_id = None;
+                    put_product(tx, &product)?;
+                    ungrouped.push(product.key);
+                }
+            }
+            tx.execute("DELETE FROM product_sections WHERE id=?1", [id])?;
+            emit(tx, actor, "product_section_deleted", id, at)?;
+            Ok(json!({"deleted": section, "ungrouped_products": ungrouped}))
+        }
+        Command::ArrangeProducts { sections, products } => {
+            human(role)?;
+            let current_sections = all::<ProductSection>(tx, "product_sections")?;
+            let current_products = all::<Product>(tx, "products")?;
+            let stale = || {
+                err(
+                    "conflict",
+                    "The sidebar changed since it was loaded; refresh and arrange again",
+                )
+            };
+            let mut seen = HashSet::new();
+            if sections.len() != current_sections.len()
+                || !sections.iter().all(|id| {
+                    seen.insert(id.as_str()) && current_sections.iter().any(|s| s.id == *id)
+                })
+            {
+                return Err(stale());
+            }
+            let mut seen = HashSet::new();
+            if products.len() != current_products.len()
+                || !products.iter().all(|placement| {
+                    seen.insert(placement.product_id.as_str())
+                        && current_products.iter().any(|p| p.id == placement.product_id)
+                })
+            {
+                return Err(stale());
+            }
+            if products.iter().any(|placement| {
+                placement
+                    .section_id
+                    .as_ref()
+                    .is_some_and(|section| !sections.contains(section))
+            }) {
+                return Err(err("invalid", "A product names an unknown sidebar section"));
+            }
+            for (index, section_id) in sections.iter().enumerate() {
+                let mut section = current_sections
+                    .iter()
+                    .find(|s| s.id == *section_id)
+                    .cloned()
+                    .expect("checked above");
+                if section.sort_order != index as i64 {
+                    section.sort_order = index as i64;
+                    section.version += 1;
+                    section.updated_at = at;
+                    put_product_section(tx, &section)?;
+                }
+            }
+            for (index, placement) in products.iter().enumerate() {
+                let mut product = current_products
+                    .iter()
+                    .find(|p| p.id == placement.product_id)
+                    .cloned()
+                    .expect("checked above");
+                if product.sort_order != index as i64 || product.section_id != placement.section_id
+                {
+                    product.sort_order = index as i64;
+                    product.section_id = placement.section_id.clone();
+                    put_product(tx, &product)?;
+                }
+            }
+            emit(tx, actor, "products_arranged", "sidebar", at)?;
+            Ok(json!({
+                "products": all::<Product>(tx, "products")?,
+                "product_sections": all::<ProductSection>(tx, "product_sections")?,
+            }))
         }
         Command::CreateIssue {
             product,
@@ -4248,7 +4427,7 @@ pub fn validate_archive(a: &Archive) -> Result<()> {
 
 /// Every invariant except retained file bytes (used for merged previews).
 pub(crate) fn validate_archive_structure(a: &Archive) -> Result<()> {
-    if !matches!(a.format, 1..=14) {
+    if !matches!(a.format, 1..=ARCHIVE_FORMAT) {
         return Err(err("unsupported", "Unsupported archive format"));
     }
     for issue in &a.issues {
@@ -4269,6 +4448,36 @@ pub(crate) fn validate_archive_structure(a: &Archive) -> Result<()> {
         if !keys.insert(p.key.clone()) || !ids.insert(p.id.clone()) {
             return Err(err("invalid", "Duplicate product"));
         }
+    }
+    if a.format < 15
+        && (!a.product_sections.is_empty()
+            || a.products
+                .iter()
+                .any(|p| p.sort_order != 0 || p.section_id.is_some()))
+    {
+        return Err(err(
+            "invalid",
+            "Sidebar arrangement requires archive format 15",
+        ));
+    }
+    let mut section_ids = HashSet::new();
+    for (index, section) in a.product_sections.iter().enumerate() {
+        let name = product_section_name(&a.product_sections[..index], &section.name, None)
+            .map_err(|_| err("invalid", "Invalid or duplicate sidebar section"))?;
+        if Uuid::parse_str(&section.id).is_err()
+            || !section_ids.insert(section.id.as_str())
+            || section.version == 0
+            || name != section.name
+        {
+            return Err(err("invalid", "Invalid or duplicate sidebar section"));
+        }
+    }
+    if a.products.iter().any(|p| {
+        p.section_id
+            .as_deref()
+            .is_some_and(|section| !section_ids.contains(section))
+    }) {
+        return Err(err("invalid", "Unresolved sidebar section reference"));
     }
     let product_ids = ids.clone();
     let mut document_ids = HashSet::new();

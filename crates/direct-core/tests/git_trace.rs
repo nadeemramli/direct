@@ -177,7 +177,7 @@ fn commit_and_successful_push_are_claimed_idempotent_and_visible() {
     );
 
     let archive = store.export().unwrap();
-    assert_eq!(archive.format, 14);
+    assert_eq!(archive.format, 15);
     assert_eq!(archive.git_traces.len(), 2);
     validate_archive(&archive).unwrap();
     let before = serde_json::to_value(&archive).unwrap();

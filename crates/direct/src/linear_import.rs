@@ -84,6 +84,8 @@ pub fn dry_run(
         repo_wsl: String::new(),
         vault_windows: String::new(),
         vault_wsl: String::new(),
+        sort_order: 0,
+        section_id: None,
     };
     if product.id.is_empty() || product.key.is_empty() || product.name.is_empty() {
         bail!("Selected project team is missing its id, key, or name");
@@ -220,9 +222,10 @@ pub fn dry_run(
         })
         .sum();
     let archive = Archive {
-        format: 14,
+        format: direct_core::ARCHIVE_FORMAT,
         workspace_id: project_id.to_owned(),
         products: vec![product],
+        product_sections: Vec::new(),
         projects: vec![project],
         goals,
         milestones,

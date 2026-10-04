@@ -58,10 +58,22 @@
     SourceRecordSummary,
     SourceRecordView,
     MigrationPreview,
+    ProductSection,
   } from "./api";
+  import {
+    applyArrangement,
+    arrangement,
+    moveProduct,
+    moveSection,
+    nudgeProduct,
+    nudgeSection,
+    sidebarGroups,
+    type SidebarGroup,
+  } from "./sidebar";
   let data = $state<Snapshot>({
     workspace_id: "",
     products: [],
+    product_sections: [],
     projects: [],
     project_progress: [],
     goals: [],
@@ -183,8 +195,16 @@
   let busy = $state(false);
   let tab = $state("brief");
   let modal = $state<
-    "issue" | "product" | "project" | "goal" | "milestone" | "release" | "workflow" | "label" | "edit" | "delete" | "submit" | null
+    "issue" | "product" | "section" | "project" | "goal" | "milestone" | "release" | "workflow" | "label" | "edit" | "delete" | "submit" | null
   >(null);
+  // Sidebar arrangement (DIR-71).
+  let sidebar = $derived(sidebarGroups(data.products, data.product_sections || []));
+  let sectionDraft = $state({ id: "", name: "", version: 0, products: 0, confirmDelete: false });
+  type Dragging = { kind: "product" | "section"; id: string };
+  let dragging = $state<Dragging | null>(null);
+  /** Where a drop would land: before an item, or at the end of a group. */
+  let dropAt = $state<{ group: string | null; before: string | null } | null>(null);
+  let arranging = $state(false);
   let projectDraft = $state({
     id: "",
     product: "DIR",
@@ -1282,6 +1302,155 @@
       };
     }
   }
+  /**
+   * Show a sidebar move at once, then store the complete arrangement. A
+   * refusal (for example a product created elsewhere meanwhile) or an
+   * unconfirmed write puts back what Direct actually holds.
+   */
+  async function arrange(next: SidebarGroup[] | null, focusId = "", moved = "") {
+    if (!next || arranging || !connected) return;
+    const payload = arrangement(next);
+    const previous = { products: data.products, sections: data.product_sections || [] };
+    const local = applyArrangement(previous.products, previous.sections, payload);
+    data.products = local.products;
+    data.product_sections = local.sections;
+    arranging = true;
+    error = "";
+    if (focusId) {
+      await tick();
+      document.querySelector<HTMLElement>(`[data-sidebar-id="${focusId}"]`)?.focus();
+    }
+    try {
+      await commit({ op: "arrange_products", ...payload });
+      if (moved) sidebarStatus = moved;
+    } catch (e) {
+      data.products = previous.products;
+      data.product_sections = previous.sections;
+      error = `The sidebar order was not saved: ${failureText(e)}`;
+      await refresh().catch(() => undefined);
+    } finally {
+      arranging = false;
+    }
+  }
+  let sidebarStatus = $state("");
+  function groupName(sectionId: string | null) {
+    return (data.product_sections || []).find((s) => s.id === sectionId)?.name || "Ungrouped";
+  }
+  function placementText(next: SidebarGroup[], productId: string) {
+    const group = next.find((g) => g.products.some((p) => p.id === productId));
+    const index = group ? group.products.findIndex((p) => p.id === productId) : -1;
+    const name = data.products.find((p) => p.id === productId)?.name || "Product";
+    return `${name} moved to ${groupName(group?.section?.id ?? null)}, position ${index + 1} of ${group?.products.length ?? 0}.`;
+  }
+  function moveProductTo(productId: string, group: string | null, before: string | null) {
+    const next = moveProduct(sidebar, productId, group, before);
+    if (next) arrange(next, "", placementText(next, productId));
+  }
+  function productKey(event: KeyboardEvent, productId: string) {
+    if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    event.preventDefault();
+    const next = nudgeProduct(sidebar, productId, event.key === "ArrowUp" ? -1 : 1);
+    if (next) arrange(next, productId, placementText(next, productId));
+  }
+  function sectionKey(event: KeyboardEvent, sectionId: string) {
+    if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
+    event.preventDefault();
+    const next = nudgeSection(sidebar, sectionId, event.key === "ArrowUp" ? -1 : 1);
+    const index = next ? next.findIndex((g) => g.section?.id === sectionId) : -1;
+    if (next)
+      arrange(next, sectionId, `Section ${groupName(sectionId)} moved to position ${index} of ${next.length - 1}.`);
+  }
+  function startDrag(event: DragEvent, kind: Dragging["kind"], id: string) {
+    if (!connected || arranging) {
+      event.preventDefault();
+      return;
+    }
+    dragging = { kind, id };
+    event.dataTransfer?.setData("text/plain", id);
+    if (event.dataTransfer) event.dataTransfer.effectAllowed = "move";
+  }
+  function endDrag() {
+    dragging = null;
+    dropAt = null;
+    sectionDropBefore = undefined;
+  }
+  /** Upper half of an item drops before it; the lower half, after it. */
+  function lowerHalf(event: DragEvent) {
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    return event.clientY > rect.top + rect.height / 2;
+  }
+  function overProduct(event: DragEvent, group: SidebarGroup, index: number) {
+    if (dragging?.kind !== "product") return;
+    event.preventDefault();
+    const after = lowerHalf(event);
+    dropAt = {
+      group: group.section?.id ?? null,
+      before: after ? (group.products[index + 1]?.id ?? null) : group.products[index].id,
+    };
+  }
+  function overGroupStart(event: DragEvent, group: SidebarGroup) {
+    if (dragging?.kind !== "product") return;
+    event.preventDefault();
+    dropAt = { group: group.section?.id ?? null, before: group.products[0]?.id ?? null };
+  }
+  let sectionDropBefore = $state<string | null | undefined>(undefined);
+  function overSection(event: DragEvent, index: number) {
+    if (dragging?.kind === "product") return overGroupStart(event, sidebar[index]);
+    if (dragging?.kind !== "section") return;
+    event.preventDefault();
+    sectionDropBefore = lowerHalf(event)
+      ? (sidebar[index + 1]?.section?.id ?? null)
+      : sidebar[index].section!.id;
+  }
+  function drop(event: DragEvent) {
+    event.preventDefault();
+    const current = dragging;
+    const target = dropAt;
+    const sectionTarget = sectionDropBefore;
+    endDrag();
+    if (current?.kind === "product" && target)
+      moveProductTo(current.id, target.group, target.before);
+    if (current?.kind === "section" && sectionTarget !== undefined) {
+      const next = moveSection(sidebar, current.id, sectionTarget);
+      if (next) arrange(next, "", `Section ${groupName(current.id)} moved.`);
+    }
+  }
+  function editSection(section?: ProductSection) {
+    sectionDraft = section
+      ? {
+          id: section.id,
+          name: section.name,
+          version: section.version,
+          products: data.products.filter((p) => p.section_id === section.id).length,
+          confirmDelete: false,
+        }
+      : { id: "", name: "", version: 0, products: 0, confirmDelete: false };
+    modal = "section";
+  }
+  async function saveSection(event: SubmitEvent) {
+    event.preventDefault();
+    const command = sectionDraft.id
+      ? {
+          op: "update_product_section",
+          id: sectionDraft.id,
+          expected_version: sectionDraft.version,
+          name: sectionDraft.name,
+        }
+      : { op: "create_product_section", name: sectionDraft.name };
+    if (await act(command, true)) modal = null;
+  }
+  async function deleteSection() {
+    if (!sectionDraft.confirmDelete) {
+      sectionDraft.confirmDelete = true;
+      return;
+    }
+    const command = {
+      op: "delete_product_section",
+      id: sectionDraft.id,
+      expected_version: sectionDraft.version,
+    };
+    if (await act(command, true)) modal = null;
+  }
   function editProject(p?: Project) {
     projectDraft = p
       ? {
@@ -2038,6 +2207,12 @@
 
 {#snippet addProductButton()}
   <button
+    class="icon-button add-section"
+    aria-label="Add sidebar section"
+    title="Add a section to group products"
+    onclick={() => editSection()}
+    disabled={!connected}>⊞</button
+  ><button
     class="icon-button"
     aria-label="Add product"
     onclick={() => (modal = "product")}
@@ -2185,18 +2360,81 @@
         >
       </nav>{/if}
       {@render sectionToggle("products", "PRODUCTS", addProductButton)}
-      {#if sectionOpen("products")}<nav aria-label="Products">
-        {#each data.products as p}<button
-            title={p.name}
-            class:active={product === p.id}
-            onclick={() => {
-              product = p.id;
-              view = "all";
-            }}
-            ><span class="product-icon">{p.key.slice(0, 1)}</span><span class="nav-text"
-              >{p.name}</span
-            ><small>{parents.filter((i) => i.product_id === p.id).length}</small></button
-          >{/each}
+      {#if sectionOpen("products")}<nav
+          aria-label="Products"
+          aria-describedby="product-order-help"
+          class="product-nav"
+          class:dragging={!!dragging}
+        >
+        <span id="product-order-help" class="visually-hidden"
+          >Drag products or sections to reorder them, or press Alt with the up or down arrow.</span
+        >
+        {#each sidebar as group, groupIndex (group.section?.id ?? "")}
+          {@const groupId = group.section?.id ?? null}
+          {#if group.section}
+            {@const section = group.section}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="product-section-head"
+              class:drop-before={dragging?.kind === "section" && sectionDropBefore === section.id}
+              class:drop-into={dragging?.kind === "product" && dropAt?.group === section.id && dropAt.before === (group.products[0]?.id ?? null)}
+              ondragover={(event) => overSection(event, groupIndex)}
+              ondrop={drop}
+            >
+              <button
+                class="product-section-name"
+                data-sidebar-id={section.id}
+                draggable={connected}
+                title={`${section.name} · drag or Alt+↑/↓ to reorder sections`}
+                aria-label={`Section ${section.name}, ${group.products.length} ${group.products.length === 1 ? "product" : "products"}`}
+                ondragstart={(event) => startDrag(event, "section", section.id)}
+                ondragend={endDrag}
+                onkeydown={(event) => sectionKey(event, section.id)}
+                ><span class="nav-text">{section.name}</span></button
+              ><button
+                class="icon-button section-edit"
+                aria-label={`Rename or delete section ${section.name}`}
+                title="Rename or delete section"
+                disabled={!connected}
+                onclick={() => editSection(section)}>✎</button
+              >
+            </div>
+          {/if}
+          {#each group.products as p, index (p.id)}<button
+              title={`${p.name} · drag or Alt+↑/↓ to reorder`}
+              class:active={product === p.id}
+              class:grouped={!!group.section}
+              class:drop-before={dragging?.kind === "product" && dropAt?.group === groupId && dropAt.before === p.id}
+              class:drop-after={dragging?.kind === "product" && dropAt?.group === groupId && dropAt.before === null && index === group.products.length - 1}
+              class:being-dragged={dragging?.id === p.id}
+              data-sidebar-id={p.id}
+              draggable={connected}
+              ondragstart={(event) => startDrag(event, "product", p.id)}
+              ondragend={endDrag}
+              ondragover={(event) => overProduct(event, group, index)}
+              ondrop={drop}
+              onkeydown={(event) => productKey(event, p.id)}
+              onclick={() => {
+                product = p.id;
+                view = "all";
+              }}
+              ><span class="product-icon">{p.key.slice(0, 1)}</span><span class="nav-text"
+                >{p.name}</span
+              ><small>{parents.filter((i) => i.product_id === p.id).length}</small></button
+            >{/each}
+          {#if group.products.length === 0 && (group.section || dragging?.kind === "product")}
+            <!-- svelte-ignore a11y_no_static_element_interactions -->
+            <div
+              class="product-drop-zone"
+              class:drop-into={dragging?.kind === "product" && dropAt?.group === groupId}
+              ondragover={(event) => overGroupStart(event, group)}
+              ondrop={drop}
+            >
+              <span class="nav-text">{group.section ? "Drag products here" : "Drop here to ungroup"}</span>
+            </div>
+          {/if}
+        {/each}
+        <span class="visually-hidden" aria-live="polite">{sidebarStatus}</span>
       </nav>{/if}
     </div>
     <div class="sidebar-bottom">
@@ -3792,6 +4030,10 @@
           ? labelDraft.id
             ? "Edit label"
             : "New label"
+        : modal === "section"
+          ? sectionDraft.id
+            ? "Edit sidebar section"
+            : "New sidebar section"
         : modal === "product"
           ? "New product"
           : modal === "submit"
@@ -3831,6 +4073,10 @@
                 ? labelDraft.id
                   ? "Refine a shared label"
                   : "Define a shared label"
+              : modal === "section"
+                ? sectionDraft.id
+                  ? "Rename or remove the section"
+                  : "Group products in the sidebar"
               : modal === "product"
                 ? "A space for your product"
                 : modal === "submit"
@@ -4236,6 +4482,47 @@
               >{labelDraft.id ? `Editing version ${labelDraft.version}` : ""}</span
             ><button class="primary" disabled={busy}
               >{labelDraft.id ? "Save label" : "Create label"}</button
+            >
+          </div>
+        </form>
+      {:else if modal === "section"}<form class="modal-form" onsubmit={saveSection}>
+          <label class="field"
+            >Section name<input
+              required
+              maxlength="80"
+              disabled={formPending}
+              bind:value={sectionDraft.name}
+              placeholder="e.g. Teroka"
+            /></label
+          >
+          <p class="hint">
+            {sectionDraft.id
+              ? "Drag products onto the section in the sidebar to add or remove them."
+              : "The section appears in the sidebar under Products. Drag products onto it to group them."}
+          </p>
+          {#if sectionDraft.id && sectionDraft.confirmDelete}<div class="info-card warning" role="alert">
+              <span class="card-symbol">!</span>
+              <div>
+                <b>Delete “{sectionDraft.name}”?</b>
+                <p>
+                  {sectionDraft.products
+                    ? `Its ${sectionDraft.products} ${sectionDraft.products === 1 ? "product returns" : "products return"} to the ungrouped list. No product or issue is deleted.`
+                    : "It has no products. No product or issue is deleted."}
+                </p>
+              </div>
+            </div>{/if}
+          <div class="modal-footer">
+            {#if sectionDraft.id}<button
+                type="button"
+                class="danger-button"
+                disabled={busy}
+                onclick={deleteSection}
+                >{sectionDraft.confirmDelete ? "Delete section" : "Delete section…"}</button
+              >{/if}
+            <span class="hint"
+              >{sectionDraft.id ? `Editing version ${sectionDraft.version}` : ""}</span
+            ><button class="primary" disabled={busy}
+              >{sectionDraft.id ? "Save section" : "Create section"}</button
             >
           </div>
         </form>

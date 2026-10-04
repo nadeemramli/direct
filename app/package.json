@@ -7,7 +7,7 @@
     "dev": "vite --host 127.0.0.1 --port 1420 --strictPort",
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
-    "test": "node --test tests/connection.test.ts",
+    "test": "node --test tests/connection.test.ts tests/sidebar.test.ts",
     "tauri": "tauri"
   },
   "dependencies": {

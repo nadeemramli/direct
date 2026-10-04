@@ -37,6 +37,8 @@ fn workspace() -> Archive {
         repo_wsl: String::new(),
         vault_windows: String::new(),
         vault_wsl: String::new(),
+        sort_order: 0,
+        section_id: None,
     };
     let projects: Vec<Project> = (0..30)
         .map(|index| Project {
@@ -135,9 +137,10 @@ fn workspace() -> Archive {
         })
         .collect();
     Archive {
-        format: 14,
+        format: direct_core::ARCHIVE_FORMAT,
         workspace_id: "00000000-0000-4000-8000-00000000bbbb".into(),
         products: vec![product],
+        product_sections: Vec::new(),
         projects,
         goals,
         milestones,

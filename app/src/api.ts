@@ -24,6 +24,18 @@ export interface Product {
   repo_wsl: string;
   vault_windows: string;
   vault_wsl: string;
+  /** Sidebar position (DIR-71); older services omit it. */
+  sort_order?: number;
+  section_id?: string | null;
+}
+/** An owner-defined sidebar group of products (DIR-71). */
+export interface ProductSection {
+  id: string;
+  name: string;
+  sort_order: number;
+  version: number;
+  created_at: number;
+  updated_at: number;
 }
 export interface Issue {
   id: string;
@@ -492,6 +504,7 @@ export interface Snapshot {
   review_ready_runs?: string[];
   workspace_id: string;
   products: Product[];
+  product_sections?: ProductSection[];
   projects: Project[];
   project_progress?: ProjectProgress[];
   goals: Goal[];

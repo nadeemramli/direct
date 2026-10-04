@@ -373,8 +373,8 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             };
         }
     }
-    if expected.format < 14 {
-        expected.format = 14;
+    if expected.format < direct_core::ARCHIVE_FORMAT {
+        expected.format = direct_core::ARCHIVE_FORMAT;
     }
     fs::create_dir(restore_dir)
         .context("Create the recovery workspace beneath an existing parent")?;
@@ -413,6 +413,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             "theoria_records": true,
             "labels": true,
             "templates_and_provenance": true,
+            "sidebar_arrangement": true,
             "events_and_request_replays": true
         },
         "source_format": source_format,
@@ -421,6 +422,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
         "workspace_id": archive.workspace_id,
         "records": {
             "products": archive.products.len(),
+            "product_sections": archive.product_sections.len(),
             "projects": archive.projects.len(),
             "goals": archive.goals.len(),
             "milestones": archive.milestones.len(),
@@ -1205,7 +1207,7 @@ mod tests {
         let report = recovery_check(&source, &temp.path().join("restored")).unwrap();
         assert_eq!(report["semantic_archive_match"], true);
         assert_eq!(report["byte_for_byte_archive_match"], true);
-        assert_eq!(report["restored_format"], 14);
+        assert_eq!(report["restored_format"], direct_core::ARCHIVE_FORMAT);
         assert_eq!(report["records"]["templates"], 1);
         assert_eq!(report["records"]["template_revisions"], 2);
     }
@@ -1226,7 +1228,7 @@ mod tests {
             )
             .unwrap();
             assert_eq!(report["source_format"], format);
-            assert_eq!(report["restored_format"], 14);
+            assert_eq!(report["restored_format"], direct_core::ARCHIVE_FORMAT);
             assert_eq!(report["records"]["labels"], 0);
             assert_eq!(report["compatibility_upgrade_applied"], true);
             assert_eq!(report["semantic_archive_match"], true);

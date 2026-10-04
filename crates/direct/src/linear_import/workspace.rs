@@ -729,6 +729,8 @@ impl<'a> Builder<'a> {
                 repo_wsl: String::new(),
                 vault_windows: String::new(),
                 vault_wsl: String::new(),
+                sort_order: 0,
+                section_id: None,
             });
             self.record(
                 TEAMS,
@@ -2259,7 +2261,7 @@ impl<'a> Builder<'a> {
         }
 
         let mut archive = Archive {
-            format: 14,
+            format: direct_core::ARCHIVE_FORMAT,
             workspace_id: deterministic_uuid("linear-workspace", &{
                 let mut ids: Vec<_> = self
                     .products
@@ -2270,6 +2272,7 @@ impl<'a> Builder<'a> {
                 ids.join(",")
             }),
             products: self.products,
+            product_sections: Vec::new(),
             projects: self.projects,
             goals: self.goals,
             milestones: self.milestones,
