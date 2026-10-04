@@ -158,7 +158,7 @@ pub fn check_destination(dest: &Path) -> Result<PathBuf> {
         )
     })?;
     if !dest.is_dir() {
-        bail!("Destination {} must be a directory", dest.display());
+        bail!("Destination {} must be a directory", plain(&dest));
     }
     if dest.parent().is_none() {
         bail!("Refusing to publish into a filesystem root");
@@ -167,19 +167,29 @@ pub fn check_destination(dest: &Path) -> Result<PathBuf> {
         if home.starts_with(&dest) {
             bail!(
                 "Refusing to publish into {}: that is the home directory or above it, which would install globally",
-                dest.display()
+                plain(&dest)
             );
         }
         for global in [".claude", ".codex", ".agents", ".config"] {
             if dest.starts_with(home.join(global)) {
                 bail!(
                     "Refusing to publish inside {}: global harness configuration is out of scope",
-                    home.join(global).display()
+                    plain(&home.join(global))
                 );
             }
         }
     }
     Ok(dest)
+}
+
+/// The user-facing form of a canonical path. Windows canonicalization yields
+/// verbatim `\\?\C:\...` paths; Direct records and shows `C:\...`.
+pub fn plain(path: &Path) -> String {
+    let text = path.display().to_string();
+    match text.strip_prefix(r"\\?\") {
+        Some(rest) if !rest.starts_with(r"UNC\") => rest.to_string(),
+        _ => text,
+    }
 }
 
 /// Resolve a planned relative path under `dest`, refusing anything that could
@@ -248,6 +258,37 @@ pub fn plan_destination(dest: &Path, plan: Vec<(String, String)>) -> Result<Vec<
         );
     }
     Ok(out)
+}
+
+/// Delete introduced files whose content still matches their recorded hash,
+/// then any directories that left empty (never `dest` itself). Modified files
+/// are kept and returned; already-missing files count as removed.
+pub fn remove_introduced(
+    dest: &Path,
+    files: &[PublishedFile],
+) -> Result<(Vec<String>, Vec<String>)> {
+    let mut removed = Vec::new();
+    let mut kept = Vec::new();
+    for f in files {
+        let path = target(dest, &f.path)?;
+        match fs::read(&path) {
+            Ok(bytes) if content_sha256(&String::from_utf8_lossy(&bytes)) == f.sha256 => {
+                fs::remove_file(&path)?;
+                removed.push(f.path.clone());
+            }
+            Ok(_) => kept.push(f.path.clone()),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => removed.push(f.path.clone()),
+            Err(e) => return Err(e.into()),
+        }
+        let mut dir = path.parent();
+        while let Some(d) = dir {
+            if d == dest || !d.starts_with(dest) || fs::remove_dir(d).is_err() {
+                break;
+            }
+            dir = d.parent();
+        }
+    }
+    Ok((removed, kept))
 }
 
 pub fn run(client: &direct::Client, actor: &str, action: RolesAction) -> Result<()> {
@@ -324,7 +365,7 @@ pub fn run(client: &direct::Client, actor: &str, action: RolesAction) -> Result<
                     "{}",
                     serde_json::to_string_pretty(&json!({
                         "preview":true,"role":format!("{} r{}", role.key, role.revision),
-                        "harness":harness,"destination":dest.display().to_string(),"files":files,
+                        "harness":harness,"destination":plain(&dest),"files":files,
                         "note":"Nothing was written. Re-run with --apply to publish."
                     }))?
                 );
@@ -332,32 +373,47 @@ pub fn run(client: &direct::Client, actor: &str, action: RolesAction) -> Result<
             }
             let request_id = request_id.ok_or_else(|| anyhow!("--apply needs --request-id"))?;
             let mut introduced = Vec::new();
-            for p in planned.iter().filter(|p| p.state == "new") {
-                let path = target(&dest, &p.path)?;
-                fs::create_dir_all(path.parent().expect("planned files have a parent"))?;
-                let mut f = fs::OpenOptions::new()
-                    .write(true)
-                    .create_new(true)
-                    .open(&path)
-                    .with_context(|| format!("{} appeared while publishing", p.path))?;
-                std::io::Write::write_all(&mut f, p.content.as_bytes())?;
-                introduced.push(PublishedFile {
-                    path: p.path.clone(),
-                    sha256: content_sha256(&p.content),
-                });
+            let written = (|| -> Result<()> {
+                for p in planned.iter().filter(|p| p.state == "new") {
+                    let path = target(&dest, &p.path)?;
+                    fs::create_dir_all(path.parent().expect("planned files have a parent"))?;
+                    let mut f = fs::OpenOptions::new()
+                        .write(true)
+                        .create_new(true)
+                        .open(&path)
+                        .with_context(|| format!("{} appeared while publishing", p.path))?;
+                    introduced.push(PublishedFile {
+                        path: p.path.clone(),
+                        sha256: content_sha256(&p.content),
+                    });
+                    std::io::Write::write_all(&mut f, p.content.as_bytes())?;
+                }
+                Ok(())
+            })();
+            let recorded = written.and_then(|()| {
+                call(
+                    client,
+                    actor,
+                    &request_id,
+                    Command::RecordRolePublication {
+                        role_id: role.id.clone(),
+                        harness,
+                        destination: plain(&dest),
+                        introduced: introduced.clone(),
+                    },
+                )
+            });
+            match recorded {
+                Ok(value) => println!("{}", serde_json::to_string_pretty(&value)?),
+                Err(e) => {
+                    // Untracked files must not be left behind: remove what this run wrote.
+                    let (removed, _) = remove_introduced(&dest, &introduced)?;
+                    bail!(
+                        "{e}\nNothing was recorded; removed the {} file(s) this run wrote.",
+                        removed.len()
+                    );
+                }
             }
-            let value = call(
-                client,
-                actor,
-                &request_id,
-                Command::RecordRolePublication {
-                    role_id: role.id.clone(),
-                    harness,
-                    destination: dest.display().to_string(),
-                    introduced,
-                },
-            )?;
-            println!("{}", serde_json::to_string_pretty(&value)?);
         }
         RolesAction::Rollback {
             publication_id,
@@ -375,33 +431,7 @@ pub fn run(client: &direct::Client, actor: &str, action: RolesAction) -> Result<
             }
             let dest = fs::canonicalize(&p.destination)
                 .with_context(|| format!("Destination {} is gone", p.destination))?;
-            let mut removed = Vec::new();
-            let mut kept = Vec::new();
-            for f in &p.introduced {
-                let path = target(&dest, &f.path)?;
-                match fs::read(&path) {
-                    Ok(bytes) if content_sha256(&String::from_utf8_lossy(&bytes)) == f.sha256 => {
-                        fs::remove_file(&path)?;
-                        removed.push(f.path.clone());
-                    }
-                    Ok(_) => kept.push(f.path.clone()),
-                    Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
-                        removed.push(f.path.clone())
-                    }
-                    Err(e) => return Err(e.into()),
-                }
-                // Remove directories this left empty, never the destination itself.
-                let mut dir = path.parent();
-                while let Some(d) = dir {
-                    if d == dest || !d.starts_with(&dest) {
-                        break;
-                    }
-                    if fs::remove_dir(d).is_err() {
-                        break;
-                    }
-                    dir = d.parent();
-                }
-            }
+            let (removed, kept) = remove_introduced(&dest, &p.introduced)?;
             let value = call(
                 client,
                 actor,
@@ -491,6 +521,59 @@ mod tests {
         );
         assert!(plan_destination(&dest, plan(&["../outside.md"])).is_err());
         assert!(plan_destination(&dest, plan(&[".claude/../../x.md"])).is_err());
+    }
+
+    #[test]
+    fn rollback_removes_only_matching_introduced_files() {
+        let dir = TempDir::new().unwrap();
+        let dest = fs::canonicalize(dir.path()).unwrap();
+        fs::create_dir_all(dest.join(".claude/skills/s")).unwrap();
+        fs::create_dir_all(dest.join(".claude/agents")).unwrap();
+        fs::write(dest.join(".claude/settings.json"), "{}").unwrap();
+        fs::write(dest.join(".claude/skills/s/SKILL.md"), "skill").unwrap();
+        fs::write(dest.join(".claude/agents/r.md"), "edited by the user").unwrap();
+        let files = [
+            PublishedFile {
+                path: ".claude/skills/s/SKILL.md".into(),
+                sha256: content_sha256("skill"),
+            },
+            PublishedFile {
+                path: ".claude/agents/r.md".into(),
+                sha256: content_sha256("agent"),
+            },
+            PublishedFile {
+                path: ".claude/agents/gone.md".into(),
+                sha256: content_sha256("x"),
+            },
+        ];
+        let (removed, kept) = remove_introduced(&dest, &files).unwrap();
+        assert_eq!(
+            removed,
+            [".claude/skills/s/SKILL.md", ".claude/agents/gone.md"]
+        );
+        assert_eq!(kept, [".claude/agents/r.md"]);
+        assert!(
+            !dest.join(".claude/skills").exists(),
+            "emptied directories go"
+        );
+        assert!(
+            dest.join(".claude/settings.json").exists(),
+            "unrelated files stay"
+        );
+        assert!(
+            dest.join(".claude/agents/r.md").exists(),
+            "modified files stay"
+        );
+    }
+
+    #[test]
+    fn verbatim_windows_paths_are_recorded_plainly() {
+        assert_eq!(plain(Path::new(r"\\?\C:\work\demo")), r"C:\work\demo");
+        assert_eq!(
+            plain(Path::new(r"\\?\UNC\server\share")),
+            r"\\?\UNC\server\share"
+        );
+        assert_eq!(plain(Path::new("/tmp/demo")), "/tmp/demo");
     }
 
     #[test]
