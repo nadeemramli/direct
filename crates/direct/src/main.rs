@@ -414,6 +414,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
             "labels": true,
             "templates_and_provenance": true,
             "sidebar_arrangement": true,
+            "customer_requests": true,
             "events_and_request_replays": true
         },
         "source_format": source_format,
@@ -423,6 +424,7 @@ fn recovery_check(from: &Path, restore_dir: &Path) -> Result<Value> {
         "records": {
             "products": archive.products.len(),
             "product_sections": archive.product_sections.len(),
+            "customer_requests": archive.customer_signals.len(),
             "projects": archive.projects.len(),
             "goals": archive.goals.len(),
             "milestones": archive.milestones.len(),

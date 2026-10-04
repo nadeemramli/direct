@@ -26,6 +26,8 @@
   import TemplatePicker from "./TemplatePicker.svelte";
   import type { Applied as TemplateApplied } from "./TemplatePicker.svelte";
   import TemplatesView from "./TemplatesView.svelte";
+  import SignalsView from "./SignalsView.svelte";
+  import { signalStatus } from "./signals";
   import { provenanceLabel } from "./templates";
   import {
     STATE_NOTE,
@@ -74,6 +76,7 @@
     workspace_id: "",
     products: [],
     product_sections: [],
+    customer_signals: [],
     projects: [],
     project_progress: [],
     goals: [],
@@ -646,6 +649,8 @@
       ? "Theoria"
       : view === "templates"
       ? "Intake templates"
+      : view === "signals"
+      ? "Customer requests"
       : view === "sources"
       ? "Imported sources"
       : product !== "all"
@@ -1450,6 +1455,25 @@
       expected_version: sectionDraft.version,
     };
     if (await act(command, true)) modal = null;
+  }
+  // Customer requests (DIR-24).
+  let signalFocus = $state("");
+  let signalScope = $state("all");
+  function openSignals(focus = "") {
+    // Open on the product chosen in the sidebar, if any.
+    signalScope = product;
+    signalFocus = focus;
+    view = "signals";
+    selected = "";
+    context = null;
+  }
+  function openSignal(id: string) {
+    openSignals(id);
+  }
+  async function openSignalIssue(key: string) {
+    view = "all";
+    product = "all";
+    await choose(key);
   }
   function editProject(p?: Project) {
     projectDraft = p
@@ -2331,6 +2355,13 @@
           }}><span>▦</span> Intake templates
           <small>{(data.templates || []).filter((t) => t.status === "active").length}</small></button
         >
+        <button
+          title="Customer requests"
+          class:active={view === "signals"}
+          onclick={() => openSignals()}
+          ><span>◌</span> Customer requests
+          <small>{(data.customer_signals || []).filter((s) => !s.archived).length}</small></button
+        >
       </nav>{/if}
       {@render sectionToggle("theoria", "THEORIA")}
       {#if sectionOpen("theoria")}<nav aria-label="Theoria">
@@ -2693,6 +2724,16 @@
         </aside>
       {:else if view === "templates"}
         <TemplatesView {data} {connected} {commit} controls={detailControls} />
+      {:else if view === "signals"}
+        {#key signalFocus}<SignalsView
+            {data}
+            {connected}
+            {commit}
+            product={signalScope}
+            focus={signalFocus}
+            openIssue={openSignalIssue}
+            controls={detailControls}
+          />{/key}
       {:else if view === "sources"}
         <section class="list-panel sources-list" aria-label="Imported sources">
           <div class="page-heading">
@@ -3514,6 +3555,22 @@
                   </div>{/if}{/if}
             {:else if tab === "relations"}
               <div class="relations-panel">
+                {#if context?.customer_signals?.length}<div class="section-label">
+                    CUSTOMER REQUESTS <span>{context.customer_signals.length}</span>
+                  </div>
+                  {#each context.customer_signals as signal (signal.id)}<article class="relation-card">
+                      <span class="relation-kind"
+                        >{signal.promoted_issue_key === context.issue.key ? "Promoted from" : "Requested in"}</span
+                      >
+                      <button class="relation-target" onclick={() => openSignal(signal.id)}>
+                        <b>{signal.summary.split("\n")[0]}</b>
+                      </button>
+                      <small
+                        >{signal.source_kind}{signal.source_reference ? ` · ${signal.source_reference}` : ""}{signal.customer_reference
+                          ? ` · ${signal.customer_reference}`
+                          : ""} · {signalStatus(signal)}</small
+                      >
+                    </article>{/each}{/if}
                 <div class="section-label">
                   ISSUE LINKS <span>{context?.issue_links.length || 0}</span>
                 </div>

@@ -179,7 +179,7 @@ fn issue_guidance_and_method_proposals_are_traceable_without_becoming_decisions(
     );
 
     let archive = store.export().unwrap();
-    assert_eq!(archive.format, 15);
+    assert_eq!(archive.format, 16);
     validate_archive(&archive).unwrap();
     drop(store);
     let reopened = Store::open(&path).unwrap();

@@ -57,6 +57,88 @@ pub struct ProductPlacement {
     pub section_id: Option<String>,
 }
 
+/// Where a customer request came from (format 16).
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalSourceKind {
+    Email,
+    Call,
+    Chat,
+    Support,
+    Sales,
+    Interview,
+    Survey,
+    Social,
+    Other,
+}
+
+/// What a customer request is linked to. Links reference work; the request
+/// text lives only on the signal.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum SignalTargetKind {
+    Issue,
+    Project,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct SignalLink {
+    pub kind: SignalTargetKind,
+    /// Issue key or project ID.
+    pub target: String,
+    #[serde(default)]
+    pub linked_by: String,
+    #[serde(default)]
+    pub linked_at: i64,
+}
+
+/// An external reference an import could not map to Direct work. It is kept
+/// even after the request is linked, so the original source stays traceable.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct UnresolvedMapping {
+    pub external_source: String,
+    pub external_id: String,
+    #[serde(default)]
+    pub note: String,
+}
+
+/// A provenance-bearing customer request or feedback item (format 16). It is
+/// intake data: it never makes work Ready, sets priority or records review.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CustomerSignal {
+    pub id: String,
+    pub product_id: String,
+    pub source_kind: SignalSourceKind,
+    /// Where to find the original, e.g. a ticket number or call note title.
+    #[serde(default)]
+    pub source_reference: String,
+    /// The concise request, stored once.
+    pub summary: String,
+    pub received_at: i64,
+    /// A privacy-safe customer reference (account or segment, not contact details).
+    #[serde(default)]
+    pub customer_reference: String,
+    #[serde(default)]
+    pub external_source: Option<String>,
+    #[serde(default)]
+    pub external_id: Option<String>,
+    #[serde(default)]
+    pub unresolved_mappings: Vec<UnresolvedMapping>,
+    #[serde(default)]
+    pub links: Vec<SignalLink>,
+    /// The Inbox issue this request was promoted into, at most once.
+    #[serde(default)]
+    pub promoted_issue_key: Option<String>,
+    #[serde(default)]
+    pub archived: bool,
+    pub version: u64,
+    pub created_by: String,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Claim {
     pub actor: String,
@@ -715,6 +797,8 @@ pub enum DeletionBlockerKind {
     /// issue's project are visible in context but are not references.
     ReleaseReferences,
     ReleaseEvidence,
+    /// Customer requests linked to the issue (removable) or promoted into it (retained).
+    CustomerSignals,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1170,6 +1254,47 @@ pub enum Command {
         sections: Vec<String>,
         products: Vec<ProductPlacement>,
     },
+    /// Record a customer request (DIR-24). Agents and the owner may capture.
+    CaptureSignal {
+        product: String,
+        source_kind: SignalSourceKind,
+        #[serde(default)]
+        source_reference: String,
+        summary: String,
+        received_at: i64,
+        #[serde(default)]
+        customer_reference: String,
+        #[serde(default)]
+        external_source: Option<String>,
+        #[serde(default)]
+        external_id: Option<String>,
+        #[serde(default)]
+        unresolved_mappings: Vec<UnresolvedMapping>,
+    },
+    LinkSignal {
+        id: String,
+        expected_version: u64,
+        kind: SignalTargetKind,
+        target: String,
+    },
+    UnlinkSignal {
+        id: String,
+        expected_version: u64,
+        kind: SignalTargetKind,
+        target: String,
+    },
+    /// Create one Inbox issue from the request, link it and record provenance.
+    PromoteSignal {
+        id: String,
+        expected_version: u64,
+        #[serde(default)]
+        title: Option<String>,
+    },
+    ArchiveSignal {
+        id: String,
+        expected_version: u64,
+        archived: bool,
+    },
     CreateIssue {
         product: String,
         title: String,
@@ -1351,6 +1476,9 @@ pub struct Archive {
     /// Owner-defined sidebar sections (format 15).
     #[serde(default)]
     pub product_sections: Vec<ProductSection>,
+    /// Customer requests (format 16). Distinct from `requests`, which is command idempotency.
+    #[serde(default)]
+    pub customer_signals: Vec<CustomerSignal>,
     #[serde(default)]
     pub projects: Vec<Project>,
     #[serde(default)]

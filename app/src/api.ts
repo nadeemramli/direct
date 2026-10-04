@@ -28,6 +28,49 @@ export interface Product {
   sort_order?: number;
   section_id?: string | null;
 }
+/** Customer requests captured as provenance-bearing signals (DIR-24). */
+export type SignalSourceKind =
+  | "email"
+  | "call"
+  | "chat"
+  | "support"
+  | "sales"
+  | "interview"
+  | "survey"
+  | "social"
+  | "other";
+export type SignalTargetKind = "issue" | "project";
+export interface SignalLink {
+  kind: SignalTargetKind;
+  /** Issue key or project ID. */
+  target: string;
+  linked_by: string;
+  linked_at: number;
+}
+export interface UnresolvedMapping {
+  external_source: string;
+  external_id: string;
+  note: string;
+}
+export interface CustomerSignal {
+  id: string;
+  product_id: string;
+  source_kind: SignalSourceKind;
+  source_reference: string;
+  summary: string;
+  received_at: number;
+  customer_reference: string;
+  external_source?: string | null;
+  external_id?: string | null;
+  unresolved_mappings: UnresolvedMapping[];
+  links: SignalLink[];
+  promoted_issue_key?: string | null;
+  archived: boolean;
+  version: number;
+  created_by: string;
+  created_at: number;
+  updated_at: number;
+}
 /** An owner-defined sidebar group of products (DIR-71). */
 export interface ProductSection {
   id: string;
@@ -397,6 +440,8 @@ export interface DeletionEligibility {
 }
 export interface Context {
   deletion?: DeletionEligibility;
+  /** Customer requests linked to or promoted into this issue (DIR-24). */
+  customer_signals?: CustomerSignal[];
   issue: Issue;
   product: Product;
   project: Project | null;
@@ -505,6 +550,7 @@ export interface Snapshot {
   workspace_id: string;
   products: Product[];
   product_sections?: ProductSection[];
+  customer_signals?: CustomerSignal[];
   projects: Project[];
   project_progress?: ProjectProgress[];
   goals: Goal[];

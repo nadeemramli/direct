@@ -226,6 +226,7 @@ pub fn dry_run(
         workspace_id: project_id.to_owned(),
         products: vec![product],
         product_sections: Vec::new(),
+        customer_signals: Vec::new(),
         projects: vec![project],
         goals,
         milestones,
