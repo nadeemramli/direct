@@ -33,6 +33,8 @@
   import ContextDocs from "./ContextDocs.svelte";
   import CloudHandoffs from "./CloudHandoffs.svelte";
   import RolesView from "./RolesView.svelte";
+  import AgentsView from "./AgentsView.svelte";
+  import IssueAssignment from "./IssueAssignment.svelte";
   import { linksFor } from "./context";
   import { signalStatus } from "./signals";
   import ProgressBar from "./ProgressBar.svelte";
@@ -2510,6 +2512,19 @@
           <small>{(data.customer_signals || []).filter((s) => !s.archived).length}</small></button
         >
       </nav>{/if}
+      {@render sectionToggle("agents", "AGENTS")}
+      {#if sectionOpen("agents")}<nav aria-label="Agents">
+        <button
+          title="Agent members"
+          class:active={view === "agents"}
+          onclick={() => {
+            view = "agents";
+            product = "all";
+            selected = "";
+            context = null;
+          }}><span>◈</span> Agents <small>{(data.agent_members || []).filter((m) => m.enabled).length}</small></button
+        >
+      </nav>{/if}
       {@render sectionToggle("theoria", "THEORIA")}
       {#if sectionOpen("theoria")}<nav aria-label="Theoria">
         <button
@@ -2535,7 +2550,7 @@
             product = "all";
             selected = "";
             context = null;
-          }}><span>◈</span> Roles & skills <small>{(data.agent_roles || []).filter((r) => r.status === "active").length}</small></button
+          }}><span>◇</span> Roles & skills <small>{(data.agent_roles || []).filter((r) => r.status === "active").length}</small></button
         >
       </nav>{/if}
       {@render sectionToggle("sources", "SOURCES")}
@@ -2913,6 +2928,8 @@
         </aside>
       {:else if view === "roles"}
         <RolesView {data} {connected} {commit} />
+      {:else if view === "agents"}
+        <AgentsView {data} {connected} {commit} />
       {:else if view === "workflow"}
         <WorkflowView
           issues={parents}
@@ -3682,6 +3699,7 @@
                 productId={current.product_id}
               />
               <CloudHandoffs handoffs={context?.cloud_handoffs || []} />
+              <IssueAssignment {data} issue={current} assignment={context?.assignment || null} {connected} {clock} {commit} />
               {#if current.claim}<div class="info-card">
                   <span class="card-symbol">↗</span>
                   <div>

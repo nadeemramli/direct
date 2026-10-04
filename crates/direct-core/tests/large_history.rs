@@ -147,6 +147,8 @@ fn workspace() -> Archive {
         skill_packages: Vec::new(),
         agent_roles: Vec::new(),
         role_publications: Vec::new(),
+        agent_members: Vec::new(),
+        issue_assignments: Vec::new(),
         projects,
         goals,
         milestones,

@@ -508,7 +508,7 @@ fn links_survive_reopen_and_archive_round_trip_with_format_checks() {
 
     let archive = s.export().unwrap();
     assert_eq!(archive.format, ARCHIVE_FORMAT);
-    assert_eq!(archive.format, 20);
+    assert_eq!(archive.format, 21);
     assert_eq!(archive.context_links.len(), 2);
     validate_archive(&archive).unwrap();
     let other = TempDir::new().unwrap();
@@ -579,7 +579,7 @@ fn schema_15_workspace_upgrades_in_place() {
             r.get(0)
         })
         .unwrap();
-    assert_eq!(schema, "18");
+    assert_eq!(schema, "19");
     assert!(
         send(&mut s, json!({"op":"snapshot"}), Role::Agent).unwrap()["context_links"]
             .as_array()

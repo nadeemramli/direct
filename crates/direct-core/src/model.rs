@@ -879,6 +879,8 @@ pub enum DeletionBlockerKind {
     ContextLinks,
     /// Cloud-session handoffs prepared for the issue (retained).
     CloudHandoffs,
+    /// Agent assignments made for the issue (retained).
+    Assignments,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1236,6 +1238,63 @@ pub enum Command {
         hypothesis: String,
         proposal: String,
         evidence: Vec<EvidencePointer>,
+    },
+    /// Owner only: add an agent member (DIR-75).
+    CreateAgentMember {
+        name: String,
+        runtime: String,
+        connection_ref: String,
+        product_ids: Vec<String>,
+        #[serde(default)]
+        default_role_key: Option<String>,
+        #[serde(default)]
+        default_model: Option<String>,
+    },
+    /// Owner only: change a member's configuration or enabled state.
+    UpdateAgentMember {
+        id: String,
+        expected_version: u64,
+        name: String,
+        enabled: bool,
+        connection_ref: String,
+        product_ids: Vec<String>,
+        #[serde(default)]
+        default_role_key: Option<String>,
+        #[serde(default)]
+        default_model: Option<String>,
+    },
+    /// Record a real harness capability check for a member.
+    RecordMemberCapability {
+        id: String,
+        expected_version: u64,
+        harness_version: String,
+        verified_models: Vec<String>,
+        evidence: String,
+    },
+    /// Owner only: assign an issue to a member with a role revision and model.
+    AssignIssueAgent {
+        key: String,
+        /// Version of the issue's current active assignment; omit when none.
+        #[serde(default)]
+        expected_assignment_version: Option<u64>,
+        member_id: String,
+        role_id: String,
+        requested_model: String,
+        /// Required when another actor holds an active claim on the issue.
+        #[serde(default)]
+        reconcile_active_writer: Option<String>,
+    },
+    /// Owner only: clear an issue's active assignment.
+    ClearIssueAssignment {
+        id: String,
+        expected_version: u64,
+        reason: String,
+    },
+    /// Claim holder: record the session that actually works the assignment.
+    RecordAssignmentSession {
+        id: String,
+        session_id: String,
+        model: String,
     },
     /// Register an immutable skill package revision (DIR-74).
     RegisterSkillPackage {
@@ -2013,6 +2072,85 @@ pub struct RolePublication {
     pub rollback: Option<PublicationRollback>,
 }
 
+/// A runtime adapter capability check for one member (DIR-75). Availability
+/// comes only from a real harness run, never from a hardcoded promise.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct MemberCapability {
+    pub harness_version: String,
+    /// Models the harness actually ran in this check.
+    pub verified_models: Vec<String>,
+    /// Session or run reference the check produced.
+    pub evidence: String,
+    pub checked_by: String,
+    pub checked_at: i64,
+}
+
+/// A logical agent member of this single-owner workspace (format 21).
+/// Identity, runtime, role, requested model and actual session stay distinct.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentMember {
+    pub id: String,
+    pub name: String,
+    /// `claude-code` or `codex`.
+    pub runtime: String,
+    pub enabled: bool,
+    /// Opaque, non-secret label for how the member is reached (no URLs with
+    /// credentials, tokens or keys).
+    pub connection_ref: String,
+    /// Products this member may be assigned work in.
+    pub product_ids: Vec<String>,
+    #[serde(default)]
+    pub default_role_key: Option<String>,
+    #[serde(default)]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    pub capability: Option<MemberCapability>,
+    pub version: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum AssignmentStatus {
+    Active,
+    /// Replaced by a later assignment of the same issue.
+    Superseded,
+    Cleared,
+}
+
+/// The session that actually worked an assignment, recorded by the claim holder.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AssignmentSession {
+    pub session_id: String,
+    pub model: String,
+    pub recorded_by: String,
+    pub recorded_at: i64,
+}
+
+/// Owner assignment of an issue to an agent member with an exact role revision
+/// and requested model (format 21). Never changes readiness, review or claims.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct IssueAssignment {
+    pub id: String,
+    pub issue_key: String,
+    pub member_id: String,
+    pub role_id: String,
+    pub requested_model: String,
+    pub status: AssignmentStatus,
+    pub version: u64,
+    pub assigned_by: String,
+    pub assigned_at: i64,
+    /// Set when assigned while another actor held an active claim.
+    #[serde(default)]
+    pub reconciliation: Option<String>,
+    #[serde(default)]
+    pub sessions: Vec<AssignmentSession>,
+    #[serde(default)]
+    pub cleared: Option<Retirement>,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Archive {
     pub format: u32,
@@ -2037,6 +2175,11 @@ pub struct Archive {
     pub agent_roles: Vec<AgentRole>,
     #[serde(default)]
     pub role_publications: Vec<RolePublication>,
+    /// Agent members and issue assignments (format 21).
+    #[serde(default)]
+    pub agent_members: Vec<AgentMember>,
+    #[serde(default)]
+    pub issue_assignments: Vec<IssueAssignment>,
     #[serde(default)]
     pub projects: Vec<Project>,
     #[serde(default)]

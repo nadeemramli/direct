@@ -14,7 +14,7 @@ export const RIGHT_MIN = 300;
 export const RIGHT_MAX = 1100;
 export const STEP = 16;
 export const BIG_STEP = 64;
-export const SECTIONS = ["praxis", "theoria", "sources", "products"] as const;
+export const SECTIONS = ["praxis", "agents", "theoria", "sources", "products"] as const;
 export type Section = (typeof SECTIONS)[number];
 
 export interface Layout {
@@ -37,7 +37,7 @@ export function defaultLayout(): Layout {
     leftCollapsed: false,
     rightWidth: null,
     rightExpanded: false,
-    collapsed: { praxis: false, theoria: false, sources: false, products: false },
+    collapsed: { praxis: false, agents: false, theoria: false, sources: false, products: false },
     collapsedProductSections: [],
   };
 }
