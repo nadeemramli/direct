@@ -32,6 +32,7 @@
   import SignalsView from "./SignalsView.svelte";
   import ContextDocs from "./ContextDocs.svelte";
   import CloudHandoffs from "./CloudHandoffs.svelte";
+  import RolesView from "./RolesView.svelte";
   import { linksFor } from "./context";
   import { signalStatus } from "./signals";
   import ProgressBar from "./ProgressBar.svelte";
@@ -2525,6 +2526,17 @@
           }}><span>◫</span> Guidance & findings <small>{data.method_findings.length}</small
           ></button
         >
+        <button
+          title="Roles & skills"
+          class:active={view === "roles"}
+          onclick={() => {
+            returnTo = null;
+            view = "roles";
+            product = "all";
+            selected = "";
+            context = null;
+          }}><span>◈</span> Roles & skills <small>{(data.agent_roles || []).filter((r) => r.status === "active").length}</small></button
+        >
       </nav>{/if}
       {@render sectionToggle("sources", "SOURCES")}
       {#if sectionOpen("sources")}<nav aria-label="Sources">
@@ -2899,6 +2911,8 @@
               <p>Run the explicit Theoria sync contract to populate the cache.</p>
             </div>{/if}
         </aside>
+      {:else if view === "roles"}
+        <RolesView {data} {connected} {commit} />
       {:else if view === "workflow"}
         <WorkflowView
           issues={parents}

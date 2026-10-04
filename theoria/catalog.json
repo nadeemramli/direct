@@ -1,5 +1,5 @@
 {
-  "version": 2,
+  "version": 3,
   "documents": [
     {
       "id": "dos-core-principles",
@@ -49,6 +49,20 @@
       "description": "Evidence authority, prospective assignment, owner-gated canaries, and shadow-only Jev limits.",
       "category": "governance",
       "path": "15. Experiment Governor.md"
+    },
+    {
+      "id": "dos-skill-adoption",
+      "title": "Skill adoption registry",
+      "description": "Evaluated skill candidates, the one-skill installation gate, and the minimal manifest each installed skill keeps.",
+      "category": "governance",
+      "path": "11. Skill Adoption Registry.md"
+    },
+    {
+      "id": "dos-product-evolution",
+      "title": "Product evolution pipeline",
+      "description": "How product evolution work is sourced, shaped and routed before implementation.",
+      "category": "workflow",
+      "path": "2.a.ii Product Evolution Pipeline.md"
     }
   ]
 }

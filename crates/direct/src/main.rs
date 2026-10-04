@@ -15,6 +15,7 @@ use std::{
 };
 
 mod linear_import;
+mod roles_cli;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -71,6 +72,11 @@ enum Cli {
         key: String,
         #[arg(long)]
         id: Option<String>,
+    },
+    /// Register skill bundles and publish role revisions into a project (DIR-74).
+    Roles {
+        #[command(subcommand)]
+        action: roles_cli::RolesAction,
     },
     /// Claim owner-ready work with a stable request ID.
     Claim {
@@ -770,6 +776,9 @@ fn run() -> Result<()> {
                 client.stop()?;
                 println!("Direct service is stopping.");
                 return Ok(());
+            }
+            if let Cli::Roles { action } = &other {
+                return roles_cli::run(&client, &args.actor, action.clone());
             }
             if let Cli::Handoff { key, id } = &other {
                 let context = client.call(
