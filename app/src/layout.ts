@@ -1,4 +1,5 @@
-// Pane layout (DIR-53, DIR-37) and scroll anchors (DIR-40).
+// Pane layout (DIR-53, DIR-37), collapsed sidebar product sections (DIR-87)
+// and scroll anchors (DIR-40).
 //
 // The stored layout is a per-device convenience. Anything unreadable,
 // out of range or from another format version falls back to defaults, and
@@ -26,6 +27,8 @@ export interface Layout {
   rightExpanded: boolean;
   /** Collapsed sidebar sections. */
   collapsed: Record<Section, boolean>;
+  /** Owner-defined product sections collapsed on this device (DIR-87). */
+  collapsedProductSections: string[];
 }
 
 export function defaultLayout(): Layout {
@@ -35,6 +38,7 @@ export function defaultLayout(): Layout {
     rightWidth: null,
     rightExpanded: false,
     collapsed: { praxis: false, theoria: false, sources: false, products: false },
+    collapsedProductSections: [],
   };
 }
 
@@ -74,7 +78,21 @@ export function parseLayout(text: string | null): Layout {
   layout.rightWidth = width(right.width, RIGHT_MIN, RIGHT_MAX);
   layout.rightExpanded = flag(right.expanded);
   for (const section of SECTIONS) layout.collapsed[section] = flag(sections[section]);
+  layout.collapsedProductSections = sectionIds(stored.productSections);
   return layout;
+}
+
+/** Stored section IDs: strings only, de-duplicated and bounded. */
+function sectionIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const ids = value.filter((id): id is string => typeof id === "string" && id.length > 0 && id.length <= 64);
+  return [...new Set(ids)].slice(0, 200);
+}
+
+/** Drop collapsed IDs for sections that no longer exist (renames keep the ID). */
+export function liveCollapsedSections(collapsed: string[], existing: string[]) {
+  const known = new Set(existing);
+  return collapsed.filter((id) => known.has(id));
 }
 
 export function serializeLayout(layout: Layout) {
@@ -83,6 +101,7 @@ export function serializeLayout(layout: Layout) {
     left: { width: layout.leftWidth, collapsed: layout.leftCollapsed },
     right: { width: layout.rightWidth, expanded: layout.rightExpanded },
     sections: layout.collapsed,
+    productSections: layout.collapsedProductSections,
   });
 }
 

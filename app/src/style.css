@@ -2899,3 +2899,23 @@ dialog::backdrop {
   background: #22302a;
   color: #dfe5e2;
 }
+
+/* Collapsible sidebar product sections (DIR-87). */
+.product-section-head .section-fold {
+  font-size: 11px;
+  width: 18px;
+  padding: 2px 0 2px 6px;
+  color: #7d878b;
+}
+.product-section-head.active {
+  background: #282d2b;
+}
+.product-section-name .section-count {
+  margin-left: 6px;
+  font-size: 10px;
+  color: #7d878b;
+  letter-spacing: 0;
+}
+.sidebar.collapsed .section-fold {
+  display: none;
+}
