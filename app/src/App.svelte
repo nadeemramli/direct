@@ -53,6 +53,7 @@
     STATE_NOTE,
     guidanceState,
     guidanceUses,
+    linkableGuidance,
     playbookContext,
     playbookContextLabel,
     recordedVersion,
@@ -593,6 +594,8 @@
   let activeRun = $derived(
     context?.verifications.find((v) => v.id === current?.current_run),
   );
+  const productCode = (id: string) =>
+    data.products.find((product) => product.id === id)?.key || "another product";
   let selectedGuidance = $derived(
     data.theoria_documents.find((document) => document.id === selectedGuidanceId),
   );
@@ -2737,7 +2740,7 @@
                 <span class="source-state {document.availability}"
                   >{document.availability === "available"
                     ? "Cached"
-                    : "Unavailable"}</span
+                    : "Unavailable"}{document.shared ? " · Shared" : ""}</span
                 >
               </button>{/each}
           </div>
@@ -2811,6 +2814,26 @@
               </div>
               <dl class="evidence source-contract">
                 <dt>Stable ID</dt><dd>{selectedGuidance.id}</dd>
+                <dt>Scope</dt><dd class="guidance-scope"
+                  >{selectedGuidance.shared
+                    ? `Shared with every product · owned by ${productCode(selectedGuidance.product_id)}`
+                    : `${productCode(selectedGuidance.product_id)} only`}<button
+                    class="secondary"
+                    disabled={busy || !connected}
+                    title={selectedGuidance.shared
+                      ? "New links from other products are refused; existing pins are kept"
+                      : "Issues in any product can link this guidance; content stays owned by its product's catalog"}
+                    onclick={() =>
+                      act({
+                        op: "set_theoria_sharing",
+                        document_id: selectedGuidance!.id,
+                        shared: !selectedGuidance!.shared,
+                      })}
+                    >{selectedGuidance.shared
+                      ? "Stop sharing"
+                      : "Share with all products"}</button
+                  ></dd
+                >
                 <dt>Source</dt><dd
                   ><code>{selectedGuidance.source_root}/{selectedGuidance.relative_path}</code></dd
                 >
@@ -3921,6 +3944,9 @@
                         >{versionLabel(item.reference)}</dd
                       >
                       <dt>Linked</dt><dd>{item.reference.linked_by} · {date(item.reference.linked_at)}</dd>
+                      {#if item.reference.shared}<dt>Scope</dt><dd>
+                          Shared from {item.document ? productCode(item.document.product_id) : "another product"}{item.document?.shared ? "" : " · no longer shared; this pin is kept"}
+                        </dd>{/if}
                       <dt>Recorded fingerprint</dt><dd><code>{item.reference.recorded_fingerprint || "unavailable"}</code></dd>
                       <dt>Current fingerprint</dt><dd><code>{item.document?.fingerprint || "unavailable"}</code></dd>
                     </dl>
@@ -3940,8 +3966,8 @@
                   <label class="field"
                     >Guidance<select bind:value={guidanceDocumentId} required>
                       <option value="" disabled>Select a catalog document…</option>
-                      {#each data.theoria_documents.filter((document) => document.product_id === current.product_id && !current.theoria_refs.some((reference) => reference.document_id === document.id)) as document}<option value={document.id}
-                          >{document.title}{document.availability === "unavailable" ? " · unavailable" : ""}</option
+                      {#each linkableGuidance(data.theoria_documents, current) as document}<option value={document.id}
+                          >{document.title}{document.product_id !== current.product_id ? ` · shared from ${productCode(document.product_id)}` : ""}{document.availability === "unavailable" ? " · unavailable" : ""}</option
                         >{/each}
                     </select></label
                   >

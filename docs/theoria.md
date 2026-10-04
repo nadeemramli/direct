@@ -31,6 +31,8 @@ For an available source, Direct replaces the cache and records `checked_at` and 
 
 `link_theoria` connects an issue to a catalog document using the issue's current version. It records the current fingerprint and an optional playbook version. Omitting the version preserves `Unknown`; Direct never guesses a historical assignment.
 
+Guidance belongs to the product whose catalog synced it, and by default only that product's issues can link it. The owner can share a document with every product (`set_theoria_sharing` with `document_id` and `shared`, owner-only; **Share with all products** in the Theoria detail) so one maintained DOS document serves several products without duplicate catalogs. Sharing does not move ownership: only the source product's catalog sync updates its content and fingerprint, re-sync keeps the sharing flag, and another product cannot sync the same document ID. A cross-product link records `shared: true` on the issue's reference. Stopping sharing refuses new cross-product links but never rewrites existing pins; their recorded fingerprint and playbook version stay, and stale/unavailable state is still shown against the current document. Shared guidance needs archive format 18; older archives restore unchanged with nothing shared.
+
 `create_method_finding` records:
 
 - classification: product defect, method friction, or both;

@@ -285,6 +285,8 @@ export interface TheoriaReference {
   playbook_version: string | null;
   linked_by: string;
   linked_at: number;
+  /** Linked from another product through workspace sharing (DIR-57). */
+  shared?: boolean;
 }
 export interface TheoriaDocument {
   id: string;
@@ -303,6 +305,8 @@ export interface TheoriaDocument {
   catalog_version: number;
   checked_at: number;
   cached_at: number | null;
+  /** Owner shared it with every product (DIR-57). */
+  shared?: boolean;
 }
 export type FindingClassification =
   | "product_defect"

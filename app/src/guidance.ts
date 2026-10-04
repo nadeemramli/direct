@@ -89,3 +89,20 @@ export function playbookContextLabel(context: PlaybookContext): string {
     );
   return parts.join(" · ");
 }
+
+/**
+ * Guidance an issue can link (DIR-57): its own product's catalog plus documents
+ * the owner shared with the workspace, minus what it already pins. Own-product
+ * documents come first so shared copies never crowd out scoped guidance.
+ */
+export function linkableGuidance(
+  documents: TheoriaDocument[],
+  issue: Pick<Issue, "product_id" | "theoria_refs">,
+): TheoriaDocument[] {
+  const pinned = new Set(issue.theoria_refs.map((reference) => reference.document_id));
+  const open = documents.filter((document) => !pinned.has(document.id));
+  return [
+    ...open.filter((document) => document.product_id === issue.product_id),
+    ...open.filter((document) => document.product_id !== issue.product_id && document.shared),
+  ];
+}

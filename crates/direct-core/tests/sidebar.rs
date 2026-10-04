@@ -338,7 +338,7 @@ fn arrangement_survives_reopen_and_archive_round_trip() {
 
     let archive = s.export().unwrap();
     assert_eq!(archive.format, ARCHIVE_FORMAT);
-    assert_eq!(archive.format, 17);
+    assert_eq!(archive.format, 18);
     assert_eq!(archive.product_sections.len(), 1);
     validate_archive(&archive).unwrap();
     let other = TempDir::new().unwrap();

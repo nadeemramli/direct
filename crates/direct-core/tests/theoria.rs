@@ -179,7 +179,7 @@ fn issue_guidance_and_method_proposals_are_traceable_without_becoming_decisions(
     );
 
     let archive = store.export().unwrap();
-    assert_eq!(archive.format, 17);
+    assert_eq!(archive.format, 18);
     validate_archive(&archive).unwrap();
     drop(store);
     let reopened = Store::open(&path).unwrap();
@@ -332,6 +332,7 @@ fn malformed_or_cross_product_theoria_records_are_rejected() {
             playbook_version: None,
             linked_by: "test".into(),
             linked_at: 1,
+            shared: false,
         }],
         labels: vec![],
         title: "Broken".into(),
