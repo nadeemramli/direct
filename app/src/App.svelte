@@ -978,10 +978,10 @@
     return result;
   }
   let consolidationAttempt: { owner: string; expected_cursor: number } | null = null;
+  let consolidationOwner = $state<string | null>(null);
   async function consolidateOwners() {
-    if (!draft.owner || formPending) return;
-    const owner = consolidationAttempt?.owner || draft.owner;
-    if (!confirm(`Use ${owner} as the human owner for every issue in this workspace, including unassigned issues? Issue statuses and verification history will stay unchanged.`)) return;
+    if (!consolidationOwner || formPending) return;
+    const owner = consolidationAttempt?.owner || consolidationOwner;
     consolidationAttempt ??= { owner, expected_cursor: data.cursor };
     formPending = true;
     try {
@@ -989,6 +989,7 @@
         op: "consolidate_human_owners", ...consolidationAttempt,
       });
       consolidationAttempt = null;
+      consolidationOwner = null;
       notice = `${result.changed_keys.length} issues now use ${owner} as their human owner.`;
       modal = null;
     } catch (error) {
@@ -4863,7 +4864,13 @@
             </div>
           {#if ownerOptions.length > 1}
             <p class="hint">For a workspace with one human reviewer, consolidate all existing issue owners. New issues will default to that reviewer.</p>
-            <button type="button" disabled={formPending || !draft.owner} onclick={consolidateOwners}>Use selected owner for all issues</button>
+            {#if consolidationOwner}
+              <p class="hint">Use {consolidationOwner} as the human owner for every issue in this workspace, including unassigned issues? Issue statuses and verification history will stay unchanged.</p>
+              <button type="button" disabled={formPending} onclick={consolidateOwners}>Confirm owner consolidation</button>
+              <button type="button" disabled={formPending} onclick={() => (consolidationOwner = null)}>Cancel owner consolidation</button>
+            {:else}
+              <button type="button" disabled={formPending || !draft.owner} onclick={() => (consolidationOwner = consolidationAttempt?.owner || draft.owner)}>Use selected owner for all issues</button>
+            {/if}
           {/if}
           {#if modal === "edit"}
             <p class="hint">
