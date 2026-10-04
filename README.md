@@ -14,6 +14,8 @@ Prerequisites: Rust with the MSVC build tools, Node.js 22.12+ (24 recommended), 
 
 This builds and opens the desktop app. Later, use `-SkipBuild` to launch the existing build. The service starts automatically and continues running after the window closes. Data lives in `%USERPROFILE%\.direct\data`, outside this repository. Use `-DataDir C:\path\to\dedicated-directory` for an isolated workspace.
 
+For repeatable daily use, build the unsigned portable package with `scripts\package-windows.ps1`, then run its `Install-Direct.ps1`. The package keeps the desktop, CLI/service, and browser assets together, installs to `%USERPROFILE%\.direct\app`, creates a stable Start Menu shortcut, and supports staged updates with graceful service shutdown. See [Windows desktop package and daily use](docs/windows-desktop.md).
+
 Older LocalAppData workspaces need an explicit export/restore before first launch with this build. See [desktop workspace and migration](docs/desktop-workspace.md). This prevents Windows packaged-app redirection from splitting the browser and desktop into different workspaces.
 
 For the browser interface, run `scripts\start.ps1 -Browser`. It prints a short-lived, single-use launch link. Open it promptly and do not share it. The browser preview needs a fresh `direct open` link after the service restarts; the desktop shell reconnects automatically.
@@ -34,7 +36,7 @@ Agents that speak MCP can use the optional local `direct-mcp` stdio server inste
 
 Included: product spaces with repository/vault paths, projects, goals, milestones, product-scoped releases with exact delivery evidence, issue relationships and grouping, issue capture with complete briefs and exact-key lookup, safe owner-only cleanup of unstarted issues, acceptance criteria, ownership and priority, expiring claims, comments, change history, build-specific verification, retesting, reopening, automatic updates, JSON export/restore, a bounded Linear dry-run importer, and Theoria guidance references with source fingerprints and structured method findings.
 
-Still to build: full-workspace/final-delta Linear cutover, a signed installer, and multi-device collaboration. The desktop executable compiles; the browser interface has completed the full Windows/WSL smoke test. Native desktop rendering still needs an interactive acceptance check. This is a single-owner foundation, not yet the complete Linear replacement.
+Still to build: full-workspace/final-delta Linear cutover, a signed installer, and multi-device collaboration. The unsigned portable desktop package has an isolated Windows-native lifecycle smoke harness, and the browser interface has completed the full Windows/WSL smoke test. Native desktop rendering still needs an interactive acceptance check. This is a single-owner foundation, not yet the complete Linear replacement.
 
 Direct now tracks its own development in the normal local workspace. See [the real pilot](docs/pilot.md); ten scoped tasks were captured and project grouping is the first delivery. Final acceptance is recorded by the owner in Direct.
 
