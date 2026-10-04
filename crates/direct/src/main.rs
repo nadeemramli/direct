@@ -208,6 +208,8 @@ enum Cli {
     },
     /// Print a one-use local owner-interface launch link. Do not share this link.
     Open,
+    /// Gracefully stop the local service for a controlled update or restart.
+    Stop,
     /// Write a versioned JSON archive. Refuses to overwrite an existing file.
     Export {
         out: PathBuf,
@@ -754,6 +756,11 @@ fn run() -> Result<()> {
             let client = direct::Client::new(&dir)?;
             if matches!(other, Cli::Open) {
                 println!("{}", client.launch_url()?);
+                return Ok(());
+            }
+            if matches!(other, Cli::Stop) {
+                client.stop()?;
+                println!("Direct service is stopping.");
                 return Ok(());
             }
             let mut output = None;

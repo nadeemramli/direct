@@ -29,6 +29,7 @@ struct App {
     endpoint: Endpoint,
     grants: Arc<Mutex<HashMap<String, i64>>>,
     sessions: Arc<Mutex<HashMap<String, i64>>>,
+    shutdown: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     drafting: Arc<tokio::sync::Semaphore>,
 }
 async fn draft_brief(
@@ -360,6 +361,15 @@ async fn launch(State(app): State<App>, headers: HeaderMap) -> Response {
     Json(json!({"url":format!("http://127.0.0.1:{}/#grant={grant}",app.endpoint.port)}))
         .into_response()
 }
+async fn shutdown(State(app): State<App>, headers: HeaderMap) -> Response {
+    if !same_host(&headers, &app.endpoint) || bearer(&headers) != app.endpoint.owner_token {
+        return fail(StatusCode::FORBIDDEN, "Owner shutdown capability required");
+    }
+    if let Some(sender) = app.shutdown.lock().unwrap().take() {
+        let _ = sender.send(());
+    }
+    Json(json!({"stopping":true})).into_response()
+}
 #[derive(Deserialize)]
 struct Grant {
     grant: String,
@@ -401,6 +411,7 @@ pub async fn serve(dir: &Path, port: u16, assets: &Path) -> Result<()> {
     };
     // The exclusive process lock is held until all connections finish and serve returns.
     fs::write(dir.join("endpoint.json"), serde_json::to_vec(&endpoint)?)?;
+    let (shutdown_tx, shutdown_rx) = tokio::sync::oneshot::channel();
     let app = App {
         dir: dir.to_path_buf(),
         store: Arc::new(Mutex::new(store)),
@@ -408,9 +419,10 @@ pub async fn serve(dir: &Path, port: u16, assets: &Path) -> Result<()> {
         grants: Arc::new(Mutex::new(HashMap::new())),
         sessions: Arc::new(Mutex::new(HashMap::new())),
         drafting: Arc::new(tokio::sync::Semaphore::new(1)),
+        shutdown: Arc::new(Mutex::new(Some(shutdown_tx))),
     };
     let migration_limit = DefaultBodyLimit::max(direct_core::MAX_MIGRATION_ARTIFACT_BYTES);
-    let router=Router::new().route("/api/command",post(command)).route("/api/launch",post(launch)).route("/api/health",post(health)).route("/api/session",post(session))
+    let router=Router::new().route("/api/command",post(command)).route("/api/launch",post(launch)).route("/api/health",post(health)).route("/api/session",post(session)).route("/api/shutdown",post(shutdown))
       .route("/api/source-file",post(source_file))
       .route("/api/draft-brief",post(draft_brief))
       .route("/api/migration/preview",post(migration_preview).layer(migration_limit).layer(middleware::from_fn_with_state(app.clone(), require_owner)))
@@ -424,11 +436,16 @@ pub async fn serve(dir: &Path, port: u16, assets: &Path) -> Result<()> {
         endpoint.port,
         dir.display()
     );
-    axum::serve(listener, router)
+    let result = axum::serve(listener, router)
         .with_graceful_shutdown(async {
-            let _ = tokio::signal::ctrl_c().await;
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {},
+                _ = shutdown_rx => {},
+            }
         })
-        .await?;
+        .await;
+    let _ = fs::remove_file(dir.join("endpoint.json"));
     drop(lock);
+    result?;
     Ok(())
 }
