@@ -20,6 +20,7 @@
     restoreAnchor,
     rightMaxWidth,
     saveLayout,
+    liveCollapsedSections,
   } from "./layout";
   import type { ScrollAnchor, Section } from "./layout";
   import DraftAssistant from "./DraftAssistant.svelte";
@@ -494,6 +495,27 @@
   function toggleSection(section: Section) {
     layout.collapsed[section] = !layout.collapsed[section];
   }
+  // Product sections collapsed on this device (DIR-87). The rail always shows
+  // every product, so collapse applies only to the expanded sidebar.
+  function sectionCollapsed(id: string | null) {
+    return !!id && !layout.leftCollapsed && layout.collapsedProductSections.includes(id);
+  }
+  function toggleProductSection(id: string) {
+    const ids = new Set(layout.collapsedProductSections);
+    if (ids.has(id)) ids.delete(id);
+    else ids.add(id);
+    layout.collapsedProductSections = [...ids];
+  }
+  $effect(() => {
+    // Forget sections deleted elsewhere; only once the workspace has loaded.
+    if (!data.workspace_id) return;
+    const live = liveCollapsedSections(
+      layout.collapsedProductSections,
+      (data.product_sections || []).map((s) => s.id),
+    );
+    if (live.length !== layout.collapsedProductSections.length)
+      layout.collapsedProductSections = live;
+  });
   // Return point for guidance opened from an issue (DIR-40).
   let returnTo = $state<null | {
     key: string;
@@ -1438,6 +1460,8 @@
     if (!event.altKey || (event.key !== "ArrowUp" && event.key !== "ArrowDown")) return;
     event.preventDefault();
     const next = nudgeProduct(sidebar, productId, event.key === "ArrowUp" ? -1 : 1);
+    const into = next?.find((g) => g.products.some((p) => p.id === productId))?.section?.id ?? null;
+    if (next && into && sectionCollapsed(into)) toggleProductSection(into);
     if (next) arrange(next, productId, placementText(next, productId));
   }
   function sectionKey(event: KeyboardEvent, sectionId: string) {
@@ -2519,15 +2543,24 @@
           {@const groupId = group.section?.id ?? null}
           {#if group.section}
             {@const section = group.section}
+            {@const folded = sectionCollapsed(section.id)}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="product-section-head"
+              class:collapsed-section={folded}
+              class:active={folded && group.products.some((p) => p.id === product)}
               class:drop-before={dragging?.kind === "section" && sectionDropBefore === section.id}
               class:drop-into={dragging?.kind === "product" && dropAt?.group === section.id && dropAt.before === (group.products[0]?.id ?? null)}
               ondragover={(event) => overSection(event, groupIndex)}
               ondrop={drop}
             >
               <button
+                class="icon-button section-fold"
+                aria-expanded={!folded}
+                aria-label={`${folded ? "Expand" : "Collapse"} section ${section.name}`}
+                title={folded ? "Expand section" : "Collapse section"}
+                onclick={() => toggleProductSection(section.id)}>{folded ? "▸" : "▾"}</button
+              ><button
                 class="product-section-name"
                 data-sidebar-id={section.id}
                 draggable={connected}
@@ -2536,7 +2569,9 @@
                 ondragstart={(event) => startDrag(event, "section", section.id)}
                 ondragend={endDrag}
                 onkeydown={(event) => sectionKey(event, section.id)}
-                ><span class="nav-text">{section.name}</span></button
+                ><span class="nav-text">{section.name}</span>{#if folded}<small class="section-count"
+                    >{group.products.length}</small
+                  >{/if}</button
               ><button
                 class="icon-button section-edit"
                 aria-label={`Rename or delete section ${section.name}`}
@@ -2546,7 +2581,7 @@
               >
             </div>
           {/if}
-          {#each group.products as p, index (p.id)}<button
+          {#each sectionCollapsed(groupId) ? [] : group.products as p, index (p.id)}<button
               title={`${p.name} · drag or Alt+↑/↓ to reorder`}
               class:active={product === p.id}
               class:grouped={!!group.section}
@@ -2568,7 +2603,7 @@
                 >{p.name}</span
               ><small>{parents.filter((i) => i.product_id === p.id).length}</small></button
             >{/each}
-          {#if group.products.length === 0 && (group.section || dragging?.kind === "product")}
+          {#if group.products.length === 0 && !sectionCollapsed(groupId) && (group.section || dragging?.kind === "product")}
             <!-- svelte-ignore a11y_no_static_element_interactions -->
             <div
               class="product-drop-zone"
