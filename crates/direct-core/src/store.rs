@@ -2212,6 +2212,23 @@ fn new_issue(
         template: None,
     })
 }
+fn add_comment(conn: &Connection, key: &str, actor: &str, body: &str, at: i64) -> Result<()> {
+    let c = Comment {
+        id: id(),
+        issue_key: key.into(),
+        actor: actor.into(),
+        body: body.into(),
+        at,
+        external_source: None,
+        external_id: None,
+        external_url: None,
+    };
+    conn.execute(
+        "INSERT INTO comments VALUES (?1,?2)",
+        params![c.id, serde_json::to_string(&c)?],
+    )?;
+    Ok(())
+}
 fn save(conn: &Connection, mut i: Issue, actor: &str, kind: &str, at: i64) -> Result<Value> {
     i.version += 1;
     i.updated_at = at;
@@ -4379,6 +4396,52 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             put_issue(tx, &child)?;
             save(tx, i, actor, "verification_reviewed", at)
         }
+        Command::CancelIssue {
+            key,
+            expected_version,
+            reason,
+            release_active_claim,
+        } => {
+            human(role)?;
+            let mut i = version(tx, key, *expected_version)?;
+            let reason = reason.trim();
+            required(reason, "cancel reason")?;
+            limited(reason, "cancel reason", 2_000)?;
+            match i.status {
+                Status::Backlog | Status::Ready | Status::Doing => {}
+                Status::Verify => {
+                    return Err(err(
+                        "invalid",
+                        "Submitted work has a pending verification run; review it or reopen it before canceling",
+                    ))
+                }
+                Status::Canceled => return Err(err("conflict", "This issue is already canceled")),
+                Status::Done | Status::LegacyCompleted => {
+                    return Err(err("invalid", "Completed work cannot be canceled"))
+                }
+            }
+            let mut note = format!("Canceled: {reason}");
+            if let Some(claim) = i.claim.as_ref().filter(|claim| claim.expires_at > at) {
+                if !*release_active_claim {
+                    return Err(err(
+                        "conflict",
+                        format!(
+                            "{} holds an active claim; confirm releasing it to cancel this issue",
+                            claim.actor
+                        ),
+                    ));
+                }
+                note.push_str(&format!(
+                    "\nReleased the active claim held by {}.",
+                    claim.actor
+                ));
+            }
+            i.status = Status::Canceled;
+            i.claim = None;
+            i.needs_fix = false;
+            add_comment(tx, key, actor, &note, at)?;
+            save(tx, i, actor, "issue_canceled", at)
+        }
         Command::Reopen {
             key,
             expected_version,
@@ -4387,10 +4450,25 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             human(role)?;
             let mut i = version(tx, key, *expected_version)?;
             required(reason, "reopen reason")?;
+            if i.status == Status::Canceled {
+                // Restoring canceled work returns it to shaping; readiness is
+                // the owner's decision again (DIR-86).
+                i.status = Status::Backlog;
+                i.claim = None;
+                i.needs_fix = false;
+                add_comment(
+                    tx,
+                    key,
+                    actor,
+                    &format!("Restored from Canceled: {reason}"),
+                    at,
+                )?;
+                return save(tx, i, actor, "issue_restored", at);
+            }
             if !matches!(i.status, Status::Done | Status::Verify) {
                 return Err(err(
                     "invalid",
-                    "Only submitted or completed work can be reopened",
+                    "Only submitted, completed or canceled work can be reopened",
                 ));
             }
             if let Some(r) = &i.current_run {

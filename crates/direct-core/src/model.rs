@@ -1520,6 +1520,16 @@ pub enum Command {
         #[serde(default)]
         note: String,
     },
+    /// Owner only: cancel non-deliverable work with a reason (DIR-86). History,
+    /// comments, links, sources and runs are kept; `reopen` restores it.
+    CancelIssue {
+        key: String,
+        expected_version: u64,
+        reason: String,
+        /// Required to cancel work that an agent actively holds.
+        #[serde(default)]
+        release_active_claim: bool,
+    },
     Reopen {
         key: String,
         expected_version: u64,

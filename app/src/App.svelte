@@ -40,6 +40,7 @@
     WORKFLOW_CATEGORIES,
     WORKFLOW_STATES,
     breakdown,
+    cancelEligibility,
     isStatusFilter,
     isWorkflowState,
     matchesStatusFilter,
@@ -396,6 +397,8 @@
     planning_scope: "",
   };
   let reopenReason = $state("");
+  let cancelReason = $state("");
+  let releaseClaim = $state(false);
   let clock = $state(Date.now() / 1000);
   let activeRunId = "";
   let selectedGuidanceId = $state("");
@@ -637,7 +640,7 @@
               : view === "active"
                 ? ["ready", "doing"].includes(i.status)
                 : view === "done"
-                  ? ["done", "legacy_completed"].includes(i.status)
+                  ? ["done", "legacy_completed", "canceled"].includes(i.status)
                   : workflowState(i) === view))) &&
           `${i.key} ${i.title} ${i.body} ${labelNames(i.labels).join(" ")} ${data.releases
             .filter(
@@ -4235,6 +4238,79 @@
                     >
                   </div>
                 </div>{/each}
+            {/if}
+            {#if current.status === "canceled" && !current.parent}<details
+                class="reopen"
+              >
+                <summary>Restore issue…</summary>
+                <p class="hint">
+                  Returns it to Backlog with its history; marking it Ready is a
+                  separate decision.
+                </p>
+                <input
+                  aria-label="Reason for restoring"
+                  bind:value={reopenReason}
+                  placeholder="Why is this needed again?"
+                /><button
+                  class="secondary"
+                  disabled={busy || !reopenReason.trim()}
+                  onclick={async () => {
+                    if (
+                      await act({
+                        op: "reopen",
+                        key: current.key,
+                        expected_version: current.version,
+                        reason: reopenReason,
+                      })
+                    )
+                      reopenReason = "";
+                  }}>Restore to Backlog</button
+                >
+              </details>{/if}
+            {#if !current.parent && ["backlog", "ready", "doing", "verify"].includes(current.status)}
+              {@const eligibility = cancelEligibility(current, clock)}
+              <details class="reopen cancel-issue">
+                <summary>Cancel issue…</summary>
+                {#if eligibility.allowed}
+                  <p class="hint">
+                    For work that will not be delivered. History, comments and
+                    links are kept, and it leaves progress totals. Restore it
+                    any time.
+                  </p>
+                  <input
+                    aria-label="Reason for canceling"
+                    bind:value={cancelReason}
+                    maxlength="2000"
+                    placeholder="Why is this not being delivered?"
+                  />
+                  {#if eligibility.activeClaim}<label class="release-claim"
+                      ><input
+                        type="checkbox"
+                        bind:checked={releaseClaim}
+                      /> Release the active claim held by {eligibility.activeClaim}</label
+                    >{/if}
+                  <button
+                    class="secondary danger"
+                    disabled={busy ||
+                      !cancelReason.trim() ||
+                      (!!eligibility.activeClaim && !releaseClaim)}
+                    onclick={async () => {
+                      if (
+                        await act({
+                          op: "cancel_issue",
+                          key: current.key,
+                          expected_version: current.version,
+                          reason: cancelReason,
+                          release_active_claim: releaseClaim,
+                        })
+                      ) {
+                        cancelReason = "";
+                        releaseClaim = false;
+                      }
+                    }}>Cancel with reason</button
+                  >
+                {:else}<p class="hint">{eligibility.reason}</p>{/if}
+              </details>
             {/if}
             {#if ["done", "verify"].includes(current.status)}<details
                 class="reopen"

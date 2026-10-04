@@ -1733,6 +1733,20 @@ summary {
 .reopen input {
   margin: 10px 0;
 }
+.reopen .release-claim {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0 0 10px;
+}
+.reopen .release-claim input {
+  width: auto;
+  margin: 0;
+}
+.cancel-issue .danger:not(:disabled) {
+  color: #e0a39a;
+  border-color: #6b3f3a;
+}
 .history-run {
   padding: 14px;
   border-bottom: 1px solid #30373b;
