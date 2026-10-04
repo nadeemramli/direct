@@ -790,6 +790,95 @@ nav small {
   border-radius: 4px;
   color: #b7c5bd !important;
 }
+/* Sidebar product order and sections (DIR-71). */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+}
+.products-label .add-section {
+  font-size: 15px;
+  margin-left: auto;
+}
+.product-nav button[draggable="true"] {
+  cursor: grab;
+}
+.product-nav.dragging button {
+  cursor: grabbing;
+}
+.product-nav button.grouped {
+  padding-left: 22px;
+}
+.product-nav button.being-dragged {
+  opacity: 0.45;
+}
+.product-nav .drop-before {
+  box-shadow: inset 0 2px 0 #6f9e86;
+}
+.product-nav .drop-after {
+  box-shadow: inset 0 -2px 0 #6f9e86;
+}
+.product-section-head {
+  display: flex;
+  align-items: center;
+  margin-top: 8px;
+  border-radius: 6px;
+}
+.product-section-head.drop-into,
+.product-drop-zone.drop-into {
+  background: #1f2a24;
+  outline: 1px dashed #6f9e86;
+}
+.product-nav .product-section-name {
+  flex: 1;
+  min-width: 0;
+  padding: 6px 12px;
+  font-size: 10px;
+  font-weight: 650;
+  letter-spacing: 0.8px;
+  text-transform: uppercase;
+  color: #8a959a;
+}
+.product-nav .product-section-name > .nav-text {
+  width: auto;
+  color: inherit;
+  font-size: inherit;
+}
+.product-section-head .section-edit {
+  font-size: 13px;
+  /* Faint until hover/focus, but always visible and clickable (touch too). */
+  opacity: 0.35;
+}
+.product-section-head:hover .section-edit,
+.product-section-head:focus-within .section-edit {
+  opacity: 1;
+}
+.product-drop-zone {
+  margin-left: 22px;
+  padding: 6px 10px;
+  border: 1px dashed #333b37;
+  border-radius: 6px;
+  font-size: 11px;
+  color: #6d777c;
+}
+.sidebar.collapsed .product-section-head {
+  border-top: 1px solid #24292c;
+  margin-top: 6px;
+}
+.sidebar.collapsed .product-section-name {
+  font-size: 0;
+  padding: 3px 0;
+}
+.sidebar.collapsed .product-section-head .section-edit,
+.sidebar.collapsed .product-drop-zone {
+  display: none;
+}
+.sidebar.collapsed .product-nav button.grouped {
+  padding-left: 0;
+}
 .sidebar-bottom {
   margin-top: auto;
 }

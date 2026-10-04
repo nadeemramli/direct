@@ -28,6 +28,33 @@ pub struct Product {
     pub repo_wsl: String,
     pub vault_windows: String,
     pub vault_wsl: String,
+    /// Sidebar position (format 15). Legacy products share 0 and fall back to ID order.
+    #[serde(default)]
+    pub sort_order: i64,
+    /// Owner-defined sidebar section (format 15); `None` lists the product ungrouped.
+    #[serde(default)]
+    pub section_id: Option<String>,
+}
+
+/// A named owner-defined group of products in the sidebar (format 15).
+/// Sections organise navigation only; they never change product data or access.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct ProductSection {
+    pub id: String,
+    pub name: String,
+    pub sort_order: i64,
+    pub version: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// One product's place in a complete sidebar arrangement.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct ProductPlacement {
+    pub product_id: String,
+    #[serde(default)]
+    pub section_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -1123,6 +1150,26 @@ pub enum Command {
         #[serde(default)]
         vault_wsl: String,
     },
+    CreateProductSection {
+        name: String,
+    },
+    UpdateProductSection {
+        id: String,
+        expected_version: u64,
+        name: String,
+    },
+    /// Removes the section only; its products return to the ungrouped list.
+    DeleteProductSection {
+        id: String,
+        expected_version: u64,
+    },
+    /// Replaces the whole sidebar arrangement. Both lists must name every
+    /// current section and product exactly once, in display order, so a stale
+    /// arrangement is refused instead of silently dropping a concurrent change.
+    ArrangeProducts {
+        sections: Vec<String>,
+        products: Vec<ProductPlacement>,
+    },
     CreateIssue {
         product: String,
         title: String,
@@ -1301,6 +1348,9 @@ pub struct Archive {
     pub format: u32,
     pub workspace_id: String,
     pub products: Vec<Product>,
+    /// Owner-defined sidebar sections (format 15).
+    #[serde(default)]
+    pub product_sections: Vec<ProductSection>,
     #[serde(default)]
     pub projects: Vec<Project>,
     #[serde(default)]
