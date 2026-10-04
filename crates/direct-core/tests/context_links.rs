@@ -587,3 +587,102 @@ fn schema_15_workspace_upgrades_in_place() {
             .is_empty()
     );
 }
+
+#[test]
+fn owner_can_set_vault_paths_so_any_product_can_link_notes() {
+    let mut f = fixture();
+    let dir_project = send(
+        &mut f.s,
+        json!({"op":"create_project","product":"DIR","name":"Direct pilot"}),
+        Role::Human,
+    )
+    .unwrap();
+    let dir_id = send(&mut f.s, json!({"op":"snapshot"}), Role::Agent).unwrap()["products"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|p| p["key"] == "DIR")
+        .unwrap()["id"]
+        .clone();
+    let attach = json!({"op":"add_context_link","target_kind":"project","target":dir_project["id"],
+        "source":{"kind":"obsidian","product_id":dir_id,"path":"Notes.md"}});
+    assert_eq!(
+        send(&mut f.s, attach.clone(), Role::Human)
+            .unwrap_err()
+            .code,
+        "not_found"
+    );
+
+    let vault = f.vault.path().to_string_lossy().to_string();
+    let update = json!({"op":"update_product_paths","product":"DIR","vault_windows":format!("  {vault}  "),"repo_windows":"C:/src/direct"});
+    assert_eq!(
+        send(&mut f.s, update.clone(), Role::Agent)
+            .unwrap_err()
+            .code,
+        "forbidden"
+    );
+    let updated = send(&mut f.s, update.clone(), Role::Human).unwrap();
+    assert_eq!(updated["vault_windows"], vault.as_str());
+    assert_eq!(updated["repo_windows"], "C:/src/direct");
+    assert_eq!(
+        send(&mut f.s, update, Role::Human).unwrap_err().code,
+        "conflict"
+    );
+    assert_eq!(
+        send(
+            &mut f.s,
+            json!({"op":"update_product_paths","product":"NOPE"}),
+            Role::Human
+        )
+        .unwrap_err()
+        .code,
+        "not_found"
+    );
+    assert_eq!(
+        send(
+            &mut f.s,
+            json!({"op":"update_product_paths","product":"DIR","vault_windows":"x".repeat(501)}),
+            Role::Human
+        )
+        .unwrap_err()
+        .code,
+        "invalid"
+    );
+    let linked = send(&mut f.s, attach, Role::Human).unwrap();
+    assert_eq!(linked["observation"]["available"], true);
+
+    // Reads drop a leading byte-order mark from the shown content.
+    fs::write(f.vault.path().join("Bom2.md"), "\u{feff}# Heading\nText\n").unwrap();
+    let bom = send(
+        &mut f.s,
+        json!({"op":"add_context_link","target_kind":"project","target":dir_project["id"],
+               "source":{"kind":"obsidian","product_id":dir_id,"path":"Bom2.md"}}),
+        Role::Human,
+    )
+    .unwrap();
+    let read = send(
+        &mut f.s,
+        json!({"op":"read_context_link","id":bom["id"]}),
+        Role::Agent,
+    )
+    .unwrap();
+    assert!(read["content"].as_str().unwrap().starts_with("# Heading"));
+    // Clearing the vault later makes rechecks report it instead of failing silently.
+    send(
+        &mut f.s,
+        json!({"op":"update_product_paths","product":"DIR","repo_windows":"C:/src/direct"}),
+        Role::Human,
+    )
+    .unwrap();
+    let checked = send(
+        &mut f.s,
+        json!({"op":"check_context_link","id":linked["id"],"expected_version":1}),
+        Role::Agent,
+    )
+    .unwrap();
+    assert_eq!(checked["observation"]["available"], false);
+    assert!(checked["observation"]["reason"]
+        .as_str()
+        .unwrap()
+        .contains("no knowledge vault"));
+}

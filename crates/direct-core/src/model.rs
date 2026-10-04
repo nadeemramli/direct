@@ -1304,6 +1304,19 @@ pub enum Command {
         #[serde(default)]
         vault_wsl: String,
     },
+    /// Owner only: set a product's repository and knowledge-vault paths (DIR-23).
+    /// Paths are configuration; nothing is moved and no issue changes.
+    UpdateProductPaths {
+        product: String,
+        #[serde(default)]
+        repo_windows: String,
+        #[serde(default)]
+        repo_wsl: String,
+        #[serde(default)]
+        vault_windows: String,
+        #[serde(default)]
+        vault_wsl: String,
+    },
     CreateProductSection {
         name: String,
     },
@@ -1340,6 +1353,19 @@ pub enum Command {
         external_id: Option<String>,
         #[serde(default)]
         unresolved_mappings: Vec<UnresolvedMapping>,
+    },
+    /// Correct a captured request. Import provenance, links, promotion and
+    /// archive state are unchanged; the text is still stored once.
+    UpdateSignal {
+        id: String,
+        expected_version: u64,
+        source_kind: SignalSourceKind,
+        #[serde(default)]
+        source_reference: String,
+        summary: String,
+        received_at: i64,
+        #[serde(default)]
+        customer_reference: String,
     },
     LinkSignal {
         id: String,

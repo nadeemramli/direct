@@ -399,7 +399,11 @@ pub(crate) fn read(conn: &Connection, id: &str, at: i64) -> Result<Value> {
         "link": link,
         "observation": resolved.observation,
         "changed_since_linked": changed,
-        "content": resolved.content.as_deref().map(String::from_utf8_lossy),
+        // A leading byte-order mark is an encoding artefact, not content.
+        "content": resolved
+            .content
+            .as_deref()
+            .map(|bytes| String::from_utf8_lossy(bytes).trim_start_matches('\u{feff}').to_string()),
         "authority": AUTHORITY,
     }))
 }

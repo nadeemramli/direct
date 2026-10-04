@@ -3681,6 +3681,49 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             emit(tx, actor, "product_created", key, at)?;
             Ok(json!(p))
         }
+        Command::UpdateProductPaths {
+            product,
+            repo_windows,
+            repo_wsl,
+            vault_windows,
+            vault_wsl,
+        } => {
+            human(role)?;
+            let mut p = all::<Product>(tx, "products")?
+                .into_iter()
+                .find(|p| p.key == *product)
+                .ok_or_else(|| err("not_found", "Unknown product"))?;
+            let clean = |value: &str, field: &str| -> Result<String> {
+                let value = value.trim();
+                if value.chars().count() > 500 || value.contains('\0') {
+                    return Err(err("invalid", format!("{field} is too long or invalid")));
+                }
+                Ok(value.into())
+            };
+            let next = (
+                clean(repo_windows, "Windows repository path")?,
+                clean(repo_wsl, "WSL repository path")?,
+                clean(vault_windows, "Windows vault path")?,
+                clean(vault_wsl, "WSL vault path")?,
+            );
+            if (
+                p.repo_windows.as_str(),
+                p.repo_wsl.as_str(),
+                p.vault_windows.as_str(),
+                p.vault_wsl.as_str(),
+            ) == (
+                next.0.as_str(),
+                next.1.as_str(),
+                next.2.as_str(),
+                next.3.as_str(),
+            ) {
+                return Err(err("conflict", "Nothing changed"));
+            }
+            (p.repo_windows, p.repo_wsl, p.vault_windows, p.vault_wsl) = next;
+            put_product(tx, &p)?;
+            emit(tx, actor, "product_paths_updated", &p.key, at)?;
+            Ok(json!(p))
+        }
         Command::CreateProductSection { name } => {
             human(role)?;
             let sections = all::<ProductSection>(tx, "product_sections")?;
@@ -4291,6 +4334,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
         | Command::ReviseTemplate { .. }
         | Command::RetireTemplate { .. } => templates::mutate(tx, cmd, actor, role, at),
         Command::CaptureSignal { .. }
+        | Command::UpdateSignal { .. }
         | Command::LinkSignal { .. }
         | Command::UnlinkSignal { .. }
         | Command::PromoteSignal { .. }

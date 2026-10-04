@@ -2533,3 +2533,5 @@ dialog::backdrop {
   margin-top: 12px;
   padding-top: 4px;
 }
+
+.signal-actions { display: flex; flex-wrap: wrap; gap: 8px; }

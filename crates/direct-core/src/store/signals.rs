@@ -286,6 +286,45 @@ pub(crate) fn mutate(
             emit(tx, actor, "signal_captured", &signal.id, at)?;
             Ok(json!(signal))
         }
+        Command::UpdateSignal {
+            id,
+            expected_version,
+            source_kind,
+            source_reference,
+            summary,
+            received_at,
+            customer_reference,
+        } => {
+            let mut signal = current(tx, id, *expected_version)?;
+            // Import provenance is not editable; validate it unchanged with the new text.
+            let fields = validate_fields(
+                source_reference,
+                summary,
+                *received_at,
+                customer_reference,
+                signal.external_source.as_deref(),
+                signal.external_id.as_deref(),
+                &signal.unresolved_mappings,
+            )?;
+            if signal.source_kind == *source_kind
+                && signal.source_reference == fields.source_reference
+                && signal.summary == fields.summary
+                && signal.received_at == *received_at
+                && signal.customer_reference == fields.customer_reference
+            {
+                return Err(err("conflict", "Nothing changed"));
+            }
+            signal.source_kind = *source_kind;
+            signal.source_reference = fields.source_reference;
+            signal.summary = fields.summary;
+            signal.received_at = *received_at;
+            signal.customer_reference = fields.customer_reference;
+            signal.version += 1;
+            signal.updated_at = at;
+            put_signal(tx, &signal)?;
+            emit(tx, actor, "signal_updated", id, at)?;
+            Ok(json!(signal))
+        }
         Command::LinkSignal {
             id,
             expected_version,

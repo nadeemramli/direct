@@ -156,6 +156,35 @@
       error = failed(e);
     }
   }
+  /** Recheck every listed document using current versions (DIR-23 repair). */
+  async function recheckAll() {
+    if (busy || !links.length) return;
+    busy = true;
+    error = "";
+    notice = "";
+    try {
+      const snapshot = await api<{ context_links?: ContextLink[] }>({ op: "snapshot" });
+      const current = new Map((snapshot.context_links || []).map((l) => [l.id, l]));
+      let changed = 0;
+      let unavailable = 0;
+      for (const link of links) {
+        const fresh = current.get(link.id);
+        if (!fresh) continue;
+        const checked = await commit<ContextLink>({
+          op: "check_context_link",
+          id: fresh.id,
+          expected_version: fresh.version,
+        });
+        if (!checked.observation.available) unavailable += 1;
+        else if (changedSinceLinked(checked)) changed += 1;
+      }
+      notice = `Rechecked ${links.length}: ${changed} changed since linked, ${unavailable} unavailable.`;
+    } catch (e) {
+      error = failed(e);
+    } finally {
+      busy = false;
+    }
+  }
   function checkedAt(link: ContextLink) {
     return new Date(link.observation.checked_at * 1000).toLocaleString();
   }
@@ -206,6 +235,9 @@
         </div>{/if}
     </article>
   {:else}<p class="hint">No context documents attached.</p>{/each}
+  {#if links.length > 1}<button class="text-button context-recheck-all" disabled={!connected || busy} onclick={recheckAll}
+      >Recheck all</button
+    >{/if}
 
   {#if adding}<div class="context-add" role="group" aria-label="Attach a context document">
       <label class="field"

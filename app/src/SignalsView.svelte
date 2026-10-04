@@ -53,6 +53,9 @@
   let linkTarget = $state("");
   let promoteTitle = $state("");
   let confirmPromote = $state(false);
+  // Correcting a captured request (DIR-24 repair). Provenance and links stay as they are.
+  let editing = $state(false);
+  let editDraft = $state({ version: 0, source_kind: "support" as SignalSourceKind, source_reference: "", received: "", customer_reference: "", summary: "" });
 
   function emptyDraft() {
     // Without a scoped product, default to the first product in sidebar order (DIR-71).
@@ -124,6 +127,7 @@
   function select(signal: CustomerSignal) {
     selectedId = signal.id;
     capturing = false;
+    editing = false;
     error = "";
     notice = "";
     linkTarget = "";
@@ -190,6 +194,39 @@
     );
     confirmPromote = false;
     if (result?.issue?.key) notice = `Promoted to ${result.issue.key} in the Inbox. It is not Ready until you make it Ready.`;
+  }
+  function startEdit() {
+    if (!selected) return;
+    editDraft = {
+      // The version this edit started from: a concurrent change makes the save stale.
+      version: selected.version,
+      source_kind: selected.source_kind,
+      source_reference: selected.source_reference,
+      received: dateInput(selected.received_at),
+      customer_reference: selected.customer_reference,
+      summary: selected.summary,
+    };
+    editing = true;
+    error = "";
+    notice = "";
+  }
+  async function saveEdit(event: SubmitEvent) {
+    event.preventDefault();
+    if (!selected) return;
+    const saved = await run(
+      {
+        op: "update_signal",
+        id: selected.id,
+        expected_version: editDraft.version,
+        source_kind: editDraft.source_kind,
+        source_reference: editDraft.source_reference,
+        summary: editDraft.summary,
+        received_at: fromDateInput(editDraft.received),
+        customer_reference: editDraft.customer_reference,
+      },
+      "Request updated. Links and promotion history are unchanged.",
+    );
+    if (saved) editing = false;
   }
   async function setArchived(archived: boolean) {
     if (!selected) return;
@@ -324,6 +361,48 @@
           </div>
         </fieldset>
       </form>
+    {:else if selected && editing}
+      <form class="template-form" onsubmit={saveEdit}>
+        <fieldset class="modal-forms" disabled={busy}>
+          <p class="hint">
+            Correct what was captured. Import provenance, links, promotion and archive state stay as
+            they are.
+          </p>
+          <label class="field"
+            >Source<select aria-label="Edit request source" bind:value={editDraft.source_kind}
+              >{#each SOURCE_KINDS as kind}<option value={kind.value}>{kind.label}</option>{/each}</select
+            ></label
+          >
+          <label class="field"
+            >What did the customer ask for?<textarea
+              aria-label="Edit request text"
+              required
+              rows="4"
+              maxlength="2000"
+              bind:value={editDraft.summary}
+            ></textarea></label
+          >
+          <div class="form-grid">
+            <label class="field"
+              >Source reference<input aria-label="Edit source reference" maxlength="300" bind:value={editDraft.source_reference} /></label
+            ><label class="field"
+              >Received<input aria-label="Edit received date" type="date" required bind:value={editDraft.received} /></label
+            >
+          </div>
+          <label class="field"
+            >Customer reference<input
+              aria-label="Edit customer reference"
+              maxlength="120"
+              bind:value={editDraft.customer_reference}
+              placeholder="Account, segment or ID — not an email or phone number"
+            /></label
+          >
+          <div class="modal-footer">
+            <button type="button" class="secondary" onclick={() => (editing = false)}>Cancel</button
+            ><button class="primary" disabled={!connected || busy}>Save changes</button>
+          </div>
+        </fieldset>
+      </form>
     {:else if selected}
       {@const status = signalStatus(selected)}
       <div class="signal-summary">
@@ -418,6 +497,7 @@
       {/if}
 
       <div class="signal-actions">
+        <button class="secondary" disabled={!connected || busy} onclick={startEdit}>Edit request</button>
         <button class="secondary" disabled={!connected || busy} onclick={() => setArchived(!selected.archived)}
           >{selected.archived ? "Restore request" : "Archive request"}</button
         >

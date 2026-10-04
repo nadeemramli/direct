@@ -201,7 +201,7 @@
   let busy = $state(false);
   let tab = $state("brief");
   let modal = $state<
-    "issue" | "product" | "section" | "project" | "goal" | "milestone" | "release" | "workflow" | "label" | "edit" | "delete" | "submit" | null
+    "issue" | "product" | "productPaths" | "section" | "project" | "goal" | "milestone" | "release" | "workflow" | "label" | "edit" | "delete" | "submit" | null
   >(null);
   // Sidebar arrangement (DIR-71).
   let sidebar = $derived(sidebarGroups(data.products, data.product_sections || []));
@@ -306,6 +306,8 @@
     key: "",
     version: 0,
   });
+  // Product repository and knowledge-vault paths (DIR-23 repair).
+  let pathsDraft = $state({ product: "", name: "", repo_windows: "", repo_wsl: "", vault_windows: "", vault_wsl: "" });
   let productDraft = $state({
     key: "",
     name: "",
@@ -1840,6 +1842,24 @@
         };
     modal = "workflow";
   }
+  function editProductPaths() {
+    const p = data.products.find((candidate) => candidate.id === product);
+    if (!p) return;
+    pathsDraft = {
+      product: p.key,
+      name: p.name,
+      repo_windows: p.repo_windows,
+      repo_wsl: p.repo_wsl,
+      vault_windows: p.vault_windows,
+      vault_wsl: p.vault_wsl,
+    };
+    modal = "productPaths";
+  }
+  async function saveProductPaths(event: SubmitEvent) {
+    event.preventDefault();
+    const { name: _name, ...paths } = pathsDraft;
+    if (await act({ op: "update_product_paths", ...paths }, true)) modal = null;
+  }
   async function saveWorkflow(event: SubmitEvent) {
     event.preventDefault();
     if (busy) return;
@@ -3028,6 +3048,11 @@
             disabled={!connected || busy}
             onclick={() => editWorkflow()}>Release setup</button
           >
+          {#if product !== "all"}<button
+              class="text-button"
+              disabled={!connected || busy}
+              onclick={editProductPaths}>Product settings</button
+            >{/if}
           {#if selectedProject}<button
               class="text-button"
               disabled={!connected || busy}
@@ -4103,6 +4128,8 @@
           ? sectionDraft.id
             ? "Edit sidebar section"
             : "New sidebar section"
+        : modal === "productPaths"
+          ? "Product settings"
         : modal === "product"
           ? "New product"
           : modal === "submit"
@@ -4146,6 +4173,8 @@
                 ? sectionDraft.id
                   ? "Rename or remove the section"
                   : "Group products in the sidebar"
+              : modal === "productPaths"
+                ? `Paths for ${pathsDraft.name}`
               : modal === "product"
                 ? "A space for your product"
                 : modal === "submit"
@@ -4596,6 +4625,32 @@
             ><button class="primary" disabled={busy}
               >{sectionDraft.id ? "Save section" : "Create section"}</button
             >
+          </div>
+        </form>
+      {:else if modal === "productPaths"}<form class="modal-form" onsubmit={saveProductPaths}>
+          <p class="hint">
+            Where this product's code and Obsidian knowledge live. Context documents resolve note
+            paths inside the Windows vault path. Changing a path moves nothing and changes no issue.
+          </p>
+          <label class="field"
+            >Windows vault path<input
+              aria-label="Windows vault path"
+              maxlength="500"
+              bind:value={pathsDraft.vault_windows}
+              placeholder="C:/Users/…/Obsidian/vault/Product notes"
+            /></label
+          >
+          <label class="field"
+            >WSL vault path<input aria-label="WSL vault path" maxlength="500" bind:value={pathsDraft.vault_wsl} /></label
+          >
+          <label class="field"
+            >Windows repository path<input aria-label="Windows repository path" maxlength="500" bind:value={pathsDraft.repo_windows} /></label
+          >
+          <label class="field"
+            >WSL repository path<input aria-label="WSL repository path" maxlength="500" bind:value={pathsDraft.repo_wsl} /></label
+          >
+          <div class="modal-footer">
+            <button class="primary" disabled={busy}>Save paths</button>
           </div>
         </form>
       {:else if modal === "product"}<form class="modal-form" onsubmit={createProduct}>

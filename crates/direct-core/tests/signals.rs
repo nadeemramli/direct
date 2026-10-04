@@ -488,3 +488,70 @@ fn schema_14_workspace_upgrades_in_place() {
     assert!(signals(&mut s).is_empty());
     capture(&mut s, "Works after upgrade");
 }
+
+#[test]
+fn captured_requests_can_be_corrected_without_touching_provenance_or_links() {
+    let (_dir, mut s) = seeded();
+    let issue = send(
+        &mut s,
+        json!({"op":"create_issue","product":"DIR","title":"Exports"}),
+        Role::Agent,
+    )
+    .unwrap();
+    let imported = send(
+        &mut s,
+        json!({"op":"capture_signal","product":"DIR","source_kind":"support","summary":"Exprot to CSV",
+               "received_at":800,"customer_reference":"Acme","external_source":"zendesk","external_id":"Z-1",
+               "unresolved_mappings":[{"external_source":"linear","external_id":"LIN-9","note":""}]}),
+        Role::Agent,
+    )
+    .unwrap();
+    send(
+        &mut s,
+        json!({"op":"link_signal","id":imported["id"],"expected_version":1,"kind":"issue","target":issue["key"]}),
+        Role::Agent,
+    )
+    .unwrap();
+    let edit = |version: u64, summary: &str, customer: &str| {
+        json!({"op":"update_signal","id":imported["id"],"expected_version":version,"source_kind":"call",
+               "source_reference":"Call 12","summary":summary,"received_at":850,"customer_reference":customer})
+    };
+    let updated = send(
+        &mut s,
+        edit(2, " Export to CSV ", "Acme finance"),
+        Role::Agent,
+    )
+    .unwrap();
+    assert_eq!(updated["summary"], "Export to CSV");
+    assert_eq!(updated["source_kind"], "call");
+    assert_eq!(updated["source_reference"], "Call 12");
+    assert_eq!(updated["received_at"], 850);
+    assert_eq!(updated["customer_reference"], "Acme finance");
+    assert_eq!(updated["version"], 3);
+    // Provenance, links and mappings are untouched.
+    assert_eq!(updated["external_id"], "Z-1");
+    assert_eq!(updated["unresolved_mappings"][0]["external_id"], "LIN-9");
+    assert_eq!(updated["links"][0]["target"], issue["key"]);
+    for (request, code) in [
+        (edit(2, "Stale edit", "Acme"), "conflict"),
+        (edit(3, "Export to CSV", "Acme finance"), "conflict"),
+        (edit(3, "Export to CSV", "ops@acme.com"), "invalid"),
+        (edit(3, "   ", "Acme"), "invalid"),
+    ] {
+        assert_eq!(
+            send(&mut s, request.clone(), Role::Agent).unwrap_err().code,
+            code,
+            "{request}"
+        );
+    }
+    let ctx = send(
+        &mut s,
+        json!({"op":"context","key":issue["key"]}),
+        Role::Agent,
+    )
+    .unwrap();
+    assert_eq!(ctx["customer_signals"][0]["summary"], "Export to CSV");
+    let kinds =
+        send(&mut s, json!({"op":"changes","after":0}), Role::Agent).unwrap()["events"].to_string();
+    assert!(kinds.contains("signal_updated"));
+}
