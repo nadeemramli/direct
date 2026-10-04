@@ -31,6 +31,7 @@
   import TemplatesView from "./TemplatesView.svelte";
   import SignalsView from "./SignalsView.svelte";
   import ContextDocs from "./ContextDocs.svelte";
+  import CloudHandoffs from "./CloudHandoffs.svelte";
   import { linksFor } from "./context";
   import { signalStatus } from "./signals";
   import ProgressBar from "./ProgressBar.svelte";
@@ -3666,6 +3667,7 @@
                 links={context?.context_links || []}
                 productId={current.product_id}
               />
+              <CloudHandoffs handoffs={context?.cloud_handoffs || []} />
               {#if current.claim}<div class="info-card">
                   <span class="card-symbol">↗</span>
                   <div>

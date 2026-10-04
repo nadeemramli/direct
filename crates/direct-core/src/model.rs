@@ -877,6 +877,8 @@ pub enum DeletionBlockerKind {
     CustomerSignals,
     /// Context documents attached directly to the issue (removable).
     ContextLinks,
+    /// Cloud-session handoffs prepared for the issue (retained).
+    CloudHandoffs,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1234,6 +1236,37 @@ pub enum Command {
         hypothesis: String,
         proposal: String,
         evidence: Vec<EvidencePointer>,
+    },
+    /// Freeze a bounded packet for one cloud session (DIR-58). Owner or the
+    /// active claim holder; the issue must be claimed and is not modified.
+    PrepareCloudHandoff {
+        key: String,
+        expected_version: u64,
+        repository: String,
+        base_ref: String,
+        required_model: String,
+        evidence_plan: String,
+        #[serde(default)]
+        constraints: Vec<String>,
+    },
+    /// Record the returned session, model, PR, tested SHA and checks.
+    ReconcileCloudHandoff {
+        id: String,
+        expected_version: u64,
+        issue_expected_version: u64,
+        session_id: String,
+        model: String,
+        pr_url: String,
+        tested_sha: String,
+        checks: Vec<CloudCheck>,
+        cloud_verdict: String,
+        #[serde(default)]
+        summary: String,
+    },
+    WithdrawCloudHandoff {
+        id: String,
+        expected_version: u64,
+        reason: String,
     },
     RecordGitTrace {
         key: String,
@@ -1629,6 +1662,120 @@ pub struct Replay {
     pub response: String,
 }
 
+/// Lifecycle of a bounded cloud-session handoff (DIR-58).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudHandoffStatus {
+    /// Packet frozen and ready to hand to one cloud session.
+    Prepared,
+    /// The coordinator recorded the returned session, PR, SHA and checks.
+    Reconciled,
+    /// Abandoned before reconciliation; kept for audit.
+    Withdrawn,
+}
+
+/// Guidance pinned on the issue when the packet was frozen.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudGuidancePin {
+    pub document_id: String,
+    pub title: String,
+    pub relative_path: String,
+    pub recorded_fingerprint: Option<String>,
+    pub playbook_version: Option<String>,
+}
+
+/// Everything a cloud session receives, and nothing else. Fields are an
+/// explicit allow-list: no service address, grant, capability, local path,
+/// owner identity, unrelated issue or database content.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudPacket {
+    pub format: u32,
+    pub issue_key: String,
+    pub product_key: String,
+    pub title: String,
+    pub body: String,
+    pub acceptance: String,
+    pub issue_version: u64,
+    pub claim_actor: String,
+    pub claim_expires_at: i64,
+    pub repository: String,
+    pub base_ref: String,
+    pub required_model: String,
+    pub guidance: Vec<CloudGuidancePin>,
+    pub evidence_plan: String,
+    pub constraints: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudCheckEnvironment {
+    Cloud,
+    Local,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudCheckOutcome {
+    Passed,
+    Failed,
+    Skipped,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudCheck {
+    pub name: String,
+    pub outcome: CloudCheckOutcome,
+    pub environment: CloudCheckEnvironment,
+    #[serde(default)]
+    pub detail: String,
+}
+
+/// The cloud session's own result. There is deliberately no delivered value:
+/// a delivered Pass needs local integration, install and smoke evidence.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudVerdict {
+    Passed,
+    Failed,
+    Blocked,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudReconciliation {
+    pub session_id: String,
+    pub model: String,
+    pub pr_url: String,
+    pub tested_sha: String,
+    pub checks: Vec<CloudCheck>,
+    pub cloud_verdict: CloudVerdict,
+    pub summary: String,
+    pub reconciled_by: String,
+    pub reconciled_at: i64,
+}
+
+/// A frozen packet for one cloud session and its coordinator reconciliation
+/// (format 19). The issue itself is never modified by a handoff.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudHandoff {
+    pub id: String,
+    pub issue_key: String,
+    pub product_id: String,
+    pub version: u64,
+    pub status: CloudHandoffStatus,
+    pub packet: CloudPacket,
+    pub packet_sha256: String,
+    /// Hash of the brief and guidance pins at prepare time; a change makes
+    /// the packet stale for reconciliation.
+    pub brief_sha256: String,
+    pub prepared_by: String,
+    pub prepared_at: i64,
+    pub updated_at: i64,
+    #[serde(default)]
+    pub reconciliation: Option<CloudReconciliation>,
+    #[serde(default)]
+    pub withdrawn_reason: Option<String>,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Archive {
     pub format: u32,
@@ -1643,6 +1790,9 @@ pub struct Archive {
     /// Context document links (format 17). Obsidian content is never archived.
     #[serde(default)]
     pub context_links: Vec<ContextLink>,
+    /// Bounded cloud-session handoffs and reconciliations (format 19).
+    #[serde(default)]
+    pub cloud_handoffs: Vec<CloudHandoff>,
     #[serde(default)]
     pub projects: Vec<Project>,
     #[serde(default)]

@@ -384,7 +384,7 @@ fn signals_survive_reopen_archive_and_restore_with_format_checks() {
 
     let archive = s.export().unwrap();
     assert_eq!(archive.format, ARCHIVE_FORMAT);
-    assert_eq!(archive.format, 18);
+    assert_eq!(archive.format, 19);
     assert_eq!(archive.customer_signals.len(), 3);
     validate_archive(&archive).unwrap();
     let other = TempDir::new().unwrap();
@@ -484,7 +484,7 @@ fn schema_14_workspace_upgrades_in_place() {
             r.get(0)
         })
         .unwrap();
-    assert_eq!(schema, "16");
+    assert_eq!(schema, "17");
     assert!(signals(&mut s).is_empty());
     capture(&mut s, "Works after upgrade");
 }

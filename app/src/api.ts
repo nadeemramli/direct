@@ -454,7 +454,10 @@ export type DeletionBlockerKind =
   | "git_traces"
   | "issue_links"
   | "release_references"
-  | "release_evidence";
+  | "release_evidence"
+  | "customer_signals"
+  | "context_links"
+  | "cloud_handoffs";
 export interface DeletionBlocker {
   kind: DeletionBlockerKind;
   count: number;
@@ -471,12 +474,71 @@ export interface DeletionEligibility {
   eligible: boolean;
   blockers: DeletionBlocker[];
 }
+export type CloudHandoffStatus = "prepared" | "reconciled" | "withdrawn";
+export interface CloudGuidancePin {
+  document_id: string;
+  title: string;
+  relative_path: string;
+  recorded_fingerprint: string | null;
+  playbook_version: string | null;
+}
+export interface CloudPacket {
+  format: number;
+  issue_key: string;
+  product_key: string;
+  title: string;
+  body: string;
+  acceptance: string;
+  issue_version: number;
+  claim_actor: string;
+  claim_expires_at: number;
+  repository: string;
+  base_ref: string;
+  required_model: string;
+  guidance: CloudGuidancePin[];
+  evidence_plan: string;
+  constraints: string[];
+}
+export interface CloudCheck {
+  name: string;
+  outcome: "passed" | "failed" | "skipped";
+  environment: "cloud" | "local";
+  detail: string;
+}
+export interface CloudReconciliation {
+  session_id: string;
+  model: string;
+  pr_url: string;
+  tested_sha: string;
+  checks: CloudCheck[];
+  cloud_verdict: "passed" | "failed" | "blocked";
+  summary: string;
+  reconciled_by: string;
+  reconciled_at: number;
+}
+export interface CloudHandoff {
+  id: string;
+  issue_key: string;
+  product_id: string;
+  version: number;
+  status: CloudHandoffStatus;
+  packet: CloudPacket;
+  packet_sha256: string;
+  brief_sha256: string;
+  prepared_by: string;
+  prepared_at: number;
+  updated_at: number;
+  reconciliation: CloudReconciliation | null;
+  withdrawn_reason: string | null;
+}
 export interface Context {
   deletion?: DeletionEligibility;
   /** Customer requests linked to or promoted into this issue (DIR-24). */
   customer_signals?: CustomerSignal[];
   /** Context documents on the issue and inherited from its project, goals and releases. */
   context_links?: ContextLink[];
+  /** Bounded cloud-session packets and their reconciliation (DIR-58). */
+  cloud_handoffs?: CloudHandoff[];
   context_authority?: string;
   issue: Issue;
   product: Product;

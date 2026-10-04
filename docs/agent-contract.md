@@ -109,7 +109,7 @@ git push origin codex/direct-pilot
 
 Commit and push records are distinct. Neither record proves that a pull request was opened, merged, deployed, or accepted. A failed push must not be recorded. Reusing the same request ID with the exact payload is safe; a second logical record under a different request ID is rejected.
 
-Agent operations: `snapshot`, `context`, `changes`, `export`, `source_bundles`, `search_sources`, `source_record`, `templates`, `create_issue`, `update_issue`, `set_issue_project`, `attach_issue_label`, `detach_issue_label`, `set_issue_milestone`, `create_issue_link`, `delete_issue_link`, `capture_signal`, `update_signal`, `link_signal`, `unlink_signal`, `promote_signal`, `archive_signal`, `check_context_link`, `read_context_link`, `sync_theoria`, `link_theoria`, `create_method_finding`, `record_git_trace`, `claim`, `renew`, `release`, `comment`, `submit`. The typed source of truth is `crates/direct-core/src/model.rs`. Updates and comments also require the current issue version. An active claim is required to submit, link Theoria guidance, record a method finding, record Git evidence, or change issue planning/links on Doing work; expired claims must be explicitly reacquired. The default lease is one hour, with a maximum of 24 hours.
+Agent operations: `snapshot`, `context`, `changes`, `export`, `source_bundles`, `search_sources`, `source_record`, `templates`, `create_issue`, `update_issue`, `set_issue_project`, `attach_issue_label`, `detach_issue_label`, `set_issue_milestone`, `create_issue_link`, `delete_issue_link`, `capture_signal`, `update_signal`, `link_signal`, `unlink_signal`, `promote_signal`, `archive_signal`, `check_context_link`, `read_context_link`, `sync_theoria`, `link_theoria`, `create_method_finding`, `record_git_trace`, `prepare_cloud_handoff`, `reconcile_cloud_handoff`, `withdraw_cloud_handoff`, `claim`, `renew`, `release`, `comment`, `submit`. The typed source of truth is `crates/direct-core/src/model.rs`. Updates and comments also require the current issue version. An active claim is required to submit, link Theoria guidance, record a method finding, record Git evidence, or change issue planning/links on Doing work; expired claims must be explicitly reacquired. The default lease is one hour, with a maximum of 24 hours.
 
 Owner-only operations are `create_label`, `update_label`, `attach_project_label`, `detach_project_label`, `create_product`, `add_context_link`, `remove_context_link`, `update_product_paths`, `create_product_section`, `update_product_section`, `delete_product_section`, `arrange_products`, `create_project`, `update_project`, `create_goal`, `update_goal`, `create_milestone`, `update_milestone`, `set_release_workflow_config`, `create_release`, `update_release`, `record_release_evidence`, `create_template`, `revise_template`, `retire_template`, `delete_issue`, `cancel_issue`, `set_theoria_sharing`, `rollback_migration`, `ready`, `review`, and `reopen`. The agent CLI rejects them. Migration preview and apply use the owner-only upload endpoints described below, never `/api/command`. Review requires an explicit `run_id` matching the current submission; results from an earlier build cannot complete a later build.
 
@@ -150,6 +150,26 @@ To regroup an existing issue use `set_issue_project` with `key`, `expected_versi
 After failure, read `context`: preserve the review feedback, claim again, fix, and submit a new run. Do not mark work Done, equate canceled tests with success, or claim the owner has accepted work because automated tests passed.
 
 All submissions require the [E2E delivery contract](e2e-delivery.md), including `e2e` evidence on raw JSON and MCP calls. Native submit takes the five E2E/delivery flags shown above and asserts a passing outcome. Do not invoke it until the checks have passed. Missing evidence, blank observations, non-passing outcomes, or differing tested/delivered/submitted build refs are rejected without creating a verification run. Historical archives remain readable with absent evidence; absence never implies passing E2E checks.
+
+## Cloud handoffs
+
+A coordinator can hand one claimed issue to a cloud session without exposing the local service (DIR-58). Dispatching sessions is separate (DIR-76).
+
+1. `prepare_cloud_handoff` (`key`, `expected_version`, `repository` as `owner/name`, `base_ref`, `required_model`, `evidence_plan`, optional `constraints`). The owner or the active claim holder can call it on Ready or Doing work that a coordinator holds. Direct freezes an allow-listed packet: issue key, product key, title, brief, acceptance, issue version, claim actor and expiry, repository route, required model, pinned guidance (ID, path, recorded fingerprint, playbook version), evidence plan and fixed constraints. It never includes the service address or port, launch grants, capabilities, local repository or vault paths, owner identity, comments, other issues or database content. The packet SHA-256 is recorded, the issue is not modified, and only one open handoff per issue is allowed. `direct handoff <KEY> [--id ID]` prints the packet as Markdown, and the issue detail offers **Copy packet**.
+2. The cloud session works on a branch and opens a PR. The coordinator records the commit and push with `record-commit`/`record-push` as usual.
+3. `reconcile_cloud_handoff` (`id`, `expected_version`, `issue_expected_version`, `session_id`, `model`, `pr_url`, `tested_sha`, `checks` with `name`/`outcome`/`environment` = `cloud` or `local`, `cloud_verdict` = `passed`, `failed` or `blocked`, `summary`). Direct refuses it when:
+   - the handoff or issue version is stale;
+   - the brief or pinned guidance changed since prepare;
+   - the claim is no longer held by the packet's claim actor;
+   - the model differs from `required_model`;
+   - the PR is outside the packet repository;
+   - the SHA was not pushed to that repository for this issue;
+   - a `passed` verdict has a failed or skipped check;
+   - the verdict claims delivery (`delivered`, `verified`, and similar).
+   An exact request-ID retry replays; a second reconciliation conflicts. `withdraw_cloud_handoff` (`id`, `expected_version`, `reason`) abandons an open packet.
+4. Cloud checks are cloud evidence only. `submit` refuses while a handoff is open, and refuses a build whose reconciliation failed or was blocked. A delivered Pass still requires local integration, install of the exact tested build and an owner-entrypoint smoke check, per [E2E delivery](e2e-delivery.md).
+
+Handoffs are retained evidence (archive format 19) and block issue deletion.
 
 ## Human owner housekeeping
 

@@ -2943,3 +2943,30 @@ dialog::backdrop {
 .guidance-scope button {
   padding: 2px 8px;
 }
+
+.cloud-handoff {
+  border: 1px solid #343d3f;
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 8px 0;
+}
+.cloud-handoff.withdrawn {
+  opacity: 0.7;
+}
+.check-chip {
+  display: inline-block;
+  margin: 0 6px 4px 0;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: #262e30;
+  font-size: 10px;
+}
+.check-chip.failed,
+.cloud-verdict.failed,
+.cloud-verdict.blocked {
+  color: #e0a39a;
+}
+.check-chip.passed,
+.cloud-verdict.passed {
+  color: #8fc5a5;
+}
