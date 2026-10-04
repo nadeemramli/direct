@@ -2192,7 +2192,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             let owner = owner.trim();
             let mut changed = Vec::new();
             for mut issue in all::<Issue>(tx, "issues")? {
-                if issue.owner != owner {
+                if !issue.owner.trim().is_empty() && issue.owner != owner {
                     issue.owner = owner.to_string();
                     changed.push(issue.key.clone());
                     save(tx, issue, actor, "human_owner_consolidated", at)?;

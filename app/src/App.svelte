@@ -4865,7 +4865,7 @@
           {#if ownerOptions.length > 1}
             <p class="hint">For a workspace with one human reviewer, consolidate all existing issue owners. New issues will default to that reviewer.</p>
             {#if consolidationOwner}
-              <p class="hint">Use {consolidationOwner} as the human owner for every issue in this workspace, including unassigned issues? Issue statuses and verification history will stay unchanged.</p>
+              <p class="hint">Replace all existing named human owners with {consolidationOwner}? Unassigned issues, statuses and verification history will stay unchanged.</p>
               <button type="button" disabled={formPending} onclick={consolidateOwners}>Confirm owner consolidation</button>
               <button type="button" disabled={formPending} onclick={() => (consolidationOwner = null)}>Cancel owner consolidation</button>
             {:else}

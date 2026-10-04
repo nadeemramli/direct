@@ -31,6 +31,13 @@ fn owner_consolidation_preserves_workflow_and_defaults_after_restart_and_restore
     let dir = TempDir::new().unwrap();
     let path = dir.path().join("db");
     let mut store = Store::open(&path).unwrap();
+    send(
+        &mut store,
+        json!({"op":"create_issue","product":"DIR","title":"Unassigned"}),
+        Role::Agent,
+        99,
+    )
+    .unwrap();
     let ready = prepared(&mut store);
     let key = ready["key"].as_str().unwrap();
     send(
@@ -42,7 +49,13 @@ fn owner_consolidation_preserves_workflow_and_defaults_after_restart_and_restore
     .unwrap();
     send(&mut store, submission(key, 4), Role::Agent, 104).unwrap();
     let doing = prepared(&mut store);
-    send(&mut store, json!({"op":"claim","key":doing["key"],"expected_version":3}), Role::Agent, 104).unwrap();
+    send(
+        &mut store,
+        json!({"op":"claim","key":doing["key"],"expected_version":3}),
+        Role::Agent,
+        104,
+    )
+    .unwrap();
     send(&mut store, json!({"op":"create_issue","product":"DIR","title":"Imported reviewer","owner":"Taufiq Mastor"}), Role::Agent, 105).unwrap();
     let before = store.export().unwrap();
     let snapshot = send(&mut store, json!({"op":"snapshot"}), Role::Agent, 106).unwrap();
@@ -72,6 +85,13 @@ fn owner_consolidation_preserves_workflow_and_defaults_after_restart_and_restore
             .iter()
             .find(|issue| issue.key == old.key)
             .unwrap();
+        if old.owner.is_empty() {
+            assert_eq!(
+                serde_json::to_value(new).unwrap(),
+                serde_json::to_value(old).unwrap()
+            );
+            continue;
+        }
         assert_eq!(new.owner, "Nadeem Ramli");
         let mut expected = serde_json::to_value(old).unwrap();
         expected["owner"] = json!("Nadeem Ramli");
