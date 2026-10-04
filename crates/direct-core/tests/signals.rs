@@ -421,8 +421,15 @@ fn signals_survive_reopen_archive_and_restore_with_format_checks() {
     };
     assert_eq!(invalid(archive.clone(), &|a| a.format = 15), "invalid");
     assert_eq!(
-        invalid(archive.clone(), &|a| a.customer_signals[0].links[0]
-            .target = "DIR-999".into()),
+        invalid(archive.clone(), &|a| {
+            // Archive order follows IDs; pick a request that actually has a link.
+            let linked = a
+                .customer_signals
+                .iter()
+                .position(|s| !s.links.is_empty())
+                .unwrap();
+            a.customer_signals[linked].links[0].target = "DIR-999".into();
+        }),
         "invalid"
     );
     assert_eq!(
