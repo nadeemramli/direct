@@ -380,7 +380,18 @@ impl Store {
         if let Some(schema) = schema.as_deref() {
             if !matches!(
                 schema,
-                "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9" | "10" | "11" | "12" | "13"
+                "1" | "2"
+                    | "3"
+                    | "4"
+                    | "5"
+                    | "6"
+                    | "7"
+                    | "8"
+                    | "9"
+                    | "10"
+                    | "11"
+                    | "12"
+                    | "13"
                     | "14"
             ) {
                 return Err(err("unsupported", "Unsupported database schema"));
@@ -1229,9 +1240,9 @@ fn product_section(conn: &Connection, id: &str) -> Result<ProductSection> {
             r.get(0)
         })
         .optional()?;
-    Ok(serde_json::from_str(
-        &data.ok_or_else(|| err("not_found", "Unknown sidebar section"))?,
-    )?)
+    Ok(serde_json::from_str(&data.ok_or_else(|| {
+        err("not_found", "Unknown sidebar section")
+    })?)?)
 }
 fn put_product_section(conn: &Connection, section: &ProductSection) -> Result<()> {
     conn.execute(
@@ -1254,7 +1265,10 @@ fn product_section_name(
     if existing.iter().any(|section| {
         Some(section.id.as_str()) != except && section.name.to_lowercase() == name.to_lowercase()
     }) {
-        return Err(err("conflict", "A sidebar section with this name already exists"));
+        return Err(err(
+            "conflict",
+            "A sidebar section with this name already exists",
+        ));
     }
     Ok(name.into())
 }
@@ -3633,7 +3647,10 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             human(role)?;
             let mut section = product_section(tx, id)?;
             if section.version != *expected_version {
-                return Err(err("conflict", "Sidebar section changed; refresh and retry"));
+                return Err(err(
+                    "conflict",
+                    "Sidebar section changed; refresh and retry",
+                ));
             }
             let sections = all::<ProductSection>(tx, "product_sections")?;
             section.name = product_section_name(&sections, name, Some(id))?;
@@ -3650,7 +3667,10 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             human(role)?;
             let section = product_section(tx, id)?;
             if section.version != *expected_version {
-                return Err(err("conflict", "Sidebar section changed; refresh and retry"));
+                return Err(err(
+                    "conflict",
+                    "Sidebar section changed; refresh and retry",
+                ));
             }
             let mut ungrouped = Vec::new();
             let mut products = all::<Product>(tx, "products")?;
@@ -3688,7 +3708,9 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             if products.len() != current_products.len()
                 || !products.iter().all(|placement| {
                     seen.insert(placement.product_id.as_str())
-                        && current_products.iter().any(|p| p.id == placement.product_id)
+                        && current_products
+                            .iter()
+                            .any(|p| p.id == placement.product_id)
                 })
             {
                 return Err(stale());
