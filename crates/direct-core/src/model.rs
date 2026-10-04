@@ -602,6 +602,10 @@ pub struct TheoriaDocument {
     pub catalog_version: u32,
     pub checked_at: i64,
     pub cached_at: Option<i64>,
+    /// Owner-set workspace sharing (DIR-57): issues in any product may link it.
+    /// The source product still owns the content; only its catalog sync updates it.
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -611,6 +615,10 @@ pub struct TheoriaReference {
     pub playbook_version: Option<String>,
     pub linked_by: String,
     pub linked_at: i64,
+    /// Linked from another product through workspace sharing. The pin stays
+    /// valid if the document is later unshared (DIR-57).
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub shared: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1203,6 +1211,12 @@ pub enum Command {
         source_root: String,
         catalog_version: u32,
         documents: Vec<TheoriaDocumentInput>,
+    },
+    /// Owner only: share a Theoria document with every product, or stop sharing it.
+    /// Unsharing blocks new cross-product links; existing pins are kept (DIR-57).
+    SetTheoriaSharing {
+        document_id: String,
+        shared: bool,
     },
     LinkTheoria {
         key: String,

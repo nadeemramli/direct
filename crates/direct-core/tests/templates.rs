@@ -508,7 +508,7 @@ fn templates_persist_across_reopen_and_roundtrip_through_archives() {
     )
     .unwrap();
     let before = serde_json::to_value(w.store.export().unwrap()).unwrap();
-    assert_eq!(before["format"], 17);
+    assert_eq!(before["format"], 18);
     assert_eq!(before["templates"].as_array().unwrap().len(), 1);
     assert_eq!(before["template_revisions"].as_array().unwrap().len(), 2);
 
@@ -585,7 +585,7 @@ fn format_12_archive_restores_and_legacy_requests_replay_with_unchanged_hashes()
     let restored = serde_json::to_value(store.export().unwrap()).unwrap();
     // Only the format and the new empty collections differ.
     let mut expected = source.clone();
-    expected["format"] = json!(17);
+    expected["format"] = json!(18);
     expected["templates"] = json!([]);
     expected["template_revisions"] = json!([]);
     assert_eq!(restored, expected);

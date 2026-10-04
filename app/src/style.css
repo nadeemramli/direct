@@ -2933,3 +2933,13 @@ dialog::backdrop {
 .sidebar.collapsed .section-fold {
   display: none;
 }
+
+.guidance-scope {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.guidance-scope button {
+  padding: 2px 8px;
+}

@@ -354,7 +354,7 @@ fn human(role: Role) -> Result<()> {
 
 /// The archive format this build exports. Format 15 adds the sidebar
 /// arrangement (product order and sections); every older format restores.
-pub const ARCHIVE_FORMAT: u32 = 17;
+pub const ARCHIVE_FORMAT: u32 = 18;
 
 pub struct Store {
     conn: Connection,
@@ -2963,6 +2963,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                     catalog_version: *catalog_version,
                     checked_at: at,
                     cached_at,
+                    shared: prior.is_some_and(|document| document.shared),
                 };
                 put_theoria_document(tx, &document)?;
                 synced.push(document);
@@ -2971,6 +2972,24 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
             Ok(
                 json!({"documents":synced,"source_authority":"Imported read-only cache; maintained content remains external"}),
             )
+        }
+        Command::SetTheoriaSharing {
+            document_id,
+            shared,
+        } => {
+            human(role)?;
+            let mut document = theoria_document(tx, document_id)?;
+            if document.shared != *shared {
+                document.shared = *shared;
+                put_theoria_document(tx, &document)?;
+                let kind = if *shared {
+                    "theoria_guidance_shared"
+                } else {
+                    "theoria_guidance_unshared"
+                };
+                emit(tx, actor, kind, &document.id, at)?;
+            }
+            Ok(serde_json::to_value(document)?)
         }
         Command::LinkTheoria {
             key,
@@ -2983,10 +3002,11 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 held(&i, actor, at)?;
             }
             let document = theoria_document(tx, document_id)?;
-            if document.product_id != i.product_id {
+            let cross_product = document.product_id != i.product_id;
+            if cross_product && !document.shared {
                 return Err(err(
                     "invalid",
-                    "Theoria guidance must belong to the issue's product",
+                    "Theoria guidance must belong to the issue's product or be shared with the workspace",
                 ));
             }
             if i.theoria_refs
@@ -3009,6 +3029,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
                 playbook_version,
                 linked_by: actor.into(),
                 linked_at: at,
+                shared: cross_product,
             });
             save(tx, i, actor, "theoria_guidance_linked", at)
         }
@@ -4886,7 +4907,7 @@ pub(crate) fn validate_archive_structure(a: &Archive) -> Result<()> {
                 .iter()
                 .find(|document| document.id == reference.document_id)
                 .ok_or_else(|| err("invalid", "Unresolved Theoria guidance link"))?;
-            if document.product_id != i.product_id
+            if (document.product_id != i.product_id && !reference.shared)
                 || !linked.insert(reference.document_id.clone())
                 || reference
                     .recorded_fingerprint
@@ -4907,6 +4928,17 @@ pub(crate) fn validate_archive_structure(a: &Archive) -> Result<()> {
             || a.issues.iter().any(|issue| !issue.theoria_refs.is_empty()))
     {
         return Err(err("invalid", "Theoria data requires archive format 3"));
+    }
+    if a.format < 18
+        && (a.theoria_documents.iter().any(|document| document.shared)
+            || a.issues
+                .iter()
+                .any(|issue| issue.theoria_refs.iter().any(|reference| reference.shared)))
+    {
+        return Err(err(
+            "invalid",
+            "Shared Theoria guidance requires archive format 18",
+        ));
     }
     if a.format < 4 && !a.git_traces.is_empty() {
         return Err(err("invalid", "Git trace data requires archive format 4"));
