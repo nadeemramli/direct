@@ -318,7 +318,7 @@ fn templates_cross_the_wire_owner_defines_agents_apply_and_restart_preserves_pro
     let before = client
         .call(&req(json!({"op":"export"})), Role::Agent)
         .unwrap();
-    assert_eq!(before["format"], 20);
+    assert_eq!(before["format"], 21);
     drop(service);
     let _restart = start(&dir);
     let after = Client::new(&dir)

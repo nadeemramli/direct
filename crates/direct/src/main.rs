@@ -15,6 +15,7 @@ use std::{
 };
 
 mod linear_import;
+mod members_cli;
 mod roles_cli;
 
 #[derive(Deserialize)]
@@ -72,6 +73,11 @@ enum Cli {
         key: String,
         #[arg(long)]
         id: Option<String>,
+    },
+    /// Check agent member runtime capability through the real harness (DIR-75).
+    Members {
+        #[command(subcommand)]
+        action: members_cli::MembersAction,
     },
     /// Register skill bundles and publish role revisions into a project (DIR-74).
     Roles {
@@ -776,6 +782,9 @@ fn run() -> Result<()> {
                 client.stop()?;
                 println!("Direct service is stopping.");
                 return Ok(());
+            }
+            if let Cli::Members { action } = &other {
+                return members_cli::run_action(&client, &args.actor, action.clone());
             }
             if let Cli::Roles { action } = &other {
                 return roles_cli::run(&client, &args.actor, action.clone());

@@ -457,7 +457,8 @@ export type DeletionBlockerKind =
   | "release_evidence"
   | "customer_signals"
   | "context_links"
-  | "cloud_handoffs";
+  | "cloud_handoffs"
+  | "assignments";
 export interface DeletionBlocker {
   kind: DeletionBlockerKind;
   count: number;
@@ -539,6 +540,7 @@ export interface Context {
   context_links?: ContextLink[];
   /** Bounded cloud-session packets and their reconciliation (DIR-58). */
   cloud_handoffs?: CloudHandoff[];
+  assignment?: AssignmentContext | null;
   context_authority?: string;
   issue: Issue;
   product: Product;
@@ -707,6 +709,50 @@ export interface RolePublication {
   evidence: ActivationEvidence[];
   rollback: { by: string; at: number; removed: string[]; kept_modified: string[] } | null;
 }
+export interface MemberCapability {
+  harness_version: string;
+  verified_models: string[];
+  evidence: string;
+  checked_by: string;
+  checked_at: number;
+}
+export interface AgentMember {
+  id: string;
+  name: string;
+  runtime: string;
+  enabled: boolean;
+  connection_ref: string;
+  product_ids: string[];
+  default_role_key: string | null;
+  default_model: string | null;
+  capability: MemberCapability | null;
+  version: number;
+  created_at: number;
+  updated_at: number;
+}
+export interface IssueAssignment {
+  id: string;
+  issue_key: string;
+  member_id: string;
+  role_id: string;
+  requested_model: string;
+  status: "active" | "superseded" | "cleared";
+  version: number;
+  assigned_by: string;
+  assigned_at: number;
+  reconciliation: string | null;
+  sessions: { session_id: string; model: string; recorded_by: string; recorded_at: number }[];
+  cleared: Retirement | null;
+  updated_at: number;
+}
+/** An issue's resolved assignment in context (DIR-75). */
+export interface AssignmentContext {
+  assignment: IssueAssignment;
+  member: { id: string; name: string; runtime: string; enabled: boolean } | null;
+  role: { id: string; key: string; revision: number; name: string; status: RoleStatus } | null;
+  requested_model: string;
+  actual_model: string | null;
+}
 export interface Snapshot {
   review_ready_runs?: string[];
   workspace_id: string;
@@ -718,6 +764,9 @@ export interface Snapshot {
   skill_packages?: SkillPackage[];
   agent_roles?: AgentRole[];
   role_publications?: RolePublication[];
+  /** Agent members and issue assignments (DIR-75). */
+  agent_members?: AgentMember[];
+  issue_assignments?: IssueAssignment[];
   projects: Project[];
   project_progress?: ProjectProgress[];
   goals: Goal[];

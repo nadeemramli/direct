@@ -232,6 +232,8 @@ pub fn dry_run(
         skill_packages: Vec::new(),
         agent_roles: Vec::new(),
         role_publications: Vec::new(),
+        agent_members: Vec::new(),
+        issue_assignments: Vec::new(),
         projects: vec![project],
         goals,
         milestones,
