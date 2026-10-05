@@ -508,7 +508,7 @@ fn links_survive_reopen_and_archive_round_trip_with_format_checks() {
 
     let archive = s.export().unwrap();
     assert_eq!(archive.format, ARCHIVE_FORMAT);
-    assert_eq!(archive.format, 25);
+    assert_eq!(archive.format, 26);
     assert_eq!(archive.context_links.len(), 2);
     validate_archive(&archive).unwrap();
     let other = TempDir::new().unwrap();
