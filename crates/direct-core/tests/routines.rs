@@ -466,3 +466,39 @@ fn pause_cancels_pending_member_disable_blocks_limits_hold_and_restore_requires_
     old.format = 23;
     assert!(validate_archive(&old).is_err());
 }
+
+#[test]
+fn idle_ticks_leave_no_trace_and_scheduler_changes_refresh_views() {
+    let dir = TempDir::new().unwrap();
+    let mut s = Store::open(&dir.path().join("db")).unwrap();
+    let w = world(&mut s);
+    let r = send(
+        &mut s,
+        json!({"op":"create_routine","name":"Daily health","config":config(&w, None)}),
+        Role::Human,
+        T0,
+    )
+    .unwrap();
+    send(
+        &mut s,
+        json!({"op":"set_routine_status","id":r["id"],"expected_version":1,"status":"active"}),
+        Role::Human,
+        T0,
+    )
+    .unwrap();
+    let events = |s: &mut Store| {
+        send(s, json!({"op":"changes","after":0}), Role::Agent, 1).unwrap()["events"]
+            .as_array()
+            .unwrap()
+            .len()
+    };
+    let before = events(&mut s);
+    for at in [T0 + 10, T0 + 600, T0 + 1_799] {
+        assert!(s.tick_routines(at).unwrap().is_empty());
+    }
+    assert_eq!(events(&mut s), before, "idle ticks write nothing");
+    s.tick_routines(T0 + 1_800).unwrap();
+    let kinds = send(&mut s, json!({"op":"changes","after":0}), Role::Agent, 1).unwrap()["events"]
+        .to_string();
+    assert!(kinds.contains("routine_occurrence_launched") && kinds.contains("routine_scheduled"));
+}

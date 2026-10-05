@@ -268,6 +268,7 @@ fn notice(
     action: Option<&str>,
     at: i64,
 ) -> Result<()> {
+    emit(conn, "direct-scheduler", "routine_notice", routine_id, at)?;
     put_notice(
         conn,
         &RoutineNotice {
@@ -509,27 +510,31 @@ pub(crate) fn tick(tx: &Transaction, at: i64) -> Result<Vec<String>> {
                 o.updated_at = at;
                 put_occurrence(tx, &o)?;
             }
-            None => put_occurrence(
-                tx,
-                &RoutineOccurrence {
-                    id: Uuid::new_v4().to_string(),
-                    routine_id: r.id.clone(),
-                    revision: rev.revision,
-                    due_at: last,
-                    coalesced: missed - 1,
-                    manual: false,
-                    state: "pending".into(),
-                    run_id: None,
-                    reason: None,
-                    keys: vec![],
-                    created_at: at,
-                    updated_at: at,
-                },
-            )?,
+            None => {
+                emit(tx, "direct-scheduler", "routine_occurrence_due", &r.id, at)?;
+                put_occurrence(
+                    tx,
+                    &RoutineOccurrence {
+                        id: Uuid::new_v4().to_string(),
+                        routine_id: r.id.clone(),
+                        revision: rev.revision,
+                        due_at: last,
+                        coalesced: missed - 1,
+                        manual: false,
+                        state: "pending".into(),
+                        run_id: None,
+                        reason: None,
+                        keys: vec![],
+                        created_at: at,
+                        updated_at: at,
+                    },
+                )?
+            }
         }
         r.next_due_at = Some(slot);
         r.updated_at = at;
         put_routine(tx, &r)?;
+        emit(tx, "direct-scheduler", "routine_scheduled", &r.id, at)?;
     }
 
     let mut waiting: Vec<RoutineOccurrence> = all::<RoutineOccurrence>(tx, "routine_occurrences")?
@@ -553,6 +558,13 @@ pub(crate) fn tick(tx: &Transaction, at: i64) -> Result<Vec<String>> {
             o.state = "blocked".into();
             o.reason = Some(reason.clone());
             put_occurrence(tx, &o)?;
+            emit(
+                tx,
+                "direct-scheduler",
+                "routine_occurrence_blocked",
+                &r.id,
+                at,
+            )?;
             notice(
                 tx,
                 &r.id,
@@ -577,6 +589,13 @@ pub(crate) fn tick(tx: &Transaction, at: i64) -> Result<Vec<String>> {
                 o.state = "deferred".into();
                 o.reason = Some("Another review of this product is still running".into());
                 put_occurrence(tx, &o)?;
+                emit(
+                    tx,
+                    "direct-scheduler",
+                    "routine_occurrence_deferred",
+                    &r.id,
+                    at,
+                )?;
             }
             continue;
         }
@@ -585,6 +604,7 @@ pub(crate) fn tick(tx: &Transaction, at: i64) -> Result<Vec<String>> {
             o.state = "noop".into();
             o.reason = Some("No issues in scope".into());
             put_occurrence(tx, &o)?;
+            emit(tx, "direct-scheduler", "routine_occurrence_noop", &r.id, at)?;
             continue;
         }
         let product = all::<Product>(tx, "products")?
@@ -606,6 +626,7 @@ pub(crate) fn tick(tx: &Transaction, at: i64) -> Result<Vec<String>> {
         run.max_seconds = Some(u64::from(rev.limits.max_minutes) * 60);
         super::runs::put_run(tx, &run)?;
         emit(tx, &routine_actor, "agent_run_intent", &run.issue_key, at)?;
+        emit(tx, &routine_actor, "routine_occurrence_launched", &r.id, at)?;
         o.state = "launched".into();
         o.run_id = Some(run.id.clone());
         o.keys = keys;
