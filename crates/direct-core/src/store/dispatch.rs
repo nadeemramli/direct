@@ -350,10 +350,19 @@ pub(crate) fn lane(conn: &Connection, rev: &RoutineRevision, at: i64) -> Result<
         }
         eligible.push(i.clone());
     }
+    // Priority, then age; the issue number breaks ties deterministically.
+    let number = |i: &Issue| {
+        i.key
+            .rsplit('-')
+            .next()
+            .and_then(|n| n.parse::<u64>().ok())
+            .unwrap_or(u64::MAX)
+    };
     eligible.sort_by(|a, b| {
         priority_rank(&a.priority)
             .cmp(&priority_rank(&b.priority))
             .then(a.created_at.cmp(&b.created_at))
+            .then(number(a).cmp(&number(b)))
     });
     let (state, detail) = match (eligible.len(), excluded.len()) {
         (0, 0) => ("exhausted", "No owner-Ready work is waiting".to_string()),
