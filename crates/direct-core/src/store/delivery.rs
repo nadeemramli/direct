@@ -19,11 +19,17 @@ pub(crate) fn put_fact(conn: &Connection, f: &DeliveryFact) -> Result<()> {
 }
 
 pub(crate) fn for_issue(conn: &Connection, key: &str) -> Result<Vec<DeliveryFact>> {
-    let mut facts: Vec<DeliveryFact> = all::<DeliveryFact>(conn, "delivery_facts")?
-        .into_iter()
-        .filter(|f| f.issue_key == key)
-        .collect();
-    facts.sort_by(|a, b| a.observed_at.cmp(&b.observed_at).then(a.id.cmp(&b.id)));
+    // Insertion order is the ledger order: facts observed in the same second
+    // must keep the order they were recorded in.
+    let mut stmt = conn.prepare("SELECT data FROM delivery_facts ORDER BY rowid")?;
+    let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
+    let mut facts = Vec::new();
+    for row in rows {
+        let f: DeliveryFact = serde_json::from_str(&row?)?;
+        if f.issue_key == key {
+            facts.push(f);
+        }
+    }
     Ok(facts)
 }
 

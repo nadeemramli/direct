@@ -284,3 +284,27 @@ fn squash_results_need_their_own_checks_and_failures_or_dirty_builds_are_honest(
         json!({"op":"record_delivery_fact","actor":"a","request_id":"r","key":k,"status":"ok","detail":{"kind":"commit","sha":sha('a'),"branch":"b","force":true}})
     ));
 }
+
+#[test]
+fn facts_recorded_in_the_same_second_keep_their_order() {
+    let dir = TempDir::new().unwrap();
+    let mut s = Store::open(&dir.path().join("db")).unwrap();
+    let k = issue(&mut s);
+    for _ in 0..5 {
+        fact(&mut s, &k, "ok", json!({"kind":"working_tree","checkout":"C:/wt","branch":"b","head":sha('a'),"dirty_files":3}), 10).unwrap();
+        fact(&mut s, &k, "ok", json!({"kind":"working_tree","checkout":"C:/wt","branch":"b","head":sha('a'),"dirty_files":0}), 10).unwrap();
+    }
+    fact(
+        &mut s,
+        &k,
+        "ok",
+        json!({"kind":"commit","sha":sha('a'),"branch":"b"}),
+        10,
+    )
+    .unwrap();
+    assert_eq!(
+        gap(&mut s, &k)["gap"],
+        "unpushed",
+        "the last observation (clean) wins"
+    );
+}
