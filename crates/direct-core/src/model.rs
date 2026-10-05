@@ -881,6 +881,8 @@ pub enum DeletionBlockerKind {
     CloudHandoffs,
     /// Agent assignments made for the issue (retained).
     Assignments,
+    /// Dispatched agent runs for the issue (retained).
+    AgentRuns,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1238,6 +1240,71 @@ pub enum Command {
         hypothesis: String,
         proposal: String,
         evidence: Vec<EvidencePointer>,
+    },
+    /// Owner only: record a run intent for an issue's active assignment (DIR-76).
+    CreateAgentRun {
+        key: String,
+        assignment_id: String,
+        objective: String,
+    },
+    /// Runner: claim an intent and register the run credential's SHA-256.
+    StartAgentRun {
+        id: String,
+        expected_version: u64,
+        launcher: String,
+        harness_version: String,
+        credential_sha256: String,
+    },
+    /// Runner reconciliation: replace a lost run credential for an in-flight
+    /// run whose runner process is gone.
+    RotateRunCredential {
+        id: String,
+        expected_version: u64,
+        credential_sha256: String,
+    },
+    /// Runner: the harness reported its session and actual model.
+    RecordRunSession {
+        id: String,
+        expected_version: u64,
+        session_id: String,
+        actual_model: String,
+    },
+    /// Runner: submit one executor proposal under the run credential. The
+    /// service validates it and records it as applied or denied.
+    RunAction {
+        run_id: String,
+        credential: String,
+        index: u32,
+        proposal: serde_json::Value,
+    },
+    /// Runner: close a running run.
+    FinishAgentRun {
+        id: String,
+        expected_version: u64,
+        succeeded: bool,
+        summary: String,
+    },
+    /// Runner: a gate stopped the run before or during launch.
+    BlockAgentRun {
+        id: String,
+        expected_version: u64,
+        reason: String,
+    },
+    /// Runner reconciliation: the outcome cannot be established.
+    MarkAgentRunUnknown {
+        id: String,
+        expected_version: u64,
+        reason: String,
+    },
+    /// Owner only: request cancellation.
+    CancelAgentRun {
+        id: String,
+        expected_version: u64,
+    },
+    /// Runner: the harness stopped after a cancel request.
+    AcknowledgeRunCancel {
+        id: String,
+        expected_version: u64,
     },
     /// Owner only: add an agent member (DIR-75).
     CreateAgentMember {
@@ -2151,6 +2218,92 @@ pub struct IssueAssignment {
     pub updated_at: i64,
 }
 
+/// Lifecycle of one dispatched agent run (DIR-76). The run ID is also the
+/// harness session ID, so a dropped launch can be matched, never relaunched.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunState {
+    /// Recorded before anything is launched.
+    Intent,
+    /// The runner claimed the run and is starting the harness.
+    Launching,
+    /// The harness reported the session and an accepted model.
+    Running,
+    Succeeded,
+    Failed,
+    /// Not dispatched or stopped by a gate (missing channel, model substitution).
+    Blocked,
+    /// The outcome could not be reconciled; redispatch of the assignment is suspended.
+    Unknown,
+    CancelPending,
+    Canceled,
+}
+
+impl RunState {
+    pub fn terminal(&self) -> bool {
+        matches!(
+            self,
+            RunState::Succeeded
+                | RunState::Failed
+                | RunState::Blocked
+                | RunState::Unknown
+                | RunState::Canceled
+        )
+    }
+}
+
+/// One proposal the executor returned and what the service did with it.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunAction {
+    pub index: u32,
+    pub proposal: serde_json::Value,
+    /// `applied` or `denied`.
+    pub outcome: String,
+    pub detail: String,
+    pub at: i64,
+}
+
+/// A bounded dispatch of an assignment to its member's harness (format 22).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AgentRun {
+    pub id: String,
+    pub issue_key: String,
+    pub assignment_id: String,
+    pub member_id: String,
+    pub role_id: String,
+    /// Bundle hashes of the role's skills at dispatch.
+    pub skill_bundles: Vec<String>,
+    pub guidance: Vec<RoleGuidancePin>,
+    pub requested_model: String,
+    /// Owner-listed substitutes; empty means any substitution blocks.
+    #[serde(default)]
+    pub fallback_models: Vec<String>,
+    pub input_issue_version: u64,
+    pub objective: String,
+    pub state: RunState,
+    pub version: u64,
+    pub created_by: String,
+    pub created_at: i64,
+    #[serde(default)]
+    pub launcher: Option<String>,
+    #[serde(default)]
+    pub harness_version: Option<String>,
+    #[serde(default)]
+    pub session_id: Option<String>,
+    #[serde(default)]
+    pub actual_model: Option<String>,
+    #[serde(default)]
+    pub actions: Vec<RunAction>,
+    #[serde(default)]
+    pub summary: String,
+    /// Why the run was blocked, failed or became unknown.
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub cancel_requested_by: Option<String>,
+    pub updated_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Archive {
     pub format: u32,
@@ -2180,6 +2333,9 @@ pub struct Archive {
     pub agent_members: Vec<AgentMember>,
     #[serde(default)]
     pub issue_assignments: Vec<IssueAssignment>,
+    /// Agent run history (format 22). Run credentials are never archived.
+    #[serde(default)]
+    pub agent_runs: Vec<AgentRun>,
     #[serde(default)]
     pub projects: Vec<Project>,
     #[serde(default)]

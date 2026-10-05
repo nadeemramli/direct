@@ -17,6 +17,7 @@ use std::{
 mod linear_import;
 mod members_cli;
 mod roles_cli;
+mod runs_cli;
 
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -73,6 +74,12 @@ enum Cli {
         key: String,
         #[arg(long)]
         id: Option<String>,
+    },
+    /// Launch or reconcile dispatched agent runs (DIR-76). The service starts
+    /// these itself; they are exposed for diagnosis and recovery.
+    Runs {
+        #[command(subcommand)]
+        action: runs_cli::RunsAction,
     },
     /// Check agent member runtime capability through the real harness (DIR-75).
     Members {
@@ -782,6 +789,9 @@ fn run() -> Result<()> {
                 client.stop()?;
                 println!("Direct service is stopping.");
                 return Ok(());
+            }
+            if let Cli::Runs { action } = &other {
+                return runs_cli::run_action(&client, &args.actor, &dir, action.clone());
             }
             if let Cli::Members { action } = &other {
                 return members_cli::run_action(&client, &args.actor, action.clone());

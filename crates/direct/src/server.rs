@@ -9,7 +9,7 @@ use axum::{
     routing::post,
     Json, Router,
 };
-use direct_core::{now, Request, Role, Store};
+use direct_core::{now, Command, Request, Role, Store};
 use fs2::FileExt;
 use serde::Deserialize;
 use serde_json::json;
@@ -319,8 +319,16 @@ async fn command(
         );
     };
     let store = app.store.clone();
+    let dispatch = role == Role::Human && matches!(request.command, Command::CreateAgentRun { .. });
     match tokio::task::spawn_blocking(move || lock_store(&store).execute(request, role)).await {
-        Ok(Ok(value)) => Json(value).into_response(),
+        Ok(Ok(value)) => {
+            if dispatch {
+                if let Some(id) = value["id"].as_str() {
+                    spawn_runner(&app.dir, &["runs", "execute", id], &format!("run-{id}.log"));
+                }
+            }
+            Json(value).into_response()
+        }
         Ok(Err(e)) => {
             let status = match e.code {
                 "forbidden" => StatusCode::FORBIDDEN,
@@ -392,6 +400,38 @@ async fn session(State(app): State<App>, headers: HeaderMap, Json(input): Json<G
         .insert(token.clone(), now() + 8 * 3600);
     Json(json!({"token":token})).into_response()
 }
+/// Start a detached `direct runs …` runner with the agent role (DIR-76). Its
+/// output goes to a log under the data directory for diagnosis.
+fn spawn_runner(dir: &Path, args: &[&str], log: &str) {
+    let Ok(exe) = std::env::current_exe() else {
+        return;
+    };
+    let logs = dir.join("runs");
+    let _ = fs::create_dir_all(&logs);
+    let Ok(out) = fs::File::create(logs.join(log)) else {
+        return;
+    };
+    let err = out.try_clone();
+    let mut command = std::process::Command::new(exe);
+    command
+        .arg("--data-dir")
+        .arg(dir)
+        .args(["--actor", "direct-runner"])
+        .args(args)
+        .stdin(std::process::Stdio::null())
+        .stdout(out);
+    if let Ok(err) = err {
+        command.stderr(err);
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        // CREATE_NO_WINDOW | DETACHED_PROCESS
+        command.creation_flags(0x0800_0000 | 0x0000_0008);
+    }
+    let _ = command.spawn();
+}
+
 pub async fn serve(dir: &Path, port: u16, assets: &Path) -> Result<()> {
     protect_dir(dir)?;
     let lock = OpenOptions::new()
@@ -403,6 +443,7 @@ pub async fn serve(dir: &Path, port: u16, assets: &Path) -> Result<()> {
     lock.try_lock_exclusive()
         .context("Direct is already running for this data directory")?;
     let store = Store::open(&dir.join("direct.db"))?;
+    let reconcile = store.in_flight_runs()? > 0;
     let listener = tokio::net::TcpListener::bind((std::net::Ipv4Addr::LOCALHOST, port)).await?;
     let endpoint = Endpoint {
         port: listener.local_addr()?.port(),
@@ -436,6 +477,10 @@ pub async fn serve(dir: &Path, port: u16, assets: &Path) -> Result<()> {
         endpoint.port,
         dir.display()
     );
+    if reconcile {
+        // Runners do not survive a restart; match their runs to harness sessions.
+        spawn_runner(dir, &["runs", "reconcile"], "reconcile.log");
+    }
     let result = axum::serve(listener, router)
         .with_graceful_shutdown(async {
             tokio::select! {

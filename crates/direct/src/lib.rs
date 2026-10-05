@@ -140,6 +140,7 @@ pub fn command_failure(error: &anyhow::Error) -> Value {
         }),
     }
 }
+#[derive(Clone)]
 pub struct Client {
     pub endpoint: Endpoint,
     http: reqwest::blocking::Client,

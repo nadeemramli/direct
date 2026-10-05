@@ -240,7 +240,7 @@ fn activation_is_owner_only_and_guarded_by_direction_skills_and_mandatory_guidan
     drop(s);
     let s = Store::open(&path).unwrap();
     let archive = s.export().unwrap();
-    assert_eq!(archive.format, 21);
+    assert_eq!(archive.format, 22);
     assert_eq!(archive.agent_roles.len(), 3);
     validate_archive(&archive).unwrap();
     let mut restored = Store::open(&dir.path().join("restored")).unwrap();

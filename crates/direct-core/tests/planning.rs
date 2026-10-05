@@ -146,7 +146,7 @@ fn goals_milestones_progress_context_and_restore_follow_real_outcomes() {
     assert_eq!(context["goal_progress"][0]["completed"], 1);
 
     let archive = store.export().unwrap();
-    assert_eq!(archive.format, 21);
+    assert_eq!(archive.format, 22);
     assert_eq!(
         archive.goals[0].external_id.as_deref(),
         Some("initiative-123")

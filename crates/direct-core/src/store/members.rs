@@ -566,3 +566,7 @@ pub(crate) fn validate_archive(a: &Archive) -> Result<()> {
     }
     Ok(())
 }
+
+pub(crate) fn member_row(conn: &Connection, id: &str) -> Result<AgentMember> {
+    member(conn, id)
+}

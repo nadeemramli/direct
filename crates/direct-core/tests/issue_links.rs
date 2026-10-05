@@ -139,7 +139,7 @@ fn issue_links_are_inspectable_cycle_safe_and_round_trip() {
     let snapshot = send(&mut store, json!({"op":"snapshot"}), Role::Agent).unwrap();
     assert_eq!(snapshot["issue_links"].as_array().unwrap().len(), 4);
     let before = store.export().unwrap();
-    assert_eq!(before.format, 21);
+    assert_eq!(before.format, 22);
     validate_archive(&before).unwrap();
     let mut restored = Store::open(&dir.path().join("restored")).unwrap();
     restored.restore(before.clone()).unwrap();
