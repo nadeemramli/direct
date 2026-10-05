@@ -291,7 +291,7 @@ fn runs_are_recorded_before_launch_and_only_scoped_proposals_apply() {
     drop(s);
     let s = Store::open(&path).unwrap();
     let archive = s.export().unwrap();
-    assert_eq!(archive.format, 23);
+    assert_eq!(archive.format, 24);
     assert_eq!(archive.agent_runs.len(), 1);
     assert!(!serde_json::to_string(&archive)
         .unwrap()

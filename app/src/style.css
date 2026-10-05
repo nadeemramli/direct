@@ -3008,3 +3008,17 @@ dialog::backdrop {
   display: block;
   margin: 4px 0;
 }
+
+.routine-form fieldset select,
+.routine-form fieldset input {
+  margin: 4px 6px 4px 0;
+}
+.routine-form fieldset label input[type="number"] {
+  width: 90px;
+}
+.routine-actions {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 10px 0;
+}

@@ -460,11 +460,16 @@ fn execute(runner: &Runner, data_dir: &Path, run_id: &str) -> Result<()> {
     let stdout = child.stdout.take().expect("piped stdout");
     let child = Arc::new(Mutex::new(child));
 
-    // Watch for an owner cancel while the harness runs.
+    // Watch for an owner cancel, and the run's time limit, while the harness runs.
     let done = Arc::new(AtomicBool::new(false));
     let canceled = Arc::new(AtomicBool::new(false));
+    let timed_out = Arc::new(AtomicBool::new(false));
+    let deadline = run
+        .max_seconds
+        .map(|s| std::time::Instant::now() + Duration::from_secs(s));
     let watcher = {
         let (done, canceled, child) = (done.clone(), canceled.clone(), child.clone());
+        let timed_out = timed_out.clone();
         let client = runner.client.clone();
         let (actor, id) = (runner.actor.to_string(), run.id.clone());
         std::thread::spawn(move || {
@@ -474,6 +479,11 @@ fn execute(runner: &Runner, data_dir: &Path, run_id: &str) -> Result<()> {
             };
             while !done.load(Ordering::SeqCst) {
                 std::thread::sleep(Duration::from_secs(2));
+                if deadline.is_some_and(|d| std::time::Instant::now() >= d) {
+                    timed_out.store(true, Ordering::SeqCst);
+                    kill_tree(&mut child.lock().unwrap());
+                    return;
+                }
                 if let Ok((r, _)) = runner.run(&id) {
                     if r.state == RunState::CancelPending {
                         canceled.store(true, Ordering::SeqCst);
@@ -487,6 +497,7 @@ fn execute(runner: &Runner, data_dir: &Path, run_id: &str) -> Result<()> {
 
     let mut run = run;
     let mut final_text: Option<(String, bool)> = None;
+    let mut cost: Option<f64> = None;
     for line in BufReader::new(stdout).lines() {
         let Ok(line) = line else { break };
         let Ok(event) = serde_json::from_str::<Value>(&line) else {
@@ -509,6 +520,7 @@ fn execute(runner: &Runner, data_dir: &Path, run_id: &str) -> Result<()> {
             }
         }
         if event["type"] == "result" {
+            cost = event["total_cost_usd"].as_f64();
             final_text = Some((
                 event["result"].as_str().unwrap_or("").to_string(),
                 event["is_error"].as_bool().unwrap_or(true),
@@ -527,6 +539,26 @@ fn execute(runner: &Runner, data_dir: &Path, run_id: &str) -> Result<()> {
         })?;
         println!("Run {} canceled", run.id);
         return Ok(());
+    }
+    if matches!(run.state, RunState::Running) {
+        // Truthful cost: what the harness reported, or unknown.
+        runner.step(Command::RecordRunCost {
+            id: run.id.clone(),
+            cost_usd: cost,
+        })?;
+    }
+    let (run, _) = runner.run(&run.id)?;
+    if timed_out.load(Ordering::SeqCst) && run.state == RunState::Running {
+        let minutes = run.max_seconds.unwrap_or(0) / 60;
+        runner.step(Command::FinishAgentRun {
+            id: run.id.clone(),
+            expected_version: run.version,
+            succeeded: false,
+            summary: format!(
+                "Stopped at the {minutes}-minute time limit; nothing further was applied"
+            ),
+        })?;
+        bail!("Run {} hit its time limit", run.id);
     }
     match run.state {
         RunState::Running => {}

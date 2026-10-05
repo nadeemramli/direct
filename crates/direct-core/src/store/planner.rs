@@ -72,7 +72,7 @@ pub(crate) fn input_fingerprint(conn: &Connection, i: &Issue) -> Result<String> 
     ))?))
 }
 
-fn guidance_block(conn: &Connection, i: &Issue) -> Result<Option<String>> {
+pub(crate) fn guidance_block(conn: &Connection, i: &Issue) -> Result<Option<String>> {
     for r in &i.theoria_refs {
         let document = all::<TheoriaDocument>(conn, "theoria_documents")?
             .into_iter()
@@ -234,6 +234,9 @@ pub(crate) fn create_queue_run(
         summary: String::new(),
         reason: None,
         cancel_requested_by: None,
+        occurrence_id: None,
+        max_seconds: None,
+        cost_usd: None,
         queue: Some(RunQueue {
             product_id: p.id,
             keys: scope,
@@ -608,6 +611,7 @@ pub(crate) fn confirm(tx: &Transaction, cmd: &Command, actor: &str, at: i64) -> 
     f.updated_at = at;
     put_finding(tx, &f)?;
     emit(tx, actor, "planner_finding_confirmed", &f.issue_key, at)?;
+    super::routines::on_finding_confirmed(tx, &f, at)?;
     Ok(serde_json::to_value(f)?)
 }
 

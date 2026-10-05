@@ -12,6 +12,7 @@ use uuid::Uuid;
 
 pub use handoffs::cloud_packet_markdown;
 pub use roles::{content_sha256, role_publication_plan, safe_relative_path, HARNESS_CLAUDE_CODE};
+pub use routines::next_due;
 
 mod context;
 mod handoffs;
@@ -19,6 +20,7 @@ mod members;
 mod migration;
 mod planner;
 mod roles;
+mod routines;
 mod runs;
 mod signals;
 mod sources;
@@ -362,7 +364,7 @@ fn human(role: Role) -> Result<()> {
 
 /// The archive format this build exports. Format 15 adds the sidebar
 /// arrangement (product order and sections); every older format restores.
-pub const ARCHIVE_FORMAT: u32 = 23;
+pub const ARCHIVE_FORMAT: u32 = 24;
 
 pub struct Store {
     conn: Connection,
@@ -410,6 +412,7 @@ impl Store {
                     | "19"
                     | "20"
                     | "21"
+                    | "22"
             ) {
                 return Err(err("unsupported", "Unsupported database schema"));
             }
@@ -467,7 +470,10 @@ impl Store {
              CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS run_credentials (run_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, expires_at INTEGER NOT NULL);
              CREATE TABLE IF NOT EXISTS planner_findings (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-             UPDATE meta SET value='21' WHERE key='schema';",
+             CREATE TABLE IF NOT EXISTS routines (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS routine_occurrences (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS routine_notices (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             UPDATE meta SET value='22' WHERE key='schema';",
         )?;
         if upgrade_legacy_project_planning {
             // Before schema 5, a project link was the only way to express project-scoped work.
@@ -541,6 +547,10 @@ impl Store {
                     "issue_assignments":all::<IssueAssignment>(&self.conn,"issue_assignments")?,
                     "agent_runs":all::<AgentRun>(&self.conn,"agent_runs")?,
                     "planner_findings":all::<PlannerFinding>(&self.conn,"planner_findings")?,
+                    "routines":all::<Routine>(&self.conn,"routines")?,
+                    "restored_at":runs::restored_at(&self.conn)?,
+                    "routine_occurrences":all::<RoutineOccurrence>(&self.conn,"routine_occurrences")?,
+                    "routine_notices":all::<RoutineNotice>(&self.conn,"routine_notices")?,
                     "projects":all::<Project>(&self.conn,"projects")?,
                     "project_progress":all::<Project>(&self.conn,"projects")?.iter().map(|project| project_progress_in(&issues, &project.id)).collect::<Vec<_>>(),
                     "goals":all::<Goal>(&self.conn,"goals")?,
@@ -711,6 +721,7 @@ impl Store {
             Command::SourceRecord { id } => return sources::record_view(&self.conn, id),
             Command::Templates => return templates::listing(&self.conn),
             Command::ReadContextLink { id } => return context::read(&self.conn, id, at),
+            Command::PreviewRoutine { config } => return routines::preview(&self.conn, config, at),
             _ => {}
         }
         required(&request.request_id, "request_id")?;
@@ -758,6 +769,17 @@ impl Store {
         )?;
         tx.commit()?;
         Ok(result)
+    }
+
+    /// One scheduler pass (DIR-78) at `at`, outside the request log so idle
+    /// ticks leave no trace. Returns the run IDs the service should start.
+    pub fn tick_routines(&mut self, at: i64) -> Result<Vec<String>> {
+        let tx = self
+            .conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)?;
+        let launched = routines::tick(&tx, at)?;
+        tx.commit()?;
+        Ok(launched)
     }
 
     /// Runs whose runner may have gone away (launching, running or canceling).
@@ -829,6 +851,9 @@ impl Store {
             issue_assignments: all(conn, "issue_assignments")?,
             agent_runs: all(conn, "agent_runs")?,
             planner_findings: all(conn, "planner_findings")?,
+            routines: all(conn, "routines")?,
+            routine_occurrences: all(conn, "routine_occurrences")?,
+            routine_notices: all(conn, "routine_notices")?,
             projects: all(conn, "projects")?,
             goals: all(conn, "goals")?,
             milestones: all(conn, "milestones")?,
@@ -870,7 +895,7 @@ impl Store {
             }
         }
         let tx = self.conn.transaction()?;
-        tx.execute_batch("DELETE FROM labels; DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM releases; DELETE FROM release_evidence; DELETE FROM release_workflows; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events'; DELETE FROM source_record_issues; DELETE FROM source_records; DELETE FROM source_chunks; DELETE FROM source_files; DELETE FROM source_bundles; DELETE FROM issue_histories; DELETE FROM templates; DELETE FROM template_revisions; DELETE FROM product_sections; DELETE FROM customer_signals; DELETE FROM context_links; DELETE FROM cloud_handoffs; DELETE FROM skill_packages; DELETE FROM agent_roles; DELETE FROM role_publications; DELETE FROM agent_members; DELETE FROM issue_assignments; DELETE FROM agent_runs; DELETE FROM run_credentials; DELETE FROM planner_findings;")?;
+        tx.execute_batch("DELETE FROM labels; DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM releases; DELETE FROM release_evidence; DELETE FROM release_workflows; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events'; DELETE FROM source_record_issues; DELETE FROM source_records; DELETE FROM source_chunks; DELETE FROM source_files; DELETE FROM source_bundles; DELETE FROM issue_histories; DELETE FROM templates; DELETE FROM template_revisions; DELETE FROM product_sections; DELETE FROM customer_signals; DELETE FROM context_links; DELETE FROM cloud_handoffs; DELETE FROM skill_packages; DELETE FROM agent_roles; DELETE FROM role_publications; DELETE FROM agent_members; DELETE FROM issue_assignments; DELETE FROM agent_runs; DELETE FROM run_credentials; DELETE FROM planner_findings; DELETE FROM routines; DELETE FROM routine_occurrences; DELETE FROM routine_notices;")?;
         tx.execute(
             "UPDATE meta SET value=?1 WHERE key='workspace_id'",
             [a.workspace_id],
@@ -955,6 +980,15 @@ impl Store {
         }
         for f in &a.planner_findings {
             planner::put_finding(&tx, f)?;
+        }
+        for r in &a.routines {
+            routines::put_routine(&tx, r)?;
+        }
+        for o in &a.routine_occurrences {
+            routines::put_occurrence(&tx, o)?;
+        }
+        for n in &a.routine_notices {
+            routines::put_notice(&tx, n)?;
         }
         // Run credentials are never archived; capability must be re-checked.
         runs::mark_restored(&tx, now())?;
@@ -4691,6 +4725,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
         Command::CreateAgentRun { .. }
         | Command::CreateQueueRun { .. }
         | Command::ConfirmPlannerFinding { .. }
+        | Command::RecordRunCost { .. }
         | Command::StartAgentRun { .. }
         | Command::RotateRunCredential { .. }
         | Command::RecordRunSession { .. }
@@ -4700,9 +4735,14 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
         | Command::MarkAgentRunUnknown { .. }
         | Command::CancelAgentRun { .. }
         | Command::AcknowledgeRunCancel { .. } => runs::mutate(tx, cmd, actor, role, at),
-        Command::ReadContextLink { .. } => {
+        Command::ReadContextLink { .. } | Command::PreviewRoutine { .. } => {
             unreachable!("read-only command handled before the write path")
         }
+        Command::CreateRoutine { .. }
+        | Command::ReviseRoutine { .. }
+        | Command::SetRoutineStatus { .. }
+        | Command::RunRoutineNow { .. }
+        | Command::AcknowledgeRoutineNotice { .. } => routines::mutate(tx, cmd, actor, role, at),
         Command::RollbackMigration {
             bundle_id,
             expected_cursor,
@@ -5177,6 +5217,7 @@ pub(crate) fn validate_archive_structure(a: &Archive) -> Result<()> {
     members::validate_archive(a)?;
     runs::validate_archive(a)?;
     planner::validate_archive(a)?;
+    routines::validate_archive(a)?;
     let mut label_ids = HashSet::new();
     for (index, label) in a.labels.iter().enumerate() {
         let fields = validate_label_fields(
