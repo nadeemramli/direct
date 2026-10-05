@@ -18,18 +18,22 @@ pub(crate) fn put_fact(conn: &Connection, f: &DeliveryFact) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn for_issue(conn: &Connection, key: &str) -> Result<Vec<DeliveryFact>> {
-    // Insertion order is the ledger order: facts observed in the same second
-    // must keep the order they were recorded in.
+/// Every fact in ledger order. Insertion order is the ledger order: facts
+/// observed in the same second must keep the order they were recorded in, in
+/// snapshots and in archives (restore re-inserts in archive order).
+pub(crate) fn all_facts(conn: &Connection) -> Result<Vec<DeliveryFact>> {
     let mut stmt = conn.prepare("SELECT data FROM delivery_facts ORDER BY rowid")?;
     let rows = stmt.query_map([], |r| r.get::<_, String>(0))?;
     let mut facts = Vec::new();
     for row in rows {
-        let f: DeliveryFact = serde_json::from_str(&row?)?;
-        if f.issue_key == key {
-            facts.push(f);
-        }
+        facts.push(serde_json::from_str(&row?)?);
     }
+    Ok(facts)
+}
+
+pub(crate) fn for_issue(conn: &Connection, key: &str) -> Result<Vec<DeliveryFact>> {
+    let mut facts = all_facts(conn)?;
+    facts.retain(|f: &DeliveryFact| f.issue_key == key);
     Ok(facts)
 }
 
@@ -506,8 +510,10 @@ pub fn delivery_state(facts: &[DeliveryFact]) -> Value {
             );
         }
     }
-    let install = facts.iter().rev().filter(ok).find(|f| matches!(&f.detail, DeliveryDetail::Install { build_fact_id, .. } if *build_fact_id == build.id));
-    let Some(install) = install else {
+    // A build may install several artifacts (service and desktop); the running
+    // executable must be one of them, not necessarily the latest installed.
+    let installs: Vec<&DeliveryFact> = facts.iter().filter(ok).filter(|f| matches!(&f.detail, DeliveryDetail::Install { build_fact_id, .. } if *build_fact_id == build.id)).collect();
+    let Some(install) = installs.last().copied() else {
         return gap(
             "uninstalled",
             format!("The build of {} is not installed", &result[..12]),
@@ -525,19 +531,19 @@ pub fn delivery_state(facts: &[DeliveryFact]) -> Value {
             "The running observation predates the latest install".into(),
         );
     }
-    if let (
-        DeliveryDetail::Running {
-            sha256,
-            service_commit,
-            bundle_commit,
-            ..
-        },
-        DeliveryDetail::Install {
-            sha256: installed, ..
-        },
-    ) = (&running.detail, &install.detail)
+    if let DeliveryDetail::Running {
+        sha256,
+        service_commit,
+        bundle_commit,
+        ..
+    } = &running.detail
     {
-        if sha256.as_ref().is_some_and(|s| s != installed) {
+        let installed = |s: &String| {
+            installs
+                .iter()
+                .any(|f| matches!(&f.detail, DeliveryDetail::Install { sha256, .. } if sha256 == s))
+        };
+        if sha256.as_ref().is_some_and(|s| !installed(s)) {
             return gap(
                 "drifted",
                 "The running executable differs from the installed one".into(),
