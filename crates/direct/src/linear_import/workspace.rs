@@ -2286,6 +2286,7 @@ impl<'a> Builder<'a> {
             routines: Vec::new(),
             routine_occurrences: Vec::new(),
             routine_notices: Vec::new(),
+            delivery_facts: Vec::new(),
             projects: self.projects,
             goals: self.goals,
             milestones: self.milestones,

@@ -239,6 +239,7 @@ pub fn dry_run(
         routines: Vec::new(),
         routine_occurrences: Vec::new(),
         routine_notices: Vec::new(),
+        delivery_facts: Vec::new(),
         projects: vec![project],
         goals,
         milestones,

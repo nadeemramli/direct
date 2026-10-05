@@ -109,7 +109,7 @@ git push origin codex/direct-pilot
 
 Commit and push records are distinct. Neither record proves that a pull request was opened, merged, deployed, or accepted. A failed push must not be recorded. Reusing the same request ID with the exact payload is safe; a second logical record under a different request ID is rejected.
 
-Agent operations: `snapshot`, `context`, `changes`, `export`, `source_bundles`, `search_sources`, `source_record`, `templates`, `create_issue`, `update_issue`, `set_issue_project`, `attach_issue_label`, `detach_issue_label`, `set_issue_milestone`, `create_issue_link`, `delete_issue_link`, `capture_signal`, `update_signal`, `link_signal`, `unlink_signal`, `promote_signal`, `archive_signal`, `check_context_link`, `read_context_link`, `sync_theoria`, `link_theoria`, `create_method_finding`, `record_git_trace`, `register_skill_package`, `register_agent_role`, `record_role_publication`, `record_activation_evidence`, `record_publication_rollback`, `record_member_capability`, `record_assignment_session`, `confirm_planner_finding`, `record_run_cost`, `start_agent_run`, `rotate_run_credential`, `record_run_session`, `run_action`, `finish_agent_run`, `block_agent_run`, `mark_agent_run_unknown`, `acknowledge_run_cancel`, `prepare_cloud_handoff`, `reconcile_cloud_handoff`, `withdraw_cloud_handoff`, `claim`, `renew`, `release`, `comment`, `submit`. The typed source of truth is `crates/direct-core/src/model.rs`. Updates and comments also require the current issue version. An active claim is required to submit, link Theoria guidance, record a method finding, record Git evidence, or change issue planning/links on Doing work; expired claims must be explicitly reacquired. The default lease is one hour, with a maximum of 24 hours.
+Agent operations: `snapshot`, `context`, `changes`, `export`, `source_bundles`, `search_sources`, `source_record`, `templates`, `create_issue`, `update_issue`, `set_issue_project`, `attach_issue_label`, `detach_issue_label`, `set_issue_milestone`, `create_issue_link`, `delete_issue_link`, `capture_signal`, `update_signal`, `link_signal`, `unlink_signal`, `promote_signal`, `archive_signal`, `check_context_link`, `read_context_link`, `sync_theoria`, `link_theoria`, `create_method_finding`, `record_git_trace`, `register_skill_package`, `register_agent_role`, `record_role_publication`, `record_activation_evidence`, `record_publication_rollback`, `record_member_capability`, `record_assignment_session`, `confirm_planner_finding`, `record_run_cost`, `record_delivery_fact`, `start_agent_run`, `rotate_run_credential`, `record_run_session`, `run_action`, `finish_agent_run`, `block_agent_run`, `mark_agent_run_unknown`, `acknowledge_run_cancel`, `prepare_cloud_handoff`, `reconcile_cloud_handoff`, `withdraw_cloud_handoff`, `claim`, `renew`, `release`, `comment`, `submit`. The typed source of truth is `crates/direct-core/src/model.rs`. Updates and comments also require the current issue version. An active claim is required to submit, link Theoria guidance, record a method finding, record Git evidence, or change issue planning/links on Doing work; expired claims must be explicitly reacquired. The default lease is one hour, with a maximum of 24 hours.
 
 Owner-only operations are `create_label`, `update_label`, `attach_project_label`, `detach_project_label`, `create_product`, `add_context_link`, `remove_context_link`, `update_product_paths`, `create_product_section`, `update_product_section`, `delete_product_section`, `arrange_products`, `create_project`, `update_project`, `create_goal`, `update_goal`, `create_milestone`, `update_milestone`, `set_release_workflow_config`, `create_release`, `update_release`, `record_release_evidence`, `create_template`, `revise_template`, `retire_template`, `delete_issue`, `cancel_issue`, `set_theoria_sharing`, `retire_skill_package`, `activate_agent_role`, `retire_agent_role`, `create_agent_member`, `update_agent_member`, `assign_issue_agent`, `clear_issue_assignment`, `create_agent_run`, `create_queue_run`, `cancel_agent_run`, `create_routine`, `revise_routine`, `set_routine_status`, `run_routine_now`, `acknowledge_routine_notice`, `rollback_migration`, `ready`, `review`, and `reopen`. The agent CLI rejects them. Migration preview and apply use the owner-only upload endpoints described below, never `/api/command`. Review requires an explicit `run_id` matching the current submission; results from an earlier build cannot complete a later build.
 
@@ -150,6 +150,39 @@ To regroup an existing issue use `set_issue_project` with `key`, `expected_versi
 After failure, read `context`: preserve the review feedback, claim again, fix, and submit a new run. Do not mark work Done, equate canceled tests with success, or claim the owner has accepted work because automated tests passed.
 
 All submissions require the [E2E delivery contract](e2e-delivery.md), including `e2e` evidence on raw JSON and MCP calls. Native submit takes the five E2E/delivery flags shown above and asserts a passing outcome. Do not invoke it until the checks have passed. Missing evidence, blank observations, non-passing outcomes, or differing tested/delivered/submitted build refs are rejected without creating a verification run. Historical archives remain readable with absent evidence; absence never implies passing E2E checks.
+
+## Delivery ledger and build identity
+
+Direct keeps an append-only delivery ledger per issue (`record_delivery_fact`, **Delivery** view). Each fact has its own observer, time and status (`ok`, `failed` or `unknown`). Kinds:
+- `worker`: host, runtime, session, model.
+- `working_tree`: checkout, branch, base, HEAD, dirty file count.
+- `commit`.
+- `push`.
+- `pull_request`.
+- `integration`: `merge`, `squash` or `rebase`; source commits mapped to the result commit.
+- `check`: the exact commit it ran on.
+- `build`: commit, dirty flag, artifact hashes.
+- `install`: path and hash, from a recorded build.
+- `running`: what the service reports about itself and its bundle.
+
+The service rejects facts whose references do not hold:
+- a push of an unrecorded commit;
+- a PR head or integration source that was never pushed;
+- a squash or rebase that reuses a source as its result;
+- a check or build of an unknown commit;
+- an install that matches none of a successful build's artifacts.
+
+No fact implies another. The Delivery view shows the first gap: unsaved, unpushed, unmerged, unverified, not built, not installed, stale, drifted or failed. A check that passed on a pre-merge source does not verify a different integration result. A dirty or unknown-provenance build is never treated as a clean commit build. The last known-good install stays visible. Recording facts grants no authority; review, Ready and release gates are unchanged.
+
+Build identity: the `direct` binary and the UI bundle are stamped at build time with the commit and a dirty flag (`unknown` without git; `DIRECT_BUILD_COMMIT`/`DIRECT_BUILD_DIRTY` override for packaging). `direct build-info` prints the binary's stamp. The service reports its stamp and the bundle it serves (`/api/build`, and `service_build` in snapshots). The owner app compares its own stamp with the service's and flags a mismatch or a dirty build.
+
+Read-only observation (`direct delivery …`) only runs `git status`, `rev-parse`, `merge-base` and `rev-list`, hashes files, and reads the service's build report; it never fetches, resets, merges, pushes, builds, installs or restarts:
+- `observe --issue KEY --repo PATH` records the working tree, the HEAD commit, and a push only when the upstream contains HEAD.
+- `observe-build --issue KEY --artifact PATH…` records a build from the artifacts; a Direct binary reports its own stamp.
+- `observe-install --issue KEY --build-fact ID --path PATH` records an installed file against a recorded build.
+- `observe-running --issue KEY` records what the running service reports and hashes its executable.
+
+The ledger archives in format 25.
 
 ## Product Manager routines
 
