@@ -10,7 +10,7 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Subcommand;
 use direct_core::{
-    AgentMember, AgentRole, AgentRun, Command, Request, Role, RunState, SkillPackage,
+    AgentMember, AgentRole, AgentRun, Command, Request, Role, RunPolicy, RunState, SkillPackage,
     TheoriaDocument,
 };
 use serde_json::Value;
@@ -37,6 +37,7 @@ pub enum RunsAction {
 
 const GUIDANCE_EXCERPT: usize = 3_000;
 const MAX_PROPOSALS: usize = 10;
+const QUEUE_PROPOSALS: usize = 40;
 
 fn claude_program() -> String {
     std::env::var("DIRECT_CLAUDE_BIN").unwrap_or_else(|_| {
@@ -158,8 +159,136 @@ At most {MAX_PROPOSALS} proposals. Direct applies only these, only to {key}; any
     Ok(out)
 }
 
+/// The bounded packet for a Product Planner queue review (DIR-77): each scoped
+/// issue's current text, original intake, links and recent comments, plus the
+/// role, skill, pinned guidance and routing rules. No service address,
+/// credentials, paths or unscoped records.
+pub fn queue_packet(run: &AgentRun, snap: &Value, contexts: &[Value]) -> Result<String> {
+    let queue = run
+        .queue
+        .as_ref()
+        .ok_or_else(|| anyhow!("Not a queue review"))?;
+    let roles: Vec<AgentRole> = serde_json::from_value(snap["agent_roles"].clone())?;
+    let skills: Vec<SkillPackage> = serde_json::from_value(snap["skill_packages"].clone())?;
+    let documents: Vec<TheoriaDocument> =
+        serde_json::from_value(snap["theoria_documents"].clone())?;
+    let role = roles
+        .iter()
+        .find(|r| r.id == run.role_id)
+        .ok_or_else(|| anyhow!("The run's role revision is missing"))?;
+    let writes = match queue.policy {
+        RunPolicy::InspectOnly => "This review is INSPECT-ONLY: propose findings only; any issue write is refused.",
+        RunPolicy::RefineBacklog => "This review may REFINE BACKLOG: besides findings, you may comment on scoped issues and rewrite the brief/acceptance of scoped Backlog issues (include the expected_version you were shown; Direct preserves the previous text).",
+    };
+    let mut out = format!(
+        "You are working as the Direct role `{}` (revision {}) reviewing a queue of {} issues. You have no tools. \
+Reply with a single JSON object and nothing else.\n\n# Objective\n\n{}\n\n{writes}\n\n# Role\n\nResponsibilities:\n",
+        role.key, role.revision, run.issue_key, run.objective
+    );
+    for r in &role.responsibilities {
+        out += &format!("- {r}\n");
+    }
+    out += &format!("\nOwner direction: {}\n", role.owner_direction);
+    for id in &role.skills {
+        if let Some(s) = skills.iter().find(|s| s.id == *id) {
+            for f in s.files.iter().filter(|f| f.path == "SKILL.md") {
+                out += &format!(
+                    "\n# Skill {} (revision {})\n\n{}\n",
+                    s.name, s.revision, f.content
+                );
+            }
+        }
+    }
+    out += "\n# Pinned guidance (excerpts from the Development Operating System)\n";
+    for pin in &role.guidance {
+        let doc = documents.iter().find(|d| d.id == pin.document_id);
+        let excerpt: String = doc
+            .and_then(|d| d.content.as_deref())
+            .unwrap_or("Unavailable")
+            .chars()
+            .take(GUIDANCE_EXCERPT)
+            .collect();
+        out += &format!(
+            "\n## {} (fingerprint {})\n\n{}\n",
+            doc.map(|d| d.title.as_str()).unwrap_or(&pin.document_id),
+            pin.recorded_fingerprint.as_deref().unwrap_or("unavailable"),
+            excerpt
+        );
+    }
+    out += "\n# Queue\n";
+    for c in contexts {
+        let i = &c["issue"];
+        let key = i["key"].as_str().unwrap_or("");
+        out += &format!(
+            "\n## {key} (version {}, status {})\n\nTitle: {}\n\nBrief:\n{}\n\nAcceptance:\n{}\n",
+            i["version"],
+            i["status"].as_str().unwrap_or(""),
+            i["title"].as_str().unwrap_or(""),
+            i["body"].as_str().unwrap_or(""),
+            i["acceptance"].as_str().unwrap_or(""),
+        );
+        if let Some(intake) = i["intake"]["text"]
+            .as_str()
+            .filter(|t| !t.trim().is_empty())
+        {
+            let text: String = intake.chars().take(2_000).collect();
+            out += &format!("\nOriginal intake (preserved, never rewrite it):\n{text}\n");
+        }
+        let links: Vec<String> = c["issue_links"]
+            .as_array()
+            .map(|a| {
+                a.iter()
+                    .map(|l| {
+                        format!(
+                            "{} {} {}",
+                            l["source_key"].as_str().unwrap_or(""),
+                            l["kind"].as_str().unwrap_or(""),
+                            l["target_key"].as_str().unwrap_or("")
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        if !links.is_empty() {
+            out += &format!("\nLinks: {}\n", links.join("; "));
+        }
+        if let Some(comments) = c["comments"].as_array() {
+            for comment in comments.iter().rev().take(3) {
+                let body: String = comment["body"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(400)
+                    .collect();
+                out += &format!(
+                    "\nRecent comment by {}: {body}\n",
+                    comment["actor"].as_str().unwrap_or("")
+                );
+            }
+        }
+    }
+    if !queue.blocked.is_empty() {
+        out += "\n# Excluded from this review (do not propose anything for these)\n";
+        for b in &queue.blocked {
+            out += &format!("- {}: {}\n", b.key, b.reason);
+        }
+    }
+    out += &format!(
+        "\n# Routing\n\nKnown work gets a bounded brief. Uncertain but reversible work gets a DOS v5 discovery proposal (route `discovery`). \
+Consequential work (security, auth, payments, destructive or irreversible changes, privacy) gets reviewed-design scope (route `reviewed_design`). \
+Do not invent busywork: a clear, well-scoped issue needs no finding.\n\n# Reply format\n\n\
+Reply with only this JSON object: {{\"summary\": \"one or two sentences\", \"proposals\": [ ... ]}}\nEach proposal is one of:\n\
+- {{\"op\": \"finding\", \"issue_key\": \"KEY\", \"kind\": \"unclear_outcome|oversized|missing_criteria|duplicate|dependency|route_mismatch\", \"route\": \"bounded_brief|discovery|reviewed_design\", \"summary\": \"...\", \"evidence\": [\"what in the issue shows it\"], \"recommendation\": \"...\", \"uncertain\": false}}\n\
+  Add \"escalation\": {{\"criterion\": \"...\", \"evidence\": \"...\", \"impact\": \"...\", \"options\": [\"...\"], \"recommendation\": \"...\"}} when route is reviewed_design or uncertain is true.\n\
+- {{\"op\": \"comment\", \"issue_key\": \"KEY\", \"body\": \"...\"}}\n\
+- {{\"op\": \"update_backlog\", \"issue_key\": \"KEY\", \"expected_version\": N, \"body\": \"...\", \"acceptance\": \"...\"}} (either text field may be omitted)\n\
+At most {QUEUE_PROPOSALS} proposals, only for the issues in the queue above. Never mark work Ready, reopen, merge or delete duplicates, or rewrite submitted or completed scope.\n"
+    );
+    Ok(out)
+}
+
 /// The JSON object inside the executor's final text, fenced or bare.
-pub fn parse_reply(text: &str) -> Option<(String, Vec<Value>)> {
+pub fn parse_reply(text: &str, max: usize) -> Option<(String, Vec<Value>)> {
     let trimmed = text.trim();
     let body = trimmed
         .split("```json")
@@ -168,7 +297,7 @@ pub fn parse_reply(text: &str) -> Option<(String, Vec<Value>)> {
         .unwrap_or(trimmed);
     let value: Value = serde_json::from_str(body.trim()).ok()?;
     let proposals = value["proposals"].as_array()?.clone();
-    if proposals.len() > MAX_PROPOSALS {
+    if proposals.len() > max {
         return None;
     }
     Some((
@@ -206,8 +335,8 @@ fn submit(
     run: &AgentRun,
     credential: &str,
     proposals: &[Value],
-) -> Result<(usize, usize)> {
-    let (mut applied, mut denied) = (0, 0);
+) -> Result<(usize, usize, usize)> {
+    let (mut applied, mut retained, mut denied) = (0, 0, 0);
     for (index, proposal) in proposals.iter().enumerate() {
         if run.actions.iter().any(|a| a.index as usize == index) {
             continue;
@@ -230,10 +359,11 @@ fn submit(
         }
         match outcome?["outcome"].as_str() {
             Some("applied") => applied += 1,
+            Some("retained") => retained += 1,
             _ => denied += 1,
         }
     }
-    Ok((applied, denied))
+    Ok((applied, retained, denied))
 }
 
 fn execute(runner: &Runner, data_dir: &Path, run_id: &str) -> Result<()> {
@@ -273,10 +403,21 @@ fn execute(runner: &Runner, data_dir: &Path, run_id: &str) -> Result<()> {
             bail!("Blocked, not dispatched: {reason}");
         }
     };
-    let context = runner.read(Command::Context {
-        key: run.issue_key.clone(),
-    })?;
-    let input = packet(&run, &snap, &context)?;
+    let input = match &run.queue {
+        Some(queue) => {
+            let mut contexts = Vec::new();
+            for key in &queue.keys {
+                contexts.push(runner.read(Command::Context { key: key.clone() })?);
+            }
+            queue_packet(&run, &snap, &contexts)?
+        }
+        None => {
+            let context = runner.read(Command::Context {
+                key: run.issue_key.clone(),
+            })?;
+            packet(&run, &snap, &context)?
+        }
+    };
     let credential = format!("{}{}", uuid::Uuid::new_v4(), uuid::Uuid::new_v4());
     let run = runner.step(Command::StartAgentRun {
         id: run.id.clone(),
@@ -419,7 +560,16 @@ fn finish(
     let parsed = final_text
         .as_ref()
         .filter(|(_, error)| !error)
-        .and_then(|(text, _)| parse_reply(text));
+        .and_then(|(text, _)| {
+            parse_reply(
+                text,
+                if run.queue.is_some() {
+                    QUEUE_PROPOSALS
+                } else {
+                    MAX_PROPOSALS
+                },
+            )
+        });
     let Some((summary, proposals)) = parsed else {
         let (run, _) = runner.run(&run.id)?;
         runner.step(Command::FinishAgentRun {
@@ -430,9 +580,13 @@ fn finish(
         })?;
         bail!("Run {} failed: unusable executor reply", run.id);
     };
-    let (applied, denied) = submit(runner, run, credential, &proposals)?;
+    let (applied, retained, denied) = submit(runner, run, credential, &proposals)?;
     let (run, _) = runner.run(&run.id)?;
-    let summary = format!("{summary} ({applied} applied, {denied} denied)");
+    let summary = if retained > 0 {
+        format!("{summary} ({applied} applied, {retained} retained, {denied} denied)")
+    } else {
+        format!("{summary} ({applied} applied, {denied} denied)")
+    };
     runner.step(Command::FinishAgentRun {
         id: run.id.clone(),
         expected_version: run.version,
@@ -584,12 +738,12 @@ mod tests {
     #[test]
     fn replies_parse_fenced_or_bare_and_reject_floods() {
         let bare = r#"{"summary":"ok","proposals":[{"op":"comment","body":"x"}]}"#;
-        assert_eq!(parse_reply(bare).unwrap().1.len(), 1);
+        assert_eq!(parse_reply(bare, MAX_PROPOSALS).unwrap().1.len(), 1);
         let fenced = format!("Here you go:\n```json\n{bare}\n```\n");
-        assert_eq!(parse_reply(&fenced).unwrap().0, "ok");
-        assert!(parse_reply("I cannot do that").is_none());
+        assert_eq!(parse_reply(&fenced, MAX_PROPOSALS).unwrap().0, "ok");
+        assert!(parse_reply("I cannot do that", MAX_PROPOSALS).is_none());
         let flood = json!({"proposals": vec![json!({"op":"comment","body":"x"}); 11]}).to_string();
-        assert!(parse_reply(&flood).is_none());
+        assert!(parse_reply(&flood, MAX_PROPOSALS).is_none());
     }
 
     #[test]

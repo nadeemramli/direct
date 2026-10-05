@@ -36,6 +36,8 @@
   import AgentsView from "./AgentsView.svelte";
   import IssueAssignment from "./IssueAssignment.svelte";
   import AgentRuns from "./AgentRuns.svelte";
+  import PlannerView from "./PlannerView.svelte";
+  import PlannerFindings from "./PlannerFindings.svelte";
   import { linksFor } from "./context";
   import { signalStatus } from "./signals";
   import ProgressBar from "./ProgressBar.svelte";
@@ -2525,6 +2527,16 @@
             context = null;
           }}><span>◈</span> Agents <small>{(data.agent_members || []).filter((m) => m.enabled).length}</small></button
         >
+        <button
+          title="Product Planner reviews"
+          class:active={view === "planner"}
+          onclick={() => {
+            view = "planner";
+            product = "all";
+            selected = "";
+            context = null;
+          }}><span>◎</span> Planner <small>{(data.planner_findings || []).filter((f) => f.escalation && !f.confirmation).length}</small></button
+        >
       </nav>{/if}
       {@render sectionToggle("theoria", "THEORIA")}
       {#if sectionOpen("theoria")}<nav aria-label="Theoria">
@@ -2931,6 +2943,8 @@
         <RolesView {data} {connected} {commit} />
       {:else if view === "agents"}
         <AgentsView {data} {connected} {commit} />
+      {:else if view === "planner"}
+        <PlannerView {data} {connected} {commit} />
       {:else if view === "workflow"}
         <WorkflowView
           issues={parents}
@@ -3701,7 +3715,9 @@
               />
               <CloudHandoffs handoffs={context?.cloud_handoffs || []} />
               <IssueAssignment {data} issue={current} assignment={context?.assignment || null} {connected} {clock} {commit} />
-              <AgentRuns issue={current} assignment={context?.assignment || null} runs={context?.agent_runs || []} {connected} {clock} {commit} />
+              <AgentRuns issue={current} assignment={context?.assignment || null} runs={(context?.agent_runs || []).filter((r) => !r.queue)} {connected} {clock} {commit} />
+              {#if context?.planner_findings?.length}<div class="section-label spaced">PLANNER FINDINGS <span>{context.planner_findings.length}</span></div>
+                <PlannerFindings findings={context.planner_findings} {connected} {commit} />{/if}
               {#if current.claim}<div class="info-card">
                   <span class="card-symbol">↗</span>
                   <div>

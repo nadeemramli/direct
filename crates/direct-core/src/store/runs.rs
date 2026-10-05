@@ -13,6 +13,7 @@ use super::*;
 
 const OBJECTIVE_MAX: usize = 2_000;
 const ACTIONS_MAX: u32 = 10;
+const QUEUE_ACTIONS_MAX: u32 = 40;
 const CREDENTIAL_TTL: i64 = 2 * 60 * 60;
 
 pub(crate) fn put_run(conn: &Connection, r: &AgentRun) -> Result<()> {
@@ -85,7 +86,10 @@ fn advance(
 pub(crate) fn for_issue(conn: &Connection, key: &str) -> Result<Vec<AgentRun>> {
     let mut runs: Vec<AgentRun> = all::<AgentRun>(conn, "agent_runs")?
         .into_iter()
-        .filter(|r| r.issue_key == key)
+        .filter(|r| match &r.queue {
+            Some(q) => q.keys.iter().any(|k| k == key) || q.blocked.iter().any(|b| b.key == key),
+            None => r.issue_key == key,
+        })
         .collect();
     runs.sort_by_key(|r| r.created_at);
     Ok(runs)
@@ -298,12 +302,20 @@ pub(crate) fn mutate(
                 summary: String::new(),
                 reason: None,
                 cancel_requested_by: None,
+                queue: None,
                 updated_at: at,
             };
             put_run(tx, &r)?;
             emit(tx, actor, "agent_run_intent", key, at)?;
             Ok(serde_json::to_value(r)?)
         }
+        Command::CreateQueueRun { .. } => {
+            let r = super::planner::create_queue_run(tx, cmd, actor, role, at)?;
+            put_run(tx, &r)?;
+            emit(tx, actor, "agent_run_intent", &r.issue_key, at)?;
+            Ok(serde_json::to_value(r)?)
+        }
+        Command::ConfirmPlannerFinding { .. } => super::planner::confirm(tx, cmd, actor, at),
         Command::StartAgentRun {
             id,
             expected_version,
@@ -415,8 +427,16 @@ pub(crate) fn mutate(
                     "This run credential is not valid for a running run",
                 ));
             }
-            if *index >= ACTIONS_MAX {
-                return Err(err("invalid", "A run may submit at most 10 proposals"));
+            let limit = if r.queue.is_some() {
+                QUEUE_ACTIONS_MAX
+            } else {
+                ACTIONS_MAX
+            };
+            if *index >= limit {
+                return Err(err(
+                    "invalid",
+                    format!("This run may submit at most {limit} proposals"),
+                ));
             }
             if r.actions.iter().any(|a| a.index == *index) {
                 return Err(err(
@@ -424,24 +444,29 @@ pub(crate) fn mutate(
                     format!("Proposal {index} was already submitted"),
                 ));
             }
-            let mut i = issue(tx, &r.issue_key)?;
             let run_actor = format!("run:{}", r.id);
-            let (outcome, detail) = match judge(proposal, &i) {
-                Err(reason) => ("denied", reason),
-                Ok(Allowed::Comment(body)) => {
-                    add_comment(tx, &i.key, &run_actor, &body, at)?;
-                    emit(tx, &run_actor, "comment_added", &i.key, at)?;
-                    ("applied", "Comment added".to_string())
-                }
-                Ok(Allowed::Backlog { body, acceptance }) => {
-                    if let Some(b) = body {
-                        i.body = b;
+            let (outcome, detail) = if let Some(queue) = r.queue.clone() {
+                let (outcome, detail) = super::planner::apply(tx, &r, &queue, proposal, at)?;
+                (outcome, detail)
+            } else {
+                let mut i = issue(tx, &r.issue_key)?;
+                match judge(proposal, &i) {
+                    Err(reason) => ("denied", reason),
+                    Ok(Allowed::Comment(body)) => {
+                        add_comment(tx, &i.key, &run_actor, &body, at)?;
+                        emit(tx, &run_actor, "comment_added", &i.key, at)?;
+                        ("applied", "Comment added".to_string())
                     }
-                    if let Some(a) = acceptance {
-                        i.acceptance = a;
+                    Ok(Allowed::Backlog { body, acceptance }) => {
+                        if let Some(b) = body {
+                            i.body = b;
+                        }
+                        if let Some(a) = acceptance {
+                            i.acceptance = a;
+                        }
+                        save(tx, i, &run_actor, "issue_updated", at)?;
+                        ("applied", "Backlog brief updated".to_string())
                     }
-                    save(tx, i, &run_actor, "issue_updated", at)?;
-                    ("applied", "Backlog brief updated".to_string())
                 }
             };
             r.actions.push(RunAction {
@@ -554,12 +579,24 @@ pub(crate) fn validate_archive(a: &Archive) -> Result<()> {
     }
     let mut ids = HashSet::new();
     for r in &a.agent_runs {
+        let target = match &r.queue {
+            Some(q) => {
+                a.products
+                    .iter()
+                    .any(|p| p.id == q.product_id && p.key == r.issue_key)
+                    && q.keys.len() == q.versions.len()
+                    && q.keys.iter().all(|k| a.issues.iter().any(|i| i.key == *k))
+            }
+            None => {
+                a.issues.iter().any(|i| i.key == r.issue_key)
+                    && a.issue_assignments.iter().any(|x| x.id == r.assignment_id)
+            }
+        };
         if !ids.insert(r.id.as_str())
             || r.version == 0
-            || !a.issues.iter().any(|i| i.key == r.issue_key)
+            || !target
             || !a.agent_members.iter().any(|m| m.id == r.member_id)
             || !a.agent_roles.iter().any(|x| x.id == r.role_id)
-            || !a.issue_assignments.iter().any(|x| x.id == r.assignment_id)
         {
             return Err(err("invalid", "Invalid agent run archive: unresolved run"));
         }

@@ -150,6 +150,7 @@ fn workspace() -> Archive {
         agent_members: Vec::new(),
         issue_assignments: Vec::new(),
         agent_runs: Vec::new(),
+        planner_findings: Vec::new(),
         projects,
         goals,
         milestones,

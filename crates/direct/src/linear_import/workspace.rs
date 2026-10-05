@@ -2282,6 +2282,7 @@ impl<'a> Builder<'a> {
             agent_members: Vec::new(),
             issue_assignments: Vec::new(),
             agent_runs: Vec::new(),
+            planner_findings: Vec::new(),
             projects: self.projects,
             goals: self.goals,
             milestones: self.milestones,
