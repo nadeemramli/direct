@@ -347,7 +347,7 @@ fn reconciliation_requires_matching_issue_model_pr_and_pushed_sha() {
     drop(s);
     let s = Store::open(&path).unwrap();
     let archive = s.export().unwrap();
-    assert_eq!(archive.format, 24);
+    assert_eq!(archive.format, 25);
     assert_eq!(archive.cloud_handoffs.len(), 1);
     validate_archive(&archive).unwrap();
     let mut restored = Store::open(&dir.path().join("restored")).unwrap();

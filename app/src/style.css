@@ -3022,3 +3022,8 @@ dialog::backdrop {
   flex-wrap: wrap;
   margin: 10px 0;
 }
+
+.build-warning {
+  color: #e0a39a;
+  font-weight: 700;
+}

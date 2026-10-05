@@ -17,6 +17,32 @@ pub struct Endpoint {
     pub agent_token: String,
     pub owner_token: String,
 }
+/// The source this binary was built from (DIR-82). `dirty` is `true` when the
+/// tree had uncommitted changes, `unknown` when git was unavailable.
+pub fn build_info() -> Value {
+    serde_json::json!({
+        "commit": env!("DIRECT_BUILD_COMMIT"),
+        "dirty": env!("DIRECT_BUILD_DIRTY"),
+        "built_at": env!("DIRECT_BUILD_AT").parse::<i64>().unwrap_or(0),
+        "version": env!("CARGO_PKG_VERSION"),
+    })
+}
+
+/// The UI bundle an assets directory serves: its entry script and the build
+/// stamp Vite wrote beside it, or unknown.
+pub fn bundle_info(assets: &Path) -> Value {
+    let index = std::fs::read_to_string(assets.join("index.html")).unwrap_or_default();
+    let script = index
+        .split("assets/")
+        .skip(1)
+        .find_map(|rest| rest.split('"').next().filter(|s| s.ends_with(".js")))
+        .map(str::to_string);
+    let stamp = std::fs::read_to_string(assets.join("build-info.json"))
+        .ok()
+        .and_then(|s| serde_json::from_str::<Value>(&s).ok());
+    serde_json::json!({"script": script, "build": stamp})
+}
+
 pub fn data_dir() -> Result<PathBuf> {
     resolve_data_dir(cfg!(windows), |key| std::env::var_os(key))
 }
@@ -178,6 +204,21 @@ impl Client {
                 .timeout(Duration::from_secs(10))
                 .build()?,
         })
+    }
+    /// The running service's build stamp and served UI bundle (DIR-82).
+    pub fn build(&self) -> Result<Value> {
+        let response = self
+            .http
+            .post(format!("http://127.0.0.1:{}/api/build", self.endpoint.port))
+            .bearer_auth(&self.endpoint.agent_token)
+            .timeout(Duration::from_secs(10))
+            .send()
+            .context("Direct service is unavailable")?;
+        anyhow::ensure!(
+            response.status().is_success(),
+            "Direct refused the build query"
+        );
+        Ok(response.json::<Value>()?)
     }
     pub fn call(&self, request: &Request, role: Role) -> Result<Value> {
         let token = if role == Role::Human {

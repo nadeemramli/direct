@@ -38,6 +38,8 @@
   import AgentRuns from "./AgentRuns.svelte";
   import PlannerView from "./PlannerView.svelte";
   import RoutinesView from "./RoutinesView.svelte";
+  import DeliveryView from "./DeliveryView.svelte";
+  import { compareBuilds } from "./delivery";
   import PlannerFindings from "./PlannerFindings.svelte";
   import { linksFor } from "./context";
   import { signalStatus } from "./signals";
@@ -406,6 +408,14 @@
     planning_scope: "",
   };
   let reopenReason = $state("");
+  // This UI's own build stamp, compared with the running service (DIR-82).
+  const buildComparison = $derived(
+    compareBuilds(
+      typeof __DIRECT_BUILD__ === "undefined" ? null : __DIRECT_BUILD__,
+      data.service_build?.service || null,
+      data.service_build?.bundle?.build || null,
+    ),
+  );
   let cancelReason = $state("");
   let releaseClaim = $state(false);
   let clock = $state(Date.now() / 1000);
@@ -2548,6 +2558,16 @@
             context = null;
           }}><span>◷</span> Routines <small>{(data.routine_notices || []).filter((n) => !n.acknowledged).length}</small></button
         >
+        <button
+          title="Delivery ledger and build identity"
+          class:active={view === "delivery"}
+          onclick={() => {
+            view = "delivery";
+            product = "all";
+            selected = "";
+            context = null;
+          }}><span>◇</span> Delivery <small class:build-warning={buildComparison.state !== "match"}>{buildComparison.state === "match" ? "" : "!"}</small></button
+        >
       </nav>{/if}
       {@render sectionToggle("theoria", "THEORIA")}
       {#if sectionOpen("theoria")}<nav aria-label="Theoria">
@@ -2956,6 +2976,8 @@
         <AgentsView {data} {connected} {commit} />
       {:else if view === "planner"}
         <PlannerView {data} {connected} {commit} />
+      {:else if view === "delivery"}
+        <DeliveryView {data} comparison={buildComparison} openIssue={(key) => { view = "all"; choose(key); }} />
       {:else if view === "routines"}
         <RoutinesView {data} {connected} {commit} api={(command) => api(command)} />
       {:else if view === "workflow"}

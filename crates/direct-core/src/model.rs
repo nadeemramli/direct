@@ -1243,6 +1243,14 @@ pub enum Command {
         proposal: String,
         evidence: Vec<EvidencePointer>,
     },
+    /// Record one delivery fact after observing it (DIR-82). Append-only.
+    RecordDeliveryFact {
+        key: String,
+        status: String,
+        detail: DeliveryDetail,
+        #[serde(default)]
+        note: String,
+    },
     /// Owner only: create a paused routine (DIR-78).
     CreateRoutine {
         name: String,
@@ -2583,6 +2591,106 @@ pub struct RoutineNotice {
     pub acknowledged: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct Artifact {
+    pub name: String,
+    pub sha256: String,
+}
+
+/// One observed delivery fact (DIR-82). Each kind stands alone: a push is not
+/// integration, a merge is not an install.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum DeliveryDetail {
+    Worker {
+        host: String,
+        runtime: String,
+        #[serde(default)]
+        session_id: Option<String>,
+        #[serde(default)]
+        model: Option<String>,
+        #[serde(default)]
+        run_id: Option<String>,
+    },
+    WorkingTree {
+        checkout: String,
+        branch: String,
+        #[serde(default)]
+        base: Option<String>,
+        #[serde(default)]
+        head: Option<String>,
+        dirty_files: u32,
+        #[serde(default)]
+        unpushed_commits: Option<u32>,
+    },
+    Commit {
+        sha: String,
+        branch: String,
+    },
+    Push {
+        sha: String,
+        remote: String,
+        remote_ref: String,
+    },
+    PullRequest {
+        number: u64,
+        url: String,
+        target: String,
+        head_sha: String,
+    },
+    Integration {
+        /// merge, squash or rebase.
+        method: String,
+        sources: Vec<String>,
+        result: String,
+        target: String,
+    },
+    Check {
+        commit: String,
+        name: String,
+        /// passed or failed.
+        outcome: String,
+    },
+    Build {
+        commit: String,
+        /// true, false or unknown.
+        dirty: String,
+        artifacts: Vec<Artifact>,
+    },
+    Install {
+        build_fact_id: String,
+        path: String,
+        sha256: String,
+    },
+    Running {
+        path: String,
+        #[serde(default)]
+        sha256: Option<String>,
+        #[serde(default)]
+        service_commit: Option<String>,
+        #[serde(default)]
+        service_dirty: Option<String>,
+        #[serde(default)]
+        bundle: Option<String>,
+        #[serde(default)]
+        bundle_commit: Option<String>,
+    },
+}
+
+/// An append-only ledger entry with its own provenance and time (format 25).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DeliveryFact {
+    pub id: String,
+    pub issue_key: String,
+    /// ok, failed or unknown.
+    pub status: String,
+    pub detail: DeliveryDetail,
+    #[serde(default)]
+    pub note: String,
+    pub observed_by: String,
+    pub observed_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Archive {
     pub format: u32,
@@ -2625,6 +2733,9 @@ pub struct Archive {
     pub routine_occurrences: Vec<RoutineOccurrence>,
     #[serde(default)]
     pub routine_notices: Vec<RoutineNotice>,
+    /// Delivery ledger facts (format 25).
+    #[serde(default)]
+    pub delivery_facts: Vec<DeliveryFact>,
     #[serde(default)]
     pub projects: Vec<Project>,
     #[serde(default)]

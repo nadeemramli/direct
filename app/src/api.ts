@@ -878,6 +878,19 @@ export interface RoutineNotice {
   at: number;
   acknowledged: boolean;
 }
+export interface DeliveryFact {
+  id: string;
+  issue_key: string;
+  status: "ok" | "failed" | "unknown";
+  detail: { kind: string } & Record<string, unknown>;
+  note: string;
+  observed_by: string;
+  observed_at: number;
+}
+export interface ServiceBuild {
+  service: { commit: string; dirty: string; built_at: number; version: string };
+  bundle: { script: string | null; build: { commit: string; dirty: string; built_at: number } | null };
+}
 export interface Snapshot {
   review_ready_runs?: string[];
   workspace_id: string;
@@ -899,6 +912,10 @@ export interface Snapshot {
   routine_notices?: RoutineNotice[];
   /** When the workspace was last restored from an archive. */
   restored_at?: number | null;
+  /** Delivery ledger facts (DIR-82). */
+  delivery_facts?: DeliveryFact[];
+  /** The running service's build stamp and served bundle (DIR-82). */
+  service_build?: ServiceBuild;
   projects: Project[];
   project_progress?: ProjectProgress[];
   goals: Goal[];

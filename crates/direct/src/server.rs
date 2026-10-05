@@ -31,6 +31,7 @@ struct App {
     sessions: Arc<Mutex<HashMap<String, i64>>>,
     shutdown: Arc<Mutex<Option<tokio::sync::oneshot::Sender<()>>>>,
     drafting: Arc<tokio::sync::Semaphore>,
+    assets: PathBuf,
 }
 async fn draft_brief(
     State(app): State<App>,
@@ -319,6 +320,7 @@ async fn command(
         );
     };
     let store = app.store.clone();
+    let snapshot = matches!(request.command, Command::Snapshot);
     let dispatch = role == Role::Human
         && matches!(
             request.command,
@@ -330,6 +332,14 @@ async fn command(
                 if let Some(id) = value["id"].as_str() {
                     spawn_runner(&app.dir, &["runs", "execute", id], &format!("run-{id}.log"));
                 }
+            }
+            let mut value = value;
+            if snapshot {
+                // The owner UI compares its own build stamp with this (DIR-82).
+                value["service_build"] = json!({
+                    "service": crate::build_info(),
+                    "bundle": crate::bundle_info(&app.assets),
+                });
             }
             Json(value).into_response()
         }
@@ -361,6 +371,22 @@ async fn health(State(app): State<App>, headers: HeaderMap) -> Response {
         );
     }
     Json(json!({"service":"direct","status":"alive"})).into_response()
+}
+/// The running service's build stamp and the UI bundle it serves (DIR-82).
+async fn build(State(app): State<App>, headers: HeaderMap) -> Response {
+    if role(&app, &headers).is_none() {
+        return fail(
+            StatusCode::UNAUTHORIZED,
+            "Open Direct locally or use the local CLI",
+        );
+    }
+    let executable = std::env::current_exe().ok();
+    Json(json!({
+        "service": crate::build_info(),
+        "executable": executable.as_ref().map(|p| p.display().to_string()),
+        "bundle": crate::bundle_info(&app.assets),
+    }))
+    .into_response()
 }
 async fn launch(State(app): State<App>, headers: HeaderMap) -> Response {
     if !same_host(&headers, &app.endpoint) || bearer(&headers) != app.endpoint.owner_token {
@@ -464,6 +490,7 @@ pub async fn serve(dir: &Path, port: u16, assets: &Path) -> Result<()> {
         grants: Arc::new(Mutex::new(HashMap::new())),
         sessions: Arc::new(Mutex::new(HashMap::new())),
         drafting: Arc::new(tokio::sync::Semaphore::new(1)),
+        assets: assets.to_path_buf(),
         shutdown: Arc::new(Mutex::new(Some(shutdown_tx))),
     };
     // Routine scheduler (DIR-78): due occurrences become planner reviews.
@@ -495,7 +522,7 @@ pub async fn serve(dir: &Path, port: u16, assets: &Path) -> Result<()> {
         });
     }
     let migration_limit = DefaultBodyLimit::max(direct_core::MAX_MIGRATION_ARTIFACT_BYTES);
-    let router=Router::new().route("/api/command",post(command)).route("/api/launch",post(launch)).route("/api/health",post(health)).route("/api/session",post(session)).route("/api/shutdown",post(shutdown))
+    let router=Router::new().route("/api/command",post(command)).route("/api/launch",post(launch)).route("/api/health",post(health)).route("/api/build",post(build)).route("/api/session",post(session)).route("/api/shutdown",post(shutdown))
       .route("/api/source-file",post(source_file))
       .route("/api/draft-brief",post(draft_brief))
       .route("/api/migration/preview",post(migration_preview).layer(migration_limit).layer(middleware::from_fn_with_state(app.clone(), require_owner)))

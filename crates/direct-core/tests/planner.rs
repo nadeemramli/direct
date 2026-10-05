@@ -411,7 +411,7 @@ fn refine_mode_is_bounded_versioned_preserving_and_deduplicated() {
     drop(s);
     let s = Store::open(&path).unwrap();
     let archive = s.export().unwrap();
-    assert_eq!(archive.format, 24);
+    assert_eq!(archive.format, 25);
     assert_eq!(archive.planner_findings.len(), 2);
     validate_archive(&archive).unwrap();
     let mut restored = Store::open(&dir.path().join("restored")).unwrap();

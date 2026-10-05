@@ -154,6 +154,7 @@ fn workspace() -> Archive {
         routines: Vec::new(),
         routine_occurrences: Vec::new(),
         routine_notices: Vec::new(),
+        delivery_facts: Vec::new(),
         projects,
         goals,
         milestones,

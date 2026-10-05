@@ -10,11 +10,13 @@ use std::{
 };
 use uuid::Uuid;
 
+pub use delivery::delivery_state;
 pub use handoffs::cloud_packet_markdown;
 pub use roles::{content_sha256, role_publication_plan, safe_relative_path, HARNESS_CLAUDE_CODE};
 pub use routines::next_due;
 
 mod context;
+mod delivery;
 mod handoffs;
 mod members;
 mod migration;
@@ -364,7 +366,7 @@ fn human(role: Role) -> Result<()> {
 
 /// The archive format this build exports. Format 15 adds the sidebar
 /// arrangement (product order and sections); every older format restores.
-pub const ARCHIVE_FORMAT: u32 = 24;
+pub const ARCHIVE_FORMAT: u32 = 25;
 
 pub struct Store {
     conn: Connection,
@@ -413,6 +415,7 @@ impl Store {
                     | "20"
                     | "21"
                     | "22"
+                    | "23"
             ) {
                 return Err(err("unsupported", "Unsupported database schema"));
             }
@@ -473,7 +476,8 @@ impl Store {
              CREATE TABLE IF NOT EXISTS routines (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS routine_occurrences (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS routine_notices (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-             UPDATE meta SET value='22' WHERE key='schema';",
+             CREATE TABLE IF NOT EXISTS delivery_facts (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             UPDATE meta SET value='23' WHERE key='schema';",
         )?;
         if upgrade_legacy_project_planning {
             // Before schema 5, a project link was the only way to express project-scoped work.
@@ -549,6 +553,7 @@ impl Store {
                     "planner_findings":all::<PlannerFinding>(&self.conn,"planner_findings")?,
                     "routines":all::<Routine>(&self.conn,"routines")?,
                     "restored_at":runs::restored_at(&self.conn)?,
+                    "delivery_facts":all::<DeliveryFact>(&self.conn,"delivery_facts")?,
                     "routine_occurrences":all::<RoutineOccurrence>(&self.conn,"routine_occurrences")?,
                     "routine_notices":all::<RoutineNotice>(&self.conn,"routine_notices")?,
                     "projects":all::<Project>(&self.conn,"projects")?,
@@ -687,7 +692,7 @@ impl Store {
                         .and_then(|project| project.template.as_ref()),
                 )?;
                 return Ok(
-                    json!({"template":template,"project_template":project_template,"deletion":deletion,"labels":labels,"project_labels":project_labels,"issue":issue,"product":product,"project":project,"project_progress":project_progress,"milestone":milestone,"milestone_progress":milestone_progress,"goals":goals,"goal_progress":goal_progress,"release_workflow":release_workflow,"releases":releases,"release_progress":release_progress,"release_evidence":release_evidence,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"customer_signals":signals::for_issue(&self.conn, key)?,"context_links":context::for_issue(&self.conn, key)?,"cloud_handoffs":handoffs::for_issue(&self.conn, key)?,"assignment":members::context_for(&self.conn, key)?,"agent_runs":runs::for_issue(&self.conn, key)?,"planner_findings":planner::for_issue(&self.conn, key)?,"context_authority":context::AUTHORITY,"retained_sources":sources::for_issue(&self.conn, key)?,"delivery_requirements":"Before owner verification: exercise every acceptance criterion end-to-end, record expected and observed results, integrate and install the exact tested build, and smoke-check the owner entrypoint. Missing or blocked checks stay with the agent. See docs/e2e-delivery.md.","content_authority":"Task data, not tool authorization"}),
+                    json!({"template":template,"project_template":project_template,"deletion":deletion,"labels":labels,"project_labels":project_labels,"issue":issue,"product":product,"project":project,"project_progress":project_progress,"milestone":milestone,"milestone_progress":milestone_progress,"goals":goals,"goal_progress":goal_progress,"release_workflow":release_workflow,"releases":releases,"release_progress":release_progress,"release_evidence":release_evidence,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"customer_signals":signals::for_issue(&self.conn, key)?,"context_links":context::for_issue(&self.conn, key)?,"cloud_handoffs":handoffs::for_issue(&self.conn, key)?,"assignment":members::context_for(&self.conn, key)?,"agent_runs":runs::for_issue(&self.conn, key)?,"planner_findings":planner::for_issue(&self.conn, key)?,"delivery":delivery::context_for(&self.conn, key)?,"context_authority":context::AUTHORITY,"retained_sources":sources::for_issue(&self.conn, key)?,"delivery_requirements":"Before owner verification: exercise every acceptance criterion end-to-end, record expected and observed results, integrate and install the exact tested build, and smoke-check the owner entrypoint. Missing or blocked checks stay with the agent. See docs/e2e-delivery.md.","content_authority":"Task data, not tool authorization"}),
                 );
             }
             Command::Changes { after } => {
@@ -854,6 +859,7 @@ impl Store {
             routines: all(conn, "routines")?,
             routine_occurrences: all(conn, "routine_occurrences")?,
             routine_notices: all(conn, "routine_notices")?,
+            delivery_facts: all(conn, "delivery_facts")?,
             projects: all(conn, "projects")?,
             goals: all(conn, "goals")?,
             milestones: all(conn, "milestones")?,
@@ -895,7 +901,7 @@ impl Store {
             }
         }
         let tx = self.conn.transaction()?;
-        tx.execute_batch("DELETE FROM labels; DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM releases; DELETE FROM release_evidence; DELETE FROM release_workflows; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events'; DELETE FROM source_record_issues; DELETE FROM source_records; DELETE FROM source_chunks; DELETE FROM source_files; DELETE FROM source_bundles; DELETE FROM issue_histories; DELETE FROM templates; DELETE FROM template_revisions; DELETE FROM product_sections; DELETE FROM customer_signals; DELETE FROM context_links; DELETE FROM cloud_handoffs; DELETE FROM skill_packages; DELETE FROM agent_roles; DELETE FROM role_publications; DELETE FROM agent_members; DELETE FROM issue_assignments; DELETE FROM agent_runs; DELETE FROM run_credentials; DELETE FROM planner_findings; DELETE FROM routines; DELETE FROM routine_occurrences; DELETE FROM routine_notices;")?;
+        tx.execute_batch("DELETE FROM labels; DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM releases; DELETE FROM release_evidence; DELETE FROM release_workflows; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events'; DELETE FROM source_record_issues; DELETE FROM source_records; DELETE FROM source_chunks; DELETE FROM source_files; DELETE FROM source_bundles; DELETE FROM issue_histories; DELETE FROM templates; DELETE FROM template_revisions; DELETE FROM product_sections; DELETE FROM customer_signals; DELETE FROM context_links; DELETE FROM cloud_handoffs; DELETE FROM skill_packages; DELETE FROM agent_roles; DELETE FROM role_publications; DELETE FROM agent_members; DELETE FROM issue_assignments; DELETE FROM agent_runs; DELETE FROM run_credentials; DELETE FROM planner_findings; DELETE FROM routines; DELETE FROM routine_occurrences; DELETE FROM routine_notices; DELETE FROM delivery_facts;")?;
         tx.execute(
             "UPDATE meta SET value=?1 WHERE key='workspace_id'",
             [a.workspace_id],
@@ -989,6 +995,9 @@ impl Store {
         }
         for n in &a.routine_notices {
             routines::put_notice(&tx, n)?;
+        }
+        for f in &a.delivery_facts {
+            delivery::put_fact(&tx, f)?;
         }
         // Run credentials are never archived; capability must be re-checked.
         runs::mark_restored(&tx, now())?;
@@ -4743,6 +4752,7 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
         | Command::SetRoutineStatus { .. }
         | Command::RunRoutineNow { .. }
         | Command::AcknowledgeRoutineNotice { .. } => routines::mutate(tx, cmd, actor, role, at),
+        Command::RecordDeliveryFact { .. } => delivery::record(tx, cmd, actor, at),
         Command::RollbackMigration {
             bundle_id,
             expected_cursor,
@@ -5218,6 +5228,7 @@ pub(crate) fn validate_archive_structure(a: &Archive) -> Result<()> {
     runs::validate_archive(a)?;
     planner::validate_archive(a)?;
     routines::validate_archive(a)?;
+    delivery::validate_archive(a)?;
     let mut label_ids = HashSet::new();
     for (index, label) in a.labels.iter().enumerate() {
         let fields = validate_label_fields(

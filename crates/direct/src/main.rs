@@ -14,6 +14,7 @@ use std::{
     time::{SystemTime, UNIX_EPOCH},
 };
 
+mod delivery_cli;
 mod linear_import;
 mod members_cli;
 mod roles_cli;
@@ -233,6 +234,13 @@ enum Cli {
         #[arg(long)]
         file: Option<PathBuf>,
     },
+    /// Read-only delivery observation for the ledger (DIR-82).
+    Delivery {
+        #[command(subcommand)]
+        action: delivery_cli::DeliveryAction,
+    },
+    /// Print the commit, dirty state and build time stamped into this binary (DIR-82).
+    BuildInfo,
     /// Print a one-use local owner-interface launch link. Do not share this link.
     Open,
     /// Gracefully stop the local service for a controlled update or restart.
@@ -779,6 +787,10 @@ fn run() -> Result<()> {
             println!("{}", serde_json::to_string_pretty(&report)?);
             Ok(())
         }
+        Cli::BuildInfo => {
+            println!("{}", serde_json::to_string_pretty(&direct::build_info())?);
+            Ok(())
+        }
         other => {
             let client = direct::Client::new(&dir)?;
             if matches!(other, Cli::Open) {
@@ -789,6 +801,9 @@ fn run() -> Result<()> {
                 client.stop()?;
                 println!("Direct service is stopping.");
                 return Ok(());
+            }
+            if let Cli::Delivery { action } = &other {
+                return delivery_cli::run(&client, &args.actor, action.clone());
             }
             if let Cli::Runs { action } = &other {
                 return runs_cli::run_action(&client, &args.actor, &dir, action.clone());
