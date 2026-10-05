@@ -466,6 +466,34 @@ pub async fn serve(dir: &Path, port: u16, assets: &Path) -> Result<()> {
         drafting: Arc::new(tokio::sync::Semaphore::new(1)),
         shutdown: Arc::new(Mutex::new(Some(shutdown_tx))),
     };
+    // Routine scheduler (DIR-78): due occurrences become planner reviews.
+    {
+        let ticker = app.clone();
+        let every = std::env::var("DIRECT_ROUTINE_TICK_SECONDS")
+            .ok()
+            .and_then(|v| v.parse::<u64>().ok())
+            .filter(|v| (1..=3600).contains(v))
+            .unwrap_or(30);
+        tokio::spawn(async move {
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(every));
+            loop {
+                interval.tick().await;
+                let store = ticker.store.clone();
+                if let Ok(Ok(launched)) =
+                    tokio::task::spawn_blocking(move || lock_store(&store).tick_routines(now()))
+                        .await
+                {
+                    for id in launched {
+                        spawn_runner(
+                            &ticker.dir,
+                            &["runs", "execute", &id],
+                            &format!("run-{id}.log"),
+                        );
+                    }
+                }
+            }
+        });
+    }
     let migration_limit = DefaultBodyLimit::max(direct_core::MAX_MIGRATION_ARTIFACT_BYTES);
     let router=Router::new().route("/api/command",post(command)).route("/api/launch",post(launch)).route("/api/health",post(health)).route("/api/session",post(session)).route("/api/shutdown",post(shutdown))
       .route("/api/source-file",post(source_file))

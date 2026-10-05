@@ -792,6 +792,9 @@ export interface AgentRun {
   reason: string | null;
   cancel_requested_by: string | null;
   queue: RunQueue | null;
+  occurrence_id?: string | null;
+  max_seconds?: number | null;
+  cost_usd?: number | null;
   updated_at: number;
 }
 export interface PlannerFinding {
@@ -821,6 +824,60 @@ export interface RunQueue {
   policy: "inspect_only" | "refine_backlog";
   blocked: { key: string; reason: string }[];
 }
+export interface RoutineTrigger { kind: string; time: string; weekday: string | null; timezone: string }
+export interface RoutineRevision {
+  revision: number;
+  product_id: string;
+  states: Status[];
+  project_id: string | null;
+  member_id: string;
+  role_id: string;
+  requested_model: string;
+  policy: "inspect_only" | "refine_backlog";
+  objective: string;
+  trigger: RoutineTrigger;
+  limits: { max_issues: number; max_minutes: number; max_cost_usd: number | null };
+  notify: string;
+  created_by: string;
+  created_at: number;
+}
+export interface Routine {
+  id: string;
+  name: string;
+  status: "paused" | "active" | "retired";
+  revisions: RoutineRevision[];
+  next_due_at: number | null;
+  activated_at: number | null;
+  held_reason: string | null;
+  version: number;
+  created_at: number;
+  updated_at: number;
+}
+export interface RoutineOccurrence {
+  id: string;
+  routine_id: string;
+  revision: number;
+  due_at: number;
+  coalesced: number;
+  manual: boolean;
+  state: string;
+  run_id: string | null;
+  reason: string | null;
+  keys: string[];
+  created_at: number;
+  updated_at: number;
+}
+export interface RoutineNotice {
+  id: string;
+  routine_id: string;
+  occurrence_id: string | null;
+  kind: string;
+  message: string;
+  issue_key: string | null;
+  action: string | null;
+  at: number;
+  acknowledged: boolean;
+}
 export interface Snapshot {
   review_ready_runs?: string[];
   workspace_id: string;
@@ -837,6 +894,11 @@ export interface Snapshot {
   issue_assignments?: IssueAssignment[];
   agent_runs?: AgentRun[];
   planner_findings?: PlannerFinding[];
+  routines?: Routine[];
+  routine_occurrences?: RoutineOccurrence[];
+  routine_notices?: RoutineNotice[];
+  /** When the workspace was last restored from an archive. */
+  restored_at?: number | null;
   projects: Project[];
   project_progress?: ProjectProgress[];
   goals: Goal[];

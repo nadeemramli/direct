@@ -80,7 +80,26 @@ fn advance(
     r.updated_at = at;
     put_run(tx, &r)?;
     emit(tx, actor, &kind, &r.issue_key, at)?;
+    if r.state.terminal() {
+        super::routines::on_run_finished(tx, &r, at)?;
+    }
     Ok(serde_json::to_value(r)?)
+}
+
+/// Ask an unfinished run to stop (used when a routine is paused or retired).
+pub(crate) fn request_cancel(tx: &Transaction, id: &str, actor: &str, at: i64) -> Result<()> {
+    let mut r = run(tx, id)?;
+    if r.state.terminal() || r.state == RunState::CancelPending {
+        return Ok(());
+    }
+    r.cancel_requested_by = Some(actor.into());
+    let state = if r.state == RunState::Intent {
+        RunState::Canceled
+    } else {
+        RunState::CancelPending
+    };
+    advance(tx, r, state, actor, at)?;
+    Ok(())
 }
 
 pub(crate) fn for_issue(conn: &Connection, key: &str) -> Result<Vec<AgentRun>> {
@@ -99,7 +118,7 @@ pub(crate) fn deletion_references(conn: &Connection, key: &str) -> Result<Vec<St
     Ok(for_issue(conn, key)?.into_iter().map(|r| r.id).collect())
 }
 
-fn restored_at(conn: &Connection) -> Result<Option<i64>> {
+pub(crate) fn restored_at(conn: &Connection) -> Result<Option<i64>> {
     let value: Option<String> = conn
         .query_row("SELECT value FROM meta WHERE key='restored_at'", [], |r| {
             r.get(0)
@@ -302,6 +321,9 @@ pub(crate) fn mutate(
                 summary: String::new(),
                 reason: None,
                 cancel_requested_by: None,
+                occurrence_id: None,
+                max_seconds: None,
+                cost_usd: None,
                 queue: None,
                 updated_at: at,
             };
@@ -558,6 +580,23 @@ pub(crate) fn mutate(
                 return advance(tx, r, RunState::Canceled, actor, at);
             }
             advance(tx, r, RunState::CancelPending, actor, at)
+        }
+        Command::RecordRunCost { id, cost_usd } => {
+            let mut r = run(tx, id)?;
+            if !matches!(r.state, RunState::Running | RunState::CancelPending) {
+                return Err(err(
+                    "conflict",
+                    "Cost is recorded while the run is in flight",
+                ));
+            }
+            if cost_usd.is_some_and(|c| !(0.0..100_000.0).contains(&c)) {
+                return Err(err("invalid", "Cost must be a non-negative USD amount"));
+            }
+            r.cost_usd = *cost_usd;
+            r.version += 1;
+            r.updated_at = at;
+            put_run(tx, &r)?;
+            Ok(serde_json::to_value(r)?)
         }
         Command::AcknowledgeRunCancel {
             id,

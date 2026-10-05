@@ -1243,6 +1243,40 @@ pub enum Command {
         proposal: String,
         evidence: Vec<EvidencePointer>,
     },
+    /// Owner only: create a paused routine (DIR-78).
+    CreateRoutine {
+        name: String,
+        config: RoutineConfig,
+    },
+    /// Owner only: add a new immutable revision.
+    ReviseRoutine {
+        id: String,
+        expected_version: u64,
+        config: RoutineConfig,
+    },
+    /// Owner only: activate, pause, resume or retire.
+    SetRoutineStatus {
+        id: String,
+        expected_version: u64,
+        status: RoutineStatus,
+    },
+    /// Owner only: record a manual occurrence now (the scheduler launches it).
+    RunRoutineNow {
+        id: String,
+    },
+    /// Read-only: resolve the scope a configuration would review now.
+    PreviewRoutine {
+        config: RoutineConfig,
+    },
+    /// Owner only: mark a notice seen.
+    AcknowledgeRoutineNotice {
+        id: String,
+    },
+    /// Runner: record the harness-reported cost of a run.
+    RecordRunCost {
+        id: String,
+        cost_usd: Option<f64>,
+    },
     /// Owner only: record a Product Planner queue review run (DIR-77).
     CreateQueueRun {
         product: String,
@@ -2283,7 +2317,7 @@ pub struct RunAction {
 }
 
 /// A bounded dispatch of an assignment to its member's harness (format 22).
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct AgentRun {
     pub id: String,
     pub issue_key: String,
@@ -2323,6 +2357,15 @@ pub struct AgentRun {
     /// Set for a Product Planner queue review (DIR-77); `issue_key` then holds the product key.
     #[serde(default)]
     pub queue: Option<RunQueue>,
+    /// The routine occurrence that launched this run (DIR-78).
+    #[serde(default)]
+    pub occurrence_id: Option<String>,
+    /// Run time limit in seconds, enforced by the runner.
+    #[serde(default)]
+    pub max_seconds: Option<u64>,
+    /// Cost the harness reported, in USD; `None` is unknown.
+    #[serde(default)]
+    pub cost_usd: Option<f64>,
     pub updated_at: i64,
 }
 
@@ -2403,6 +2446,143 @@ pub struct PlannerFinding {
     pub updated_at: i64,
 }
 
+/// Owner-supplied routine configuration (becomes an immutable revision).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoutineConfig {
+    pub product: String,
+    pub states: Vec<Status>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    pub member_id: String,
+    pub role_id: String,
+    pub requested_model: String,
+    pub policy: RunPolicy,
+    pub objective: String,
+    pub trigger: RoutineTrigger,
+    pub limits: RoutineLimits,
+    #[serde(default = "local_notify")]
+    pub notify: String,
+}
+
+fn local_notify() -> String {
+    "local".into()
+}
+
+/// When a routine is due (DIR-78): daily, or weekly on one weekday, at a local
+/// time in an IANA timezone.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoutineTrigger {
+    /// `daily` or `weekly`.
+    pub kind: String,
+    /// Local time `HH:MM`.
+    pub time: String,
+    /// `mon`..`sun` for weekly routines.
+    #[serde(default)]
+    pub weekday: Option<String>,
+    /// IANA timezone, e.g. `Asia/Kuala_Lumpur`.
+    pub timezone: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoutineLimits {
+    pub max_issues: u32,
+    pub max_minutes: u32,
+    /// `None` means no cost limit; reported cost is recorded when the harness gives it.
+    #[serde(default)]
+    pub max_cost_usd: Option<f64>,
+}
+
+/// An immutable routine configuration revision.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct RoutineRevision {
+    pub revision: u32,
+    pub product_id: String,
+    /// Issue states in scope, e.g. `backlog`, `ready`.
+    pub states: Vec<Status>,
+    #[serde(default)]
+    pub project_id: Option<String>,
+    pub member_id: String,
+    pub role_id: String,
+    pub requested_model: String,
+    pub policy: RunPolicy,
+    pub objective: String,
+    pub trigger: RoutineTrigger,
+    pub limits: RoutineLimits,
+    /// Only `local`: external notifications need separate authorization.
+    pub notify: String,
+    pub created_by: String,
+    pub created_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RoutineStatus {
+    Paused,
+    Active,
+    Retired,
+}
+
+/// A service-owned recurring Product Manager check (format 24).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct Routine {
+    pub id: String,
+    pub name: String,
+    pub status: RoutineStatus,
+    pub revisions: Vec<RoutineRevision>,
+    #[serde(default)]
+    pub next_due_at: Option<i64>,
+    #[serde(default)]
+    pub activated_at: Option<i64>,
+    /// Set when a run exceeded a limit; the next occurrence waits for the owner.
+    #[serde(default)]
+    pub held_reason: Option<String>,
+    pub version: u64,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// One due (or manual) occurrence of a routine.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoutineOccurrence {
+    pub id: String,
+    pub routine_id: String,
+    pub revision: u32,
+    pub due_at: i64,
+    /// Missed slots folded into this one after downtime.
+    #[serde(default)]
+    pub coalesced: u32,
+    pub manual: bool,
+    /// pending, launched, noop, blocked, deferred.
+    pub state: String,
+    #[serde(default)]
+    pub run_id: Option<String>,
+    #[serde(default)]
+    pub reason: Option<String>,
+    #[serde(default)]
+    pub keys: Vec<String>,
+    pub created_at: i64,
+    pub updated_at: i64,
+}
+
+/// A local notice worth the owner's attention. Quiet runs create none.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RoutineNotice {
+    pub id: String,
+    pub routine_id: String,
+    #[serde(default)]
+    pub occurrence_id: Option<String>,
+    /// changed_finding, owner_decision, failure, blocked.
+    pub kind: String,
+    pub message: String,
+    #[serde(default)]
+    pub issue_key: Option<String>,
+    #[serde(default)]
+    pub action: Option<String>,
+    pub at: i64,
+    #[serde(default)]
+    pub acknowledged: bool,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Archive {
     pub format: u32,
@@ -2438,6 +2618,13 @@ pub struct Archive {
     /// Product Planner findings (format 23).
     #[serde(default)]
     pub planner_findings: Vec<PlannerFinding>,
+    /// Routines, occurrences and notices (format 24).
+    #[serde(default)]
+    pub routines: Vec<Routine>,
+    #[serde(default)]
+    pub routine_occurrences: Vec<RoutineOccurrence>,
+    #[serde(default)]
+    pub routine_notices: Vec<RoutineNotice>,
     #[serde(default)]
     pub projects: Vec<Project>,
     #[serde(default)]

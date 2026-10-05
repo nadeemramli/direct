@@ -37,6 +37,7 @@
   import IssueAssignment from "./IssueAssignment.svelte";
   import AgentRuns from "./AgentRuns.svelte";
   import PlannerView from "./PlannerView.svelte";
+  import RoutinesView from "./RoutinesView.svelte";
   import PlannerFindings from "./PlannerFindings.svelte";
   import { linksFor } from "./context";
   import { signalStatus } from "./signals";
@@ -2537,6 +2538,16 @@
             context = null;
           }}><span>◎</span> Planner <small>{(data.planner_findings || []).filter((f) => f.escalation && !f.confirmation).length}</small></button
         >
+        <button
+          title="Scheduled Product Manager routines"
+          class:active={view === "routines"}
+          onclick={() => {
+            view = "routines";
+            product = "all";
+            selected = "";
+            context = null;
+          }}><span>◷</span> Routines <small>{(data.routine_notices || []).filter((n) => !n.acknowledged).length}</small></button
+        >
       </nav>{/if}
       {@render sectionToggle("theoria", "THEORIA")}
       {#if sectionOpen("theoria")}<nav aria-label="Theoria">
@@ -2945,6 +2956,8 @@
         <AgentsView {data} {connected} {commit} />
       {:else if view === "planner"}
         <PlannerView {data} {connected} {commit} />
+      {:else if view === "routines"}
+        <RoutinesView {data} {connected} {commit} api={(command) => api(command)} />
       {:else if view === "workflow"}
         <WorkflowView
           issues={parents}
