@@ -10,5 +10,6 @@
 endpoint.json
 *.log
 .DS_Store
+__pycache__/
 linear-source-*/
 linear-migration-*/

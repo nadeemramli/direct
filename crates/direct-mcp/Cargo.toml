@@ -12,11 +12,19 @@ serde.workspace = true
 serde_json.workspace = true
 anyhow = "1"
 clap = { version = "4", features = ["derive", "env"] }
-rmcp = { version = "3.5.0", default-features = false, features = ["server", "macros", "transport-io"] }
+rmcp = { version = "3.5.0", default-features = false, features = ["server", "macros", "transport-io", "transport-streamable-http-server"] }
 schemars = "1"
-tokio = { version = "1", features = ["macros", "rt-multi-thread"] }
+axum = "0.8"
+sha2 = "0.10"
+regex = "1"
+tokio = { version = "1", features = ["macros", "rt-multi-thread", "net", "signal", "sync", "time"] }
+
+[[bin]]
+name = "direct-remote-read"
+path = "src/remote_main.rs"
 
 [dev-dependencies]
-rmcp = { version = "3.5.0", default-features = false, features = ["client", "transport-child-process"] }
+rmcp = { version = "3.5.0", default-features = false, features = ["client", "transport-child-process", "transport-streamable-http-client-reqwest"] }
 tempfile = "3"
 uuid.workspace = true
+reqwest = { version = "0.12", default-features = false, features = ["json", "blocking"] }
