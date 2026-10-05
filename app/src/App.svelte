@@ -35,6 +35,7 @@
   import RolesView from "./RolesView.svelte";
   import AgentsView from "./AgentsView.svelte";
   import IssueAssignment from "./IssueAssignment.svelte";
+  import AgentRuns from "./AgentRuns.svelte";
   import { linksFor } from "./context";
   import { signalStatus } from "./signals";
   import ProgressBar from "./ProgressBar.svelte";
@@ -3700,6 +3701,7 @@
               />
               <CloudHandoffs handoffs={context?.cloud_handoffs || []} />
               <IssueAssignment {data} issue={current} assignment={context?.assignment || null} {connected} {clock} {commit} />
+              <AgentRuns issue={current} assignment={context?.assignment || null} runs={context?.agent_runs || []} {connected} {clock} {commit} />
               {#if current.claim}<div class="info-card">
                   <span class="card-symbol">↗</span>
                   <div>

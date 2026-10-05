@@ -718,3 +718,11 @@ pub(crate) fn validate_archive(a: &Archive) -> Result<()> {
     }
     Ok(())
 }
+
+pub(crate) fn role_row(conn: &Connection, id: &str) -> Result<AgentRole> {
+    role(conn, id)
+}
+
+pub(crate) fn skill_row(conn: &Connection, id: &str) -> Result<SkillPackage> {
+    skill(conn, id)
+}

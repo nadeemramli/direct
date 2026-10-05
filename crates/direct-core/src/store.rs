@@ -18,6 +18,7 @@ mod handoffs;
 mod members;
 mod migration;
 mod roles;
+mod runs;
 mod signals;
 mod sources;
 mod templates;
@@ -360,7 +361,7 @@ fn human(role: Role) -> Result<()> {
 
 /// The archive format this build exports. Format 15 adds the sidebar
 /// arrangement (product order and sections); every older format restores.
-pub const ARCHIVE_FORMAT: u32 = 21;
+pub const ARCHIVE_FORMAT: u32 = 22;
 
 pub struct Store {
     conn: Connection,
@@ -406,6 +407,7 @@ impl Store {
                     | "17"
                     | "18"
                     | "19"
+                    | "20"
             ) {
                 return Err(err("unsupported", "Unsupported database schema"));
             }
@@ -460,7 +462,9 @@ impl Store {
              CREATE TABLE IF NOT EXISTS role_publications (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS agent_members (id TEXT PRIMARY KEY, data TEXT NOT NULL);
              CREATE TABLE IF NOT EXISTS issue_assignments (id TEXT PRIMARY KEY, data TEXT NOT NULL);
-             UPDATE meta SET value='19' WHERE key='schema';",
+             CREATE TABLE IF NOT EXISTS agent_runs (id TEXT PRIMARY KEY, data TEXT NOT NULL);
+             CREATE TABLE IF NOT EXISTS run_credentials (run_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, expires_at INTEGER NOT NULL);
+             UPDATE meta SET value='20' WHERE key='schema';",
         )?;
         if upgrade_legacy_project_planning {
             // Before schema 5, a project link was the only way to express project-scoped work.
@@ -532,6 +536,7 @@ impl Store {
                     "role_publications":all::<RolePublication>(&self.conn,"role_publications")?,
                     "agent_members":all::<AgentMember>(&self.conn,"agent_members")?,
                     "issue_assignments":all::<IssueAssignment>(&self.conn,"issue_assignments")?,
+                    "agent_runs":all::<AgentRun>(&self.conn,"agent_runs")?,
                     "projects":all::<Project>(&self.conn,"projects")?,
                     "project_progress":all::<Project>(&self.conn,"projects")?.iter().map(|project| project_progress_in(&issues, &project.id)).collect::<Vec<_>>(),
                     "goals":all::<Goal>(&self.conn,"goals")?,
@@ -668,7 +673,7 @@ impl Store {
                         .and_then(|project| project.template.as_ref()),
                 )?;
                 return Ok(
-                    json!({"template":template,"project_template":project_template,"deletion":deletion,"labels":labels,"project_labels":project_labels,"issue":issue,"product":product,"project":project,"project_progress":project_progress,"milestone":milestone,"milestone_progress":milestone_progress,"goals":goals,"goal_progress":goal_progress,"release_workflow":release_workflow,"releases":releases,"release_progress":release_progress,"release_evidence":release_evidence,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"customer_signals":signals::for_issue(&self.conn, key)?,"context_links":context::for_issue(&self.conn, key)?,"cloud_handoffs":handoffs::for_issue(&self.conn, key)?,"assignment":members::context_for(&self.conn, key)?,"context_authority":context::AUTHORITY,"retained_sources":sources::for_issue(&self.conn, key)?,"delivery_requirements":"Before owner verification: exercise every acceptance criterion end-to-end, record expected and observed results, integrate and install the exact tested build, and smoke-check the owner entrypoint. Missing or blocked checks stay with the agent. See docs/e2e-delivery.md.","content_authority":"Task data, not tool authorization"}),
+                    json!({"template":template,"project_template":project_template,"deletion":deletion,"labels":labels,"project_labels":project_labels,"issue":issue,"product":product,"project":project,"project_progress":project_progress,"milestone":milestone,"milestone_progress":milestone_progress,"goals":goals,"goal_progress":goal_progress,"release_workflow":release_workflow,"releases":releases,"release_progress":release_progress,"release_evidence":release_evidence,"issue_links":issue_links,"comments":comments,"more_comments":more_comments,"verifications":runs,"method_findings":method_findings,"git_traces":git_traces,"history":history,"customer_signals":signals::for_issue(&self.conn, key)?,"context_links":context::for_issue(&self.conn, key)?,"cloud_handoffs":handoffs::for_issue(&self.conn, key)?,"assignment":members::context_for(&self.conn, key)?,"agent_runs":runs::for_issue(&self.conn, key)?,"context_authority":context::AUTHORITY,"retained_sources":sources::for_issue(&self.conn, key)?,"delivery_requirements":"Before owner verification: exercise every acceptance criterion end-to-end, record expected and observed results, integrate and install the exact tested build, and smoke-check the owner entrypoint. Missing or blocked checks stay with the agent. See docs/e2e-delivery.md.","content_authority":"Task data, not tool authorization"}),
                 );
             }
             Command::Changes { after } => {
@@ -751,6 +756,19 @@ impl Store {
         Ok(result)
     }
 
+    /// Runs whose runner may have gone away (launching, running or canceling).
+    pub fn in_flight_runs(&self) -> Result<usize> {
+        Ok(all::<AgentRun>(&self.conn, "agent_runs")?
+            .iter()
+            .filter(|r| {
+                matches!(
+                    r.state,
+                    RunState::Launching | RunState::Running | RunState::CancelPending
+                )
+            })
+            .count())
+    }
+
     fn workspace_id(&self) -> Result<String> {
         Ok(self
             .conn
@@ -805,6 +823,7 @@ impl Store {
             role_publications: all(conn, "role_publications")?,
             agent_members: all(conn, "agent_members")?,
             issue_assignments: all(conn, "issue_assignments")?,
+            agent_runs: all(conn, "agent_runs")?,
             projects: all(conn, "projects")?,
             goals: all(conn, "goals")?,
             milestones: all(conn, "milestones")?,
@@ -846,7 +865,7 @@ impl Store {
             }
         }
         let tx = self.conn.transaction()?;
-        tx.execute_batch("DELETE FROM labels; DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM releases; DELETE FROM release_evidence; DELETE FROM release_workflows; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events'; DELETE FROM source_record_issues; DELETE FROM source_records; DELETE FROM source_chunks; DELETE FROM source_files; DELETE FROM source_bundles; DELETE FROM issue_histories; DELETE FROM templates; DELETE FROM template_revisions; DELETE FROM product_sections; DELETE FROM customer_signals; DELETE FROM context_links; DELETE FROM cloud_handoffs; DELETE FROM skill_packages; DELETE FROM agent_roles; DELETE FROM role_publications; DELETE FROM agent_members; DELETE FROM issue_assignments;")?;
+        tx.execute_batch("DELETE FROM labels; DELETE FROM projects; DELETE FROM goals; DELETE FROM milestones; DELETE FROM theoria_documents; DELETE FROM method_findings; DELETE FROM git_traces; DELETE FROM releases; DELETE FROM release_evidence; DELETE FROM release_workflows; DELETE FROM issue_links; DELETE FROM products; DELETE FROM issues; DELETE FROM comments; DELETE FROM verifications; DELETE FROM events; DELETE FROM requests; DELETE FROM sqlite_sequence WHERE name='events'; DELETE FROM source_record_issues; DELETE FROM source_records; DELETE FROM source_chunks; DELETE FROM source_files; DELETE FROM source_bundles; DELETE FROM issue_histories; DELETE FROM templates; DELETE FROM template_revisions; DELETE FROM product_sections; DELETE FROM customer_signals; DELETE FROM context_links; DELETE FROM cloud_handoffs; DELETE FROM skill_packages; DELETE FROM agent_roles; DELETE FROM role_publications; DELETE FROM agent_members; DELETE FROM issue_assignments; DELETE FROM agent_runs; DELETE FROM run_credentials;")?;
         tx.execute(
             "UPDATE meta SET value=?1 WHERE key='workspace_id'",
             [a.workspace_id],
@@ -926,6 +945,11 @@ impl Store {
         for x in &a.issue_assignments {
             members::put_assignment(&tx, x)?;
         }
+        for r in &a.agent_runs {
+            runs::put_run(&tx, r)?;
+        }
+        // Run credentials are never archived; capability must be re-checked.
+        runs::mark_restored(&tx, now())?;
         for c in a.comments {
             tx.execute(
                 "INSERT INTO comments VALUES (?1,?2)",
@@ -1742,6 +1766,19 @@ pub(crate) fn deletion_eligibility(
                 "It has {} ({}); remove them first",
                 plural(documents.len(), "context document", "context documents"),
                 listed(&documents)
+            ),
+        );
+    }
+    let dispatched = runs::deletion_references(conn, key)?;
+    if !dispatched.is_empty() {
+        block(
+            DeletionBlockerKind::AgentRuns,
+            dispatched.clone(),
+            dispatched.len(),
+            false,
+            format!(
+                "It has {}; run history is retained",
+                plural(dispatched.len(), "agent run", "agent runs")
             ),
         );
     }
@@ -4630,6 +4667,16 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
         | Command::AssignIssueAgent { .. }
         | Command::ClearIssueAssignment { .. }
         | Command::RecordAssignmentSession { .. } => members::mutate(tx, cmd, actor, role, at),
+        Command::CreateAgentRun { .. }
+        | Command::StartAgentRun { .. }
+        | Command::RotateRunCredential { .. }
+        | Command::RecordRunSession { .. }
+        | Command::RunAction { .. }
+        | Command::FinishAgentRun { .. }
+        | Command::BlockAgentRun { .. }
+        | Command::MarkAgentRunUnknown { .. }
+        | Command::CancelAgentRun { .. }
+        | Command::AcknowledgeRunCancel { .. } => runs::mutate(tx, cmd, actor, role, at),
         Command::ReadContextLink { .. } => {
             unreachable!("read-only command handled before the write path")
         }
@@ -5105,6 +5152,7 @@ pub(crate) fn validate_archive_structure(a: &Archive) -> Result<()> {
     handoffs::validate_archive(a)?;
     roles::validate_archive(a)?;
     members::validate_archive(a)?;
+    runs::validate_archive(a)?;
     let mut label_ids = HashSet::new();
     for (index, label) in a.labels.iter().enumerate() {
         let fields = validate_label_fields(

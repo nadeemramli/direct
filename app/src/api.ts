@@ -458,7 +458,8 @@ export type DeletionBlockerKind =
   | "customer_signals"
   | "context_links"
   | "cloud_handoffs"
-  | "assignments";
+  | "assignments"
+  | "agent_runs";
 export interface DeletionBlocker {
   kind: DeletionBlockerKind;
   count: number;
@@ -541,6 +542,7 @@ export interface Context {
   /** Bounded cloud-session packets and their reconciliation (DIR-58). */
   cloud_handoffs?: CloudHandoff[];
   assignment?: AssignmentContext | null;
+  agent_runs?: AgentRun[];
   context_authority?: string;
   issue: Issue;
   product: Product;
@@ -753,6 +755,42 @@ export interface AssignmentContext {
   requested_model: string;
   actual_model: string | null;
 }
+export type RunState =
+  | "intent"
+  | "launching"
+  | "running"
+  | "succeeded"
+  | "failed"
+  | "blocked"
+  | "unknown"
+  | "cancel_pending"
+  | "canceled";
+export interface AgentRun {
+  id: string;
+  issue_key: string;
+  assignment_id: string;
+  member_id: string;
+  role_id: string;
+  skill_bundles: string[];
+  guidance: RoleGuidancePin[];
+  requested_model: string;
+  fallback_models: string[];
+  input_issue_version: number;
+  objective: string;
+  state: RunState;
+  version: number;
+  created_by: string;
+  created_at: number;
+  launcher: string | null;
+  harness_version: string | null;
+  session_id: string | null;
+  actual_model: string | null;
+  actions: { index: number; proposal: unknown; outcome: string; detail: string; at: number }[];
+  summary: string;
+  reason: string | null;
+  cancel_requested_by: string | null;
+  updated_at: number;
+}
 export interface Snapshot {
   review_ready_runs?: string[];
   workspace_id: string;
@@ -767,6 +805,7 @@ export interface Snapshot {
   /** Agent members and issue assignments (DIR-75). */
   agent_members?: AgentMember[];
   issue_assignments?: IssueAssignment[];
+  agent_runs?: AgentRun[];
   projects: Project[];
   project_progress?: ProjectProgress[];
   goals: Goal[];
