@@ -359,7 +359,7 @@ fn assignment_is_validated_by_the_service_and_never_touches_workflow_state() {
     drop(s);
     let s = Store::open(&path).unwrap();
     let archive = s.export().unwrap();
-    assert_eq!(archive.format, 25);
+    assert_eq!(archive.format, 26);
     assert_eq!(archive.agent_members.len(), 2);
     assert_eq!(archive.issue_assignments.len(), 2);
     validate_archive(&archive).unwrap();

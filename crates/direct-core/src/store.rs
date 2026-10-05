@@ -11,12 +11,14 @@ use std::{
 use uuid::Uuid;
 
 pub use delivery::delivery_state;
+pub use dispatch::{dispatch_branch, DISPATCH_ACTOR_PREFIX};
 pub use handoffs::cloud_packet_markdown;
 pub use roles::{content_sha256, role_publication_plan, safe_relative_path, HARNESS_CLAUDE_CODE};
 pub use routines::next_due;
 
 mod context;
 mod delivery;
+mod dispatch;
 mod handoffs;
 mod members;
 mod migration;
@@ -366,7 +368,7 @@ fn human(role: Role) -> Result<()> {
 
 /// The archive format this build exports. Format 15 adds the sidebar
 /// arrangement (product order and sections); every older format restores.
-pub const ARCHIVE_FORMAT: u32 = 25;
+pub const ARCHIVE_FORMAT: u32 = 26;
 
 pub struct Store {
     conn: Connection,
@@ -4753,6 +4755,9 @@ fn mutate(tx: &Transaction, cmd: &Command, actor: &str, role: Role, at: i64) -> 
         | Command::RunRoutineNow { .. }
         | Command::AcknowledgeRoutineNotice { .. } => routines::mutate(tx, cmd, actor, role, at),
         Command::RecordDeliveryFact { .. } => delivery::record(tx, cmd, actor, at),
+        Command::VerifyDispatchPush { .. } | Command::TakeOverDispatch { .. } => {
+            dispatch::mutate(tx, cmd, actor, role, at)
+        }
         Command::RollbackMigration {
             bundle_id,
             expected_cursor,

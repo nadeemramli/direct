@@ -74,6 +74,9 @@ fn advance(
     );
     if state.terminal() {
         revoke(tx, &r.id)?;
+        if let Some(d) = r.dispatch.as_mut() {
+            super::dispatch::close(d);
+        }
     }
     r.state = state;
     r.version += 1;
@@ -105,9 +108,12 @@ pub(crate) fn request_cancel(tx: &Transaction, id: &str, actor: &str, at: i64) -
 pub(crate) fn for_issue(conn: &Connection, key: &str) -> Result<Vec<AgentRun>> {
     let mut runs: Vec<AgentRun> = all::<AgentRun>(conn, "agent_runs")?
         .into_iter()
-        .filter(|r| match &r.queue {
-            Some(q) => q.keys.iter().any(|k| k == key) || q.blocked.iter().any(|b| b.key == key),
-            None => r.issue_key == key,
+        .filter(|r| match (&r.queue, &r.dispatch) {
+            (Some(q), _) => {
+                q.keys.iter().any(|k| k == key) || q.blocked.iter().any(|b| b.key == key)
+            }
+            (None, Some(d)) => d.objectives.iter().any(|o| o.key == key),
+            (None, None) => r.issue_key == key,
         })
         .collect();
     runs.sort_by_key(|r| r.created_at);
@@ -324,6 +330,7 @@ pub(crate) fn mutate(
                 occurrence_id: None,
                 max_seconds: None,
                 cost_usd: None,
+                dispatch: None,
                 queue: None,
                 updated_at: at,
             };
@@ -344,6 +351,8 @@ pub(crate) fn mutate(
             launcher,
             harness_version,
             credential_sha256,
+            worktree,
+            base_sha,
         } => {
             let mut r = current(tx, id, *expected_version)?;
             if r.state != RunState::Intent {
@@ -359,9 +368,10 @@ pub(crate) fn mutate(
             limited(launcher, "launcher", 200)?;
             required(harness_version, "harness version")?;
             limited(harness_version, "harness version", 200)?;
+            let ttl = super::dispatch::start(&mut r, worktree, base_sha)?.max(CREDENTIAL_TTL);
             tx.execute(
                 "INSERT INTO run_credentials VALUES (?1,?2,?3) ON CONFLICT(run_id) DO UPDATE SET sha256=excluded.sha256, expires_at=excluded.expires_at",
-                params![r.id, credential_sha256.to_ascii_lowercase(), at + CREDENTIAL_TTL],
+                params![r.id, credential_sha256.to_ascii_lowercase(), at + ttl],
             )?;
             r.launcher = Some(launcher.trim().into());
             r.harness_version = Some(harness_version.trim().into());
@@ -449,7 +459,9 @@ pub(crate) fn mutate(
                     "This run credential is not valid for a running run",
                 ));
             }
-            let limit = if r.queue.is_some() {
+            let limit = if r.dispatch.is_some() {
+                super::dispatch::ACTIONS_MAX
+            } else if r.queue.is_some() {
                 QUEUE_ACTIONS_MAX
             } else {
                 ACTIONS_MAX
@@ -467,7 +479,9 @@ pub(crate) fn mutate(
                 ));
             }
             let run_actor = format!("run:{}", r.id);
-            let (outcome, detail) = if let Some(queue) = r.queue.clone() {
+            let (outcome, detail) = if r.dispatch.is_some() {
+                super::dispatch::apply(tx, &mut r, proposal, at)?
+            } else if let Some(queue) = r.queue.clone() {
                 let (outcome, detail) = super::planner::apply(tx, &r, &queue, proposal, at)?;
                 (outcome, detail)
             } else {
@@ -616,17 +630,29 @@ pub(crate) fn validate_archive(a: &Archive) -> Result<()> {
     if a.format < 22 && !a.agent_runs.is_empty() {
         return Err(err("invalid", "Agent runs require archive format 22"));
     }
+    if a.format < 26 && a.agent_runs.iter().any(|r| r.dispatch.is_some()) {
+        return Err(err("invalid", "Dispatch runs require archive format 26"));
+    }
     let mut ids = HashSet::new();
     for r in &a.agent_runs {
-        let target = match &r.queue {
-            Some(q) => {
+        let target = match (&r.queue, &r.dispatch) {
+            (Some(q), _) => {
                 a.products
                     .iter()
                     .any(|p| p.id == q.product_id && p.key == r.issue_key)
                     && q.keys.len() == q.versions.len()
                     && q.keys.iter().all(|k| a.issues.iter().any(|i| i.key == *k))
             }
-            None => {
+            (None, Some(d)) => {
+                a.products
+                    .iter()
+                    .any(|p| p.id == d.product_id && p.key == r.issue_key)
+                    && d.objectives.len() as u32 <= d.cap
+                    && d.objectives
+                        .iter()
+                        .all(|o| a.issues.iter().any(|i| i.key == o.key))
+            }
+            (None, None) => {
                 a.issues.iter().any(|i| i.key == r.issue_key)
                     && a.issue_assignments.iter().any(|x| x.id == r.assignment_id)
             }

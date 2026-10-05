@@ -3750,7 +3750,7 @@
               />
               <CloudHandoffs handoffs={context?.cloud_handoffs || []} />
               <IssueAssignment {data} issue={current} assignment={context?.assignment || null} {connected} {clock} {commit} />
-              <AgentRuns issue={current} assignment={context?.assignment || null} runs={(context?.agent_runs || []).filter((r) => !r.queue)} {connected} {clock} {commit} />
+              <AgentRuns issue={current} assignment={context?.assignment || null} runs={(context?.agent_runs || []).filter((r) => !r.queue && !r.dispatch)} {connected} {clock} {commit} />
               {#if context?.planner_findings?.length}<div class="section-label spaced">PLANNER FINDINGS <span>{context.planner_findings.length}</span></div>
                 <PlannerFindings findings={context.planner_findings} {connected} {commit} />{/if}
               {#if current.claim}<div class="info-card">

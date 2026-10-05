@@ -446,7 +446,7 @@ fn pause_cancels_pending_member_disable_blocks_limits_hold_and_restore_requires_
     drop(s);
     let s = Store::open(&path).unwrap();
     let archive = s.export().unwrap();
-    assert_eq!(archive.format, 25);
+    assert_eq!(archive.format, 26);
     assert_eq!(archive.routines.len(), 1);
     validate_archive(&archive).unwrap();
     let mut restored = Store::open(&dir.path().join("restored")).unwrap();

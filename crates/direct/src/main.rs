@@ -241,6 +241,17 @@ enum Cli {
     },
     /// Print the commit, dirty state and build time stamped into this binary (DIR-82).
     BuildInfo,
+    /// Inside a dispatched implementation session (DIR-79): send one action
+    /// (claim, renew, comment, report) under the session's run credential,
+    /// read from DIRECT_RUN_ID and DIRECT_RUN_CREDENTIAL. Direct judges it.
+    RunAction {
+        /// The action as inline JSON.
+        #[arg(long)]
+        json: Option<String>,
+        /// The action as a JSON file.
+        #[arg(long)]
+        file: Option<PathBuf>,
+    },
     /// Print a one-use local owner-interface launch link. Do not share this link.
     Open,
     /// Gracefully stop the local service for a controlled update or restart.
@@ -807,6 +818,9 @@ fn run() -> Result<()> {
             }
             if let Cli::Runs { action } = &other {
                 return runs_cli::run_action(&client, &args.actor, &dir, action.clone());
+            }
+            if let Cli::RunAction { json, file } = &other {
+                return runs_cli::session_action(&client, json.as_deref(), file.as_deref());
             }
             if let Cli::Members { action } = &other {
                 return members_cli::run_action(&client, &args.actor, action.clone());

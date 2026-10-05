@@ -6,6 +6,7 @@
   import type { Snapshot, Routine, Status } from "./api";
   import { memberChoices, modelChoices, roleChoices } from "./members";
   import { WEEKDAYS, dueLabel, latestOccurrences, openNotices, routineState, triggerLabel } from "./routines";
+  import { LANE_LABEL, commandList, laneClass, objectiveLine, policyLabel } from "./dispatch";
 
   let {
     data,
@@ -25,7 +26,7 @@
   let creating = $state(false);
   let busy = $state(false);
   let error = $state("");
-  let preview = $state<{ keys: string[]; excluded: { key: string; reason: string }[]; next_due_at: number; dispatch_block: string | null } | null>(null);
+  let preview = $state<{ keys: string[]; excluded: { key: string; reason: string }[]; next_due_at: number; dispatch_block: string | null; lane?: string; lane_detail?: string; cap?: number } | null>(null);
 
   let form = $state({
     name: "Daily issue health",
@@ -43,7 +44,25 @@
     maxIssues: 10,
     maxMinutes: 15,
     maxCost: "",
+    repository: "",
+    baseRef: "origin/main",
+    checkout: "",
+    worktreeRoot: "",
+    releaseId: "",
+    commands: "cargo test, npm test",
   });
+  const dispatching = $derived(form.policy === "dispatch_ready");
+  function choosePolicy(policy: string) {
+    form.policy = policy;
+    preview = null;
+    if (policy === "dispatch_ready") {
+      form.states = ["ready"];
+      form.maxIssues = 3;
+      form.maxMinutes = 60;
+      form.objective = "Implement owner-Ready work through a PR: claim each objective, meet its acceptance criteria, run the project checks, push the objective branch, open a PR and report. Never merge, deliver or submit.";
+    }
+  }
+  const releases = $derived((data.releases || []).filter((r) => r.product_id === form.productId && r.status !== "retired" && r.status !== "canceled"));
   const members = $derived(memberChoices(data.agent_members || [], form.productId));
   const member = $derived((data.agent_members || []).find((m) => m.id === form.memberId));
   const roles = $derived(roleChoices(data.agent_roles || [], member));
@@ -63,6 +82,16 @@
       trigger: { kind: form.kind, time: form.time, weekday: form.kind === "weekly" ? form.weekday : null, timezone: form.timezone },
       limits: { max_issues: Number(form.maxIssues), max_minutes: Number(form.maxMinutes), max_cost_usd: form.maxCost ? Number(form.maxCost) : null },
       notify: "local",
+      dispatch: dispatching
+        ? {
+            repository: form.repository.trim(),
+            base_ref: form.baseRef.trim(),
+            checkout: form.checkout.trim() || null,
+            worktree_root: form.worktreeRoot.trim(),
+            release_id: form.releaseId || null,
+            allow_commands: commandList(form.commands),
+          }
+        : null,
     };
   }
   async function run(fn: () => Promise<unknown>) {
@@ -119,9 +148,21 @@
       <label class="field">Role revision<select bind:value={form.roleId} disabled={!member}><option value="">Choose…</option>{#each roles as c (c.item.id)}<option value={c.item.id} disabled={!!c.blocked}>{c.item.key} r{c.item.revision}{c.blocked ? ` — ${c.blocked}` : ""}</option>{/each}</select></label>
       <label class="field">Model<select bind:value={form.model} disabled={!member}><option value="">Choose…</option>{#each models as c (c.item)}<option value={c.item} disabled={!!c.blocked}>{c.item}{c.blocked ? ` — ${c.blocked}` : ""}</option>{/each}</select></label>
       <fieldset class="field"><legend>Policy</legend>
-        <label class="release-claim"><input type="radio" bind:group={form.policy} value="inspect_only" /> Inspect only</label>
-        <label class="release-claim"><input type="radio" bind:group={form.policy} value="refine_backlog" /> Refine Backlog</label>
+        <label class="release-claim"><input type="radio" checked={form.policy === "inspect_only"} onchange={() => choosePolicy("inspect_only")} /> Inspect only</label>
+        <label class="release-claim"><input type="radio" checked={form.policy === "refine_backlog"} onchange={() => choosePolicy("refine_backlog")} /> Refine Backlog</label>
+        <label class="release-claim"><input type="radio" checked={dispatching} onchange={() => choosePolicy("dispatch_ready")} /> Dispatch Ready work</label>
       </fieldset>
+      {#if dispatching}
+        <fieldset class="field dispatch-config"><legend>Implementation dispatch</legend>
+          <p class="hint">Launches a local Claude Code session for owner-Ready issues: one writer per product, at most 3 objectives (2 with a review repair). It works through a PR and stops; merge, delivery and submission stay with a coordinator.</p>
+          <label>GitHub repository <input bind:value={form.repository} placeholder="owner/name" /></label>
+          <label>Base ref <input bind:value={form.baseRef} placeholder="origin/main" /></label>
+          <label>Checkout <input bind:value={form.checkout} placeholder={data.products.find((p) => p.id === form.productId)?.repo_windows || "C:/path/to/repo"} /></label>
+          <label>Worktree folder <input bind:value={form.worktreeRoot} placeholder="C:/Users/you/.codex/worktrees/dispatch" /></label>
+          <label>Release <select bind:value={form.releaseId}><option value="">Any</option>{#each releases as r (r.id)}<option value={r.id}>{r.name}</option>{/each}</select></label>
+          <label>Extra commands <input bind:value={form.commands} placeholder="cargo test, npm test" /></label>
+        </fieldset>
+      {/if}
       <label class="field">Objective<textarea bind:value={form.objective} maxlength="2000"></textarea></label>
       <fieldset class="field"><legend>Schedule</legend>
         <select bind:value={form.kind}><option value="daily">Daily</option><option value="weekly">Weekly</option></select>
@@ -131,14 +172,15 @@
       </fieldset>
       <fieldset class="field"><legend>Limits per run</legend>
         <label>Issues <input type="number" min="1" max="20" bind:value={form.maxIssues} /></label>
-        <label>Minutes <input type="number" min="1" max="120" bind:value={form.maxMinutes} /></label>
+        <label>Minutes <input type="number" min="1" max={dispatching ? 480 : 120} bind:value={form.maxMinutes} /></label>
         <label>Max cost USD <input type="number" min="0" step="0.01" bind:value={form.maxCost} placeholder="none" /></label>
       </fieldset>
       <p class="hint">Notices are local to Direct. External notifications need separate authorization.</p>
       <button class="secondary" disabled={busy || !connected || !form.memberId || !form.roleId || !form.model} onclick={() => run(async () => (preview = await api({ op: "preview_routine", config: config() })))}>Preview</button>
       {#if preview}
         <dl class="evidence reference-meta">
-          <dt>Would review</dt><dd>{preview.keys.join(", ") || "Nothing in scope"}</dd>
+          {#if preview.lane}<dt>Lane</dt><dd><span class="source-state {laneClass(preview.lane)}">{LANE_LABEL[preview.lane] || preview.lane}</span> {preview.lane_detail}</dd>{/if}
+          <dt>{preview.lane ? `Would dispatch (cap ${preview.cap})` : "Would review"}</dt><dd>{preview.keys.join(", ") || "Nothing in scope"}</dd>
           {#if preview.excluded.length}<dt>Excluded</dt><dd>{#each preview.excluded as x}<code>{x.key}</code> {x.reason}<br />{/each}</dd>{/if}
           <dt>First due</dt><dd>{dueLabel(preview.next_due_at, form.timezone)}</dd>
           {#if preview.dispatch_block}<dt>Blocked</dt><dd class="source-warning">{preview.dispatch_block}</dd>{/if}
@@ -155,7 +197,8 @@
         <dt>State</dt><dd>{routineState(selected, data.restored_at || null)}</dd>
         <dt>Schedule</dt><dd>{triggerLabel(rev.trigger)}</dd>
         <dt>Next due</dt><dd>{dueLabel(selected.next_due_at, rev.trigger.timezone)}</dd>
-        <dt>Scope</dt><dd>{productKey(rev.product_id)} · {rev.states.join(", ")} · up to {rev.limits.max_issues} issues · {rev.policy === "refine_backlog" ? "Refine Backlog" : "Inspect only"}</dd>
+        <dt>Scope</dt><dd>{productKey(rev.product_id)} · {rev.states.join(", ")} · up to {rev.limits.max_issues} issues · {policyLabel(rev)}</dd>
+        {#if rev.dispatch}<dt>Dispatch</dt><dd><code>{rev.dispatch.repository}</code> from <code>{rev.dispatch.base_ref}</code> · worktrees in <code>{rev.dispatch.worktree_root}</code>{rev.dispatch.allow_commands.length ? ` · also ${rev.dispatch.allow_commands.join(", ")}` : ""}</dd>{/if}
         <dt>Agent</dt><dd>{memberName(rev.member_id)} · <code>{rev.requested_model}</code></dd>
         <dt>Limits</dt><dd>{rev.limits.max_minutes} min{rev.limits.max_cost_usd ? ` · $${rev.limits.max_cost_usd}` : " · no cost limit"}</dd>
       </dl>
@@ -173,8 +216,14 @@
         {@const runRow = (data.agent_runs || []).find((x) => x.id === o.run_id)}
         <article class="cloud-handoff">
           <div class="reference-heading"><span class="source-state {o.state === 'launched' ? 'cached' : o.state === 'blocked' ? 'unavailable' : 'stale'}">{o.state}{o.manual ? " · manual" : ""}{o.coalesced ? ` · ${o.coalesced} missed folded in` : ""}</span><small>due {dueLabel(o.due_at, rev.trigger.timezone)}</small></div>
+          {#if o.lane}<p><span class="source-state {laneClass(o.lane)}">{LANE_LABEL[o.lane] || o.lane}</span></p>{/if}
           {#if o.reason}<p class="hint">{o.reason}</p>{/if}
-          {#if runRow}<p class="hint">Review {runRow.state} · {runRow.actual_model || "no session yet"}{runRow.cost_usd != null ? ` · $${runRow.cost_usd.toFixed(2)}` : " · cost unknown"} · {runRow.summary}</p>{/if}
+          {#if runRow?.dispatch}
+            <p class="hint">Session {runRow.state} · {runRow.actual_model || "no session yet"} · cap {runRow.dispatch.cap}{runRow.dispatch.worktree ? ` · ${runRow.dispatch.worktree}` : ""}</p>
+            {#each runRow.dispatch.objectives as obj (obj.key)}<p class="dispatch-objective">{objectiveLine(obj)}</p>{/each}
+          {/if}
+          {#if o.excluded?.length}<details><summary>{o.excluded.length} not dispatched</summary>{#each o.excluded as x}<p class="hint"><code>{x.key}</code> {x.reason}</p>{/each}</details>{/if}
+          {#if runRow && !runRow.dispatch}<p class="hint">Review {runRow.state} · {runRow.actual_model || "no session yet"}{runRow.cost_usd != null ? ` · $${runRow.cost_usd.toFixed(2)}` : " · cost unknown"} · {runRow.summary}</p>{/if}
         </article>
       {:else}<p class="muted">No occurrences yet.</p>{/each}
     </div>

@@ -135,7 +135,7 @@ fn the_full_chain_reaches_delivered_only_with_every_fact_and_merge_is_not_instal
     drop(s);
     let s = Store::open(&path).unwrap();
     let archive = s.export().unwrap();
-    assert_eq!(archive.format, 25);
+    assert_eq!(archive.format, 26);
     assert_eq!(archive.delivery_facts.len(), 14);
     validate_archive(&archive).unwrap();
     let mut restored = Store::open(&dir.path().join("restored")).unwrap();

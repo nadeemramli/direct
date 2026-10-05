@@ -10,8 +10,8 @@
 use anyhow::{anyhow, bail, Context, Result};
 use clap::Subcommand;
 use direct_core::{
-    AgentMember, AgentRole, AgentRun, Command, Request, Role, RunPolicy, RunState, SkillPackage,
-    TheoriaDocument,
+    AgentMember, AgentRole, AgentRun, Command, Request, Role, RunDispatch, RunPolicy, RunState,
+    SkillPackage, TheoriaDocument,
 };
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -179,6 +179,7 @@ pub fn queue_packet(run: &AgentRun, snap: &Value, contexts: &[Value]) -> Result<
     let writes = match queue.policy {
         RunPolicy::InspectOnly => "This review is INSPECT-ONLY: propose findings only; any issue write is refused.",
         RunPolicy::RefineBacklog => "This review may REFINE BACKLOG: besides findings, you may comment on scoped issues and rewrite the brief/acceptance of scoped Backlog issues (include the expected_version you were shown; Direct preserves the previous text).",
+        RunPolicy::DispatchReady => bail!("A queue review never dispatches implementation"),
     };
     let mut out = format!(
         "You are working as the Direct role `{}` (revision {}) reviewing a queue of {} issues. You have no tools. \
@@ -284,6 +285,277 @@ Reply with only this JSON object: {{\"summary\": \"one or two sentences\", \"pro
 - {{\"op\": \"update_backlog\", \"issue_key\": \"KEY\", \"expected_version\": N, \"body\": \"...\", \"acceptance\": \"...\"}} (either text field may be omitted)\n\
 At most {QUEUE_PROPOSALS} proposals, only for the issues in the queue above. Never mark work Ready, reopen, merge or delete duplicates, or rewrite submitted or completed scope.\n"
     );
+    Ok(out)
+}
+
+fn git(dir: &Path, args: &[&str]) -> std::result::Result<String, String> {
+    let out = Process::new("git")
+        .arg("-C")
+        .arg(dir)
+        .args(args)
+        .output()
+        .map_err(|e| format!("git is unavailable: {e}"))?;
+    if out.status.success() {
+        Ok(String::from_utf8_lossy(&out.stdout).trim().to_string())
+    } else {
+        Err(format!(
+            "git {} failed: {}",
+            args.first().unwrap_or(&""),
+            String::from_utf8_lossy(&out.stderr).trim()
+        ))
+    }
+}
+
+/// Fetch the base and add a fresh detached worktree for a dispatch run.
+/// Read-only towards the remote; nothing existing is reset or deleted.
+fn prepare_worktree(
+    run: &AgentRun,
+    d: &RunDispatch,
+) -> std::result::Result<(String, String), String> {
+    let checkout = PathBuf::from(d.config.checkout.as_deref().unwrap_or_default());
+    if git(&checkout, &["rev-parse", "--git-dir"]).is_err() {
+        return Err(format!("{} is not a git checkout", checkout.display()));
+    }
+    if let Some((remote, _)) = d.config.base_ref.split_once('/') {
+        if git(&checkout, &["remote"])?.lines().any(|r| r == remote) {
+            git(&checkout, &["fetch", "--quiet", remote])?;
+        }
+    }
+    let base = git(
+        &checkout,
+        &["rev-parse", &format!("{}^{{commit}}", d.config.base_ref)],
+    )?;
+    let path = Path::new(&d.config.worktree_root).join(format!(
+        "{}-{}",
+        run.issue_key.to_ascii_lowercase(),
+        &run.id[..8]
+    ));
+    if path.exists() {
+        return Err(format!("{} already exists", path.display()));
+    }
+    fs::create_dir_all(&d.config.worktree_root).map_err(|e| e.to_string())?;
+    git(
+        &checkout,
+        &[
+            "worktree",
+            "add",
+            "--detach",
+            &path.to_string_lossy(),
+            &base,
+        ],
+    )?;
+    Ok((path.to_string_lossy().into_owned(), base))
+}
+
+/// The tool rules for a dispatched session: file tools (confined to the
+/// worktree by `--restricted`), git on its own branches, PR creation, Direct
+/// actions and the owner's extra command prefixes. Everything else is denied.
+pub fn dispatch_tool_rules(
+    run: &AgentRun,
+    d: &RunDispatch,
+    base: &str,
+) -> (Vec<String>, Vec<String>) {
+    let mut allow: Vec<String> = ["Read", "Glob", "Grep", "Edit", "Write"]
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    for prefix in [
+        "git status",
+        "git diff",
+        "git log",
+        "git show",
+        "git add",
+        "git commit",
+        "git rev-parse",
+        "gh pr create",
+        "gh pr view",
+        "gh pr checks",
+        "direct run-action",
+    ] {
+        allow.push(format!("Bash({prefix}:*)"));
+    }
+    for o in &d.objectives {
+        let branch = direct_core::dispatch_branch(&o.key, &run.id);
+        allow.push(format!("Bash(git switch -c {branch} {base})"));
+        allow.push(format!("Bash(git switch {branch})"));
+        allow.push(format!("Bash(git push -u origin {branch})"));
+        allow.push(format!("Bash(git push origin {branch})"));
+    }
+    for prefix in &d.config.allow_commands {
+        allow.push(format!("Bash({prefix}:*)"));
+    }
+    let deny = [
+        "Bash(git push --force:*)",
+        "Bash(git push -f:*)",
+        "Bash(git reset:*)",
+        "Bash(git clean:*)",
+        "Bash(git branch -D:*)",
+        "Bash(git rebase:*)",
+        "Bash(gh pr merge:*)",
+        "Bash(gh api:*)",
+        "Bash(curl:*)",
+        "WebFetch",
+        "WebSearch",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect();
+    (allow, deny)
+}
+
+/// The packet a dispatched implementation session receives on stdin: its
+/// authority, cap, objectives with criteria and guidance pins, the previous
+/// session's handoff and the exact workflow. No service address, data paths,
+/// credentials or unrelated records.
+pub fn dispatch_packet(
+    run: &AgentRun,
+    snap: &Value,
+    contexts: &[Value],
+    base: &str,
+) -> Result<String> {
+    let d = run
+        .dispatch
+        .as_ref()
+        .ok_or_else(|| anyhow!("Not a dispatch run"))?;
+    let roles: Vec<AgentRole> = serde_json::from_value(snap["agent_roles"].clone())?;
+    let skills: Vec<SkillPackage> = serde_json::from_value(snap["skill_packages"].clone())?;
+    let documents: Vec<TheoriaDocument> =
+        serde_json::from_value(snap["theoria_documents"].clone())?;
+    let runs: Vec<AgentRun> = serde_json::from_value(snap["agent_runs"].clone())?;
+    let role = roles
+        .iter()
+        .find(|r| r.id == run.role_id)
+        .ok_or_else(|| anyhow!("The run's role revision is missing"))?;
+    let target = d
+        .config
+        .base_ref
+        .strip_prefix("origin/")
+        .unwrap_or(&d.config.base_ref);
+    let mut out = format!(
+        "You are an implementation agent dispatched by Direct as the role `{}` (revision {}) for product {}. \
+You work only in the current directory: a fresh git worktree of {} detached at base {base} ({}).\n\n\
+# Owner objective\n\n{}\n\n# Authority\n\n\
+You may claim your objectives one at a time, implement them, run the project's checks, commit, push each objective's own branch and open a PR, then report to Direct. \
+You may NOT merge, deliver or install builds, restart services, submit for review, change other branches, rewrite history or touch anything outside this worktree. \
+Commands outside your allowlist are refused automatically; do not try to work around a refusal. \
+This session takes at most {} objectives; anything further goes to a fresh session.\n\n\
+# Talking to Direct\n\n\
+Run `direct run-action --json '<json>'`. Your session credential is already in the environment; never print or copy it. Each call prints the outcome (applied or denied) and why.\n\
+- Claim: {{\"op\":\"claim\",\"key\":\"KEY\"}} (denied if the issue changed, is no longer Ready or has an unmet dependency: then move on)\n\
+- Renew during long work: {{\"op\":\"renew\",\"key\":\"KEY\"}}\n\
+- Comment: {{\"op\":\"comment\",\"key\":\"KEY\",\"body\":\"...\"}}\n\
+- Report: {{\"op\":\"report\",\"key\":\"KEY\",\"outcome\":\"pr_opened\",\"branch\":\"BRANCH\",\"base_sha\":\"{base}\",\"head_sha\":\"<git rev-parse HEAD>\",\"pr_url\":\"https://github.com/{}/pull/N\",\"summary\":\"each criterion -> evidence, checks run with results, limitations\"}}\n\
+  or outcome failed / blocked with the reason in summary.\n\n\
+# Workflow, for each objective in order\n\n\
+1. Claim it.\n2. `git switch -c BRANCH {base}` with the branch named below.\n\
+3. Read the repository's AGENTS.md and docs it points to; implement the acceptance criteria.\n\
+4. Run the project's checks that your allowlist permits and fix failures.\n\
+5. `git add` and `git commit -m \"KEY: ...\"`.\n6. `git push -u origin BRANCH`.\n\
+7. `gh pr create --base {target} --head BRANCH --title \"KEY: ...\" --body \"...\"`.\n\
+8. Report. Then continue with the next objective, or stop when none remain or the cap is reached.\n\n\
+Finish with a short plain-text summary of what you did.\n\n# Role\n\nResponsibilities:\n",
+        role.key,
+        role.revision,
+        run.issue_key,
+        d.config.repository,
+        d.config.base_ref,
+        run.objective,
+        d.cap,
+        d.config.repository,
+    );
+    for r in &role.responsibilities {
+        out += &format!("- {r}\n");
+    }
+    out += &format!("\nOwner direction: {}\n", role.owner_direction);
+    for id in &role.skills {
+        if let Some(s) = skills.iter().find(|s| s.id == *id) {
+            for f in s.files.iter().filter(|f| f.path == "SKILL.md") {
+                out += &format!(
+                    "\n# Skill {} (revision {})\n\n{}\n",
+                    s.name, s.revision, f.content
+                );
+            }
+        }
+    }
+    out += "\n# Objectives\n";
+    for (o, c) in d.objectives.iter().zip(contexts) {
+        let i = &c["issue"];
+        out += &format!(
+            "\n## {} (version {}) — branch `{}`\n\nTitle: {}\n\nBrief:\n{}\n\nAcceptance:\n{}\n",
+            o.key,
+            o.version,
+            direct_core::dispatch_branch(&o.key, &run.id),
+            i["title"].as_str().unwrap_or(""),
+            i["body"].as_str().unwrap_or(""),
+            i["acceptance"].as_str().unwrap_or(""),
+        );
+        if o.review_repair {
+            out += "\nThis is a REVIEW REPAIR: the owner requested changes. Read the latest review feedback in the comments first.\n";
+        }
+        if let Some(comments) = c["comments"].as_array() {
+            for comment in comments.iter().rev().take(4) {
+                let body: String = comment["body"]
+                    .as_str()
+                    .unwrap_or("")
+                    .chars()
+                    .take(800)
+                    .collect();
+                out += &format!(
+                    "\nRecent comment by {}: {body}\n",
+                    comment["actor"].as_str().unwrap_or("")
+                );
+            }
+        }
+        for pin in &o.guidance {
+            let doc = documents.iter().find(|x| x.id == pin.document_id);
+            let excerpt: String = doc
+                .and_then(|x| x.content.as_deref())
+                .unwrap_or("Unavailable")
+                .chars()
+                .take(GUIDANCE_EXCERPT)
+                .collect();
+            out += &format!(
+                "\n### Guidance {} (fingerprint {}{})\n\n{}\n",
+                doc.map(|x| x.title.as_str()).unwrap_or(&pin.document_id),
+                pin.recorded_fingerprint.as_deref().unwrap_or("unpinned"),
+                if pin.shared { ", shared" } else { "" },
+                excerpt
+            );
+        }
+    }
+    if let Some(previous) = d
+        .handoff_from
+        .as_deref()
+        .and_then(|id| runs.iter().find(|r| r.id == id))
+        .and_then(|r| r.dispatch.as_ref().map(|pd| (r, pd)))
+    {
+        out += &format!(
+            "\n# Handoff from the previous session {} ({:?})\n\n",
+            &previous.0.id[..8],
+            previous.0.state
+        );
+        for o in &previous.1.objectives {
+            out += &format!(
+                "- {}: {} branch {} PR {} base {} head {}{}\n",
+                o.key,
+                o.state,
+                o.branch.as_deref().unwrap_or("-"),
+                o.pr_url.as_deref().unwrap_or("-"),
+                o.base_sha.as_deref().unwrap_or("-"),
+                o.head_sha.as_deref().unwrap_or("-"),
+                o.taken_over_by
+                    .as_deref()
+                    .map(|a| format!(", now held by {a}"))
+                    .unwrap_or_default()
+            );
+        }
+    }
+    if !d.excluded.is_empty() {
+        out += "\n# Not dispatched (do not work on these)\n";
+        for b in &d.excluded {
+            out += &format!("- {}: {}\n", b.key, b.reason);
+        }
+    }
     Ok(out)
 }
 
@@ -403,15 +675,38 @@ fn execute(runner: &Runner, data_dir: &Path, run_id: &str) -> Result<()> {
             bail!("Blocked, not dispatched: {reason}");
         }
     };
-    let input = match &run.queue {
-        Some(queue) => {
+    let (mut worktree, mut base) = (None, None);
+    let input = match (&run.queue, &run.dispatch) {
+        (Some(queue), _) => {
             let mut contexts = Vec::new();
             for key in &queue.keys {
                 contexts.push(runner.read(Command::Context { key: key.clone() })?);
             }
             queue_packet(&run, &snap, &contexts)?
         }
-        None => {
+        (None, Some(d)) => {
+            let (path, sha) = match prepare_worktree(&run, d) {
+                Ok(prepared) => prepared,
+                Err(reason) => {
+                    let reason = format!("The dispatch worktree could not be prepared: {reason}");
+                    runner.step(Command::BlockAgentRun {
+                        id: run.id.clone(),
+                        expected_version: run.version,
+                        reason: reason.chars().take(1_000).collect(),
+                    })?;
+                    bail!("Blocked, not dispatched: {reason}");
+                }
+            };
+            let mut contexts = Vec::new();
+            for o in &d.objectives {
+                contexts.push(runner.read(Command::Context { key: o.key.clone() })?);
+            }
+            let text = dispatch_packet(&run, &snap, &contexts, &sha)?;
+            worktree = Some(path);
+            base = Some(sha);
+            text
+        }
+        (None, None) => {
             let context = runner.read(Command::Context {
                 key: run.issue_key.clone(),
             })?;
@@ -425,28 +720,81 @@ fn execute(runner: &Runner, data_dir: &Path, run_id: &str) -> Result<()> {
         launcher: format!("pid {} on {}", std::process::id(), hostname()),
         harness_version: version,
         credential_sha256: sha(&credential),
+        worktree: worktree.clone(),
+        base_sha: base.clone(),
     })?;
 
-    let workdir = data_dir.join("runs").join(&run.id);
-    fs::create_dir_all(&workdir)?;
-    let mut child = Process::new(&program)
-        .args([
-            "-p",
-            "--safe-mode",
-            "--tools",
-            "",
-            "--strict-mcp-config",
-            "--session-id",
-            &run.id,
-            "--model",
-            &run.requested_model,
-            "--output-format",
-            "stream-json",
-            "--verbose",
-            "--max-turns",
-            "1",
-        ])
-        .current_dir(&workdir)
+    let mut command = Process::new(&program);
+    match (&run.dispatch, &worktree, &base) {
+        (Some(d), Some(path), Some(base)) => {
+            // A write-capable session, confined by Claude Code's restricted mode,
+            // dontAsk permissions and an explicit allowlist (DIR-79).
+            let (allow, deny) = dispatch_tool_rules(&run, d, base);
+            command
+                .args([
+                    "-p",
+                    "--restricted",
+                    "--tools",
+                    "Read,Edit,Write,Glob,Grep,Bash",
+                    "--strict-mcp-config",
+                    "--permission-mode",
+                    "dontAsk",
+                    "--permission-prompts",
+                    "none",
+                    "--allowedTools",
+                ])
+                .args(&allow)
+                .arg("--disallowedTools")
+                .args(&deny)
+                .args([
+                    "--session-id",
+                    &run.id,
+                    "--model",
+                    &run.requested_model,
+                    "--output-format",
+                    "stream-json",
+                    "--verbose",
+                    "--max-turns",
+                    "500",
+                ])
+                .current_dir(path)
+                .env("DIRECT_RUN_ID", &run.id)
+                .env("DIRECT_RUN_CREDENTIAL", &credential)
+                .env("DIRECT_DATA_DIR", data_dir);
+            if let Some(dir) = std::env::current_exe()
+                .ok()
+                .and_then(|e| e.parent().map(Path::to_path_buf))
+            {
+                let path = std::env::var_os("PATH").unwrap_or_default();
+                let mut paths = vec![dir];
+                paths.extend(std::env::split_paths(&path));
+                command.env("PATH", std::env::join_paths(paths)?);
+            }
+        }
+        _ => {
+            let workdir = data_dir.join("runs").join(&run.id);
+            fs::create_dir_all(&workdir)?;
+            command
+                .args([
+                    "-p",
+                    "--safe-mode",
+                    "--tools",
+                    "",
+                    "--strict-mcp-config",
+                    "--session-id",
+                    &run.id,
+                    "--model",
+                    &run.requested_model,
+                    "--output-format",
+                    "stream-json",
+                    "--verbose",
+                    "--max-turns",
+                    "1",
+                ])
+                .current_dir(&workdir);
+        }
+    }
+    let mut child = command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -580,7 +928,117 @@ fn execute(runner: &Runner, data_dir: &Path, run_id: &str) -> Result<()> {
             return Ok(());
         }
     }
+    if run.dispatch.is_some() {
+        return finish_dispatch(runner, &run, final_text);
+    }
     finish(runner, &run, &credential, final_text)
+}
+
+/// Close a dispatch session: verify each reported push with read-only git,
+/// then finish with the session's own summary. Claims stay for the coordinator.
+fn finish_dispatch(
+    runner: &Runner,
+    run: &AgentRun,
+    final_text: Option<(String, bool)>,
+) -> Result<()> {
+    let (mut run, _) = runner.run(&run.id)?;
+    let d = run.dispatch.clone().expect("dispatch run");
+    let checkout = PathBuf::from(d.config.checkout.as_deref().unwrap_or_default());
+    for o in d.objectives.iter().filter(|o| o.state == "pr_opened") {
+        let branch = o.branch.clone().unwrap_or_default();
+        let (verified, detail) = match git(
+            &checkout,
+            &["ls-remote", "origin", &format!("refs/heads/{branch}")],
+        ) {
+            Ok(out) => {
+                let remote = out.split_whitespace().next().unwrap_or("").to_string();
+                let head = o.head_sha.clone().unwrap_or_default();
+                if remote == head {
+                    (true, format!("origin/{branch} is at {head}"))
+                } else if remote.is_empty() {
+                    (false, format!("origin/{branch} does not exist"))
+                } else {
+                    (
+                        false,
+                        format!("origin/{branch} is at {remote}, not the reported {head}"),
+                    )
+                }
+            }
+            Err(e) => (false, format!("Remote check failed: {e}")),
+        };
+        run = runner.step(Command::VerifyDispatchPush {
+            id: run.id.clone(),
+            expected_version: run.version,
+            key: o.key.clone(),
+            verified,
+            detail,
+        })?;
+    }
+    let (summary, ok) = match final_text {
+        Some((text, error)) => (text, !error),
+        None => ("The session ended without a final message".into(), false),
+    };
+    let summary: String = summary.trim().chars().take(4_000).collect();
+    runner.step(Command::FinishAgentRun {
+        id: run.id.clone(),
+        expected_version: run.version,
+        succeeded: ok,
+        summary: summary.clone(),
+    })?;
+    println!("Dispatch run {} finished: {summary}", run.id);
+    Ok(())
+}
+
+/// `direct run-action`: one action from inside a dispatched session.
+pub fn session_action(
+    client: &direct::Client,
+    json: Option<&str>,
+    file: Option<&Path>,
+) -> Result<()> {
+    let run_id = std::env::var("DIRECT_RUN_ID").map_err(|_| {
+        anyhow!("DIRECT_RUN_ID is not set: run-action only works inside a dispatched session")
+    })?;
+    let credential = std::env::var("DIRECT_RUN_CREDENTIAL")
+        .map_err(|_| anyhow!("DIRECT_RUN_CREDENTIAL is not set"))?;
+    let text = match (json, file) {
+        (Some(j), None) => j.to_string(),
+        (None, Some(f)) => fs::read_to_string(f)?,
+        _ => bail!("Pass exactly one of --json or --file"),
+    };
+    let proposal: Value =
+        serde_json::from_str(&text).context("The action must be a JSON object")?;
+    let actor = format!("run:{run_id}");
+    let runner = Runner {
+        client,
+        actor: &actor,
+    };
+    for _ in 0..3 {
+        let (run, _) = runner.run(&run_id)?;
+        let index = run.actions.iter().map(|a| a.index + 1).max().unwrap_or(0);
+        let result = runner.call(
+            &format!("run-{run_id}-action-{index}"),
+            Command::RunAction {
+                run_id: run_id.clone(),
+                credential: credential.clone(),
+                index,
+                proposal: proposal.clone(),
+            },
+        );
+        match result {
+            Ok(v) => {
+                println!(
+                    "{}: {}",
+                    v["outcome"].as_str().unwrap_or("?"),
+                    v["detail"].as_str().unwrap_or("")
+                );
+                return Ok(());
+            }
+            // Another action took this index first: take the next one.
+            Err(e) if e.to_string().contains("already submitted") => continue,
+            Err(e) => return Err(e),
+        }
+    }
+    bail!("Could not record the action; try again")
 }
 
 fn finish(
@@ -701,7 +1159,17 @@ fn reconcile(runner: &Runner) -> Result<()> {
             println!("{}: runner gone; cancellation acknowledged", run.id);
             continue;
         }
-        let found = transcript(&run.id).and_then(|p| fs::read_to_string(p).ok());
+        let path = transcript(&run.id);
+        // A dispatched session can outlive its runner: leave it while it still writes.
+        let recent = path
+            .as_ref()
+            .and_then(|p| fs::metadata(p).ok()?.modified().ok()?.elapsed().ok())
+            .is_some_and(|age| age < Duration::from_secs(120));
+        if run.dispatch.is_some() && recent {
+            println!("{}: dispatch session still active, left alone", run.id);
+            continue;
+        }
+        let found = path.and_then(|p| fs::read_to_string(p).ok());
         let Some(content) = found else {
             runner.step(Command::MarkAgentRunUnknown {
                 id: run.id.clone(),
@@ -776,6 +1244,34 @@ mod tests {
         assert!(parse_reply("I cannot do that", MAX_PROPOSALS).is_none());
         let flood = json!({"proposals": vec![json!({"op":"comment","body":"x"}); 11]}).to_string();
         assert!(parse_reply(&flood, MAX_PROPOSALS).is_none());
+    }
+
+    #[test]
+    fn dispatch_rules_allow_only_own_branches_and_never_merge() {
+        let base = "1".repeat(40);
+        let run: AgentRun = serde_json::from_value(json!({
+            "id":"abcdef12-0000-0000-0000-000000000000","issue_key":"DIR","assignment_id":"","member_id":"m","role_id":"r",
+            "skill_bundles":[],"guidance":[],"requested_model":"claude-opus-5-5","input_issue_version":0,"objective":"o",
+            "state":"intent","version":1,"created_by":"routine:x","created_at":0,"updated_at":0,
+            "dispatch":{"product_id":"p","cap":3,"config":{"repository":"o/r","base_ref":"origin/main","worktree_root":"C:/w","allow_commands":["cargo test"]},
+                "objectives":[{"key":"DIR-7","version":3,"review_repair":false,"state":"pending"}]}
+        }))
+        .unwrap();
+        let (allow, deny) = dispatch_tool_rules(&run, run.dispatch.as_ref().unwrap(), &base);
+        assert!(allow.contains(&"Bash(git push -u origin dispatch/dir-7-abcdef12)".to_string()));
+        assert!(allow.contains(&format!(
+            "Bash(git switch -c dispatch/dir-7-abcdef12 {base})"
+        )));
+        assert!(allow.contains(&"Bash(cargo test:*)".to_string()));
+        assert!(allow.contains(&"Bash(direct run-action:*)".to_string()));
+        assert!(
+            !allow
+                .iter()
+                .any(|a| a == "Bash(git push:*)" || a.contains("merge") || a == "Bash"),
+            "no general push, merge or unrestricted shell"
+        );
+        assert!(deny.contains(&"Bash(gh pr merge:*)".to_string()));
+        assert!(deny.contains(&"Bash(git push --force:*)".to_string()));
     }
 
     #[test]

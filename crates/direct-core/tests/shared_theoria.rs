@@ -197,7 +197,7 @@ fn shared_guidance_links_across_products_while_scoped_guidance_stays_scoped() {
     drop(s);
     let s = Store::open(&path).unwrap();
     let archive = s.export().unwrap();
-    assert_eq!(archive.format, 25);
+    assert_eq!(archive.format, 26);
     validate_archive(&archive).unwrap();
     let mut restored = Store::open(&dir.path().join("restored")).unwrap();
     restored.restore(archive.clone()).unwrap();

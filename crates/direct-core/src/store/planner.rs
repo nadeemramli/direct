@@ -122,6 +122,12 @@ pub(crate) fn create_queue_run(
         unreachable!()
     };
     human(role)?;
+    if *policy == RunPolicy::DispatchReady {
+        return Err(err(
+            "invalid",
+            "A queue review is inspect_only or refine_backlog; implementation dispatch is a routine policy",
+        ));
+    }
     let objective = objective.trim();
     required(objective, "objective")?;
     limited(objective, "objective", 2_000)?;
@@ -237,6 +243,7 @@ pub(crate) fn create_queue_run(
         occurrence_id: None,
         max_seconds: None,
         cost_usd: None,
+        dispatch: None,
         queue: Some(RunQueue {
             product_id: p.id,
             keys: scope,

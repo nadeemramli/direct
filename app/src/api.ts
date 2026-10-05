@@ -795,7 +795,44 @@ export interface AgentRun {
   occurrence_id?: string | null;
   max_seconds?: number | null;
   cost_usd?: number | null;
+  /** Implementation dispatch (DIR-79); `issue_key` then holds the product key. */
+  dispatch?: RunDispatch | null;
   updated_at: number;
+}
+export type RunPolicy = "inspect_only" | "refine_backlog" | "dispatch_ready";
+export interface DispatchConfig {
+  checkout: string | null;
+  repository: string;
+  base_ref: string;
+  worktree_root: string;
+  release_id: string | null;
+  allow_commands: string[];
+}
+export interface DispatchObjective {
+  key: string;
+  version: number;
+  review_repair: boolean;
+  state: string;
+  guidance: { document_id: string; recorded_fingerprint: string | null; shared?: boolean }[];
+  claim_actor: string | null;
+  branch: string | null;
+  base_sha: string | null;
+  head_sha: string | null;
+  pr_url: string | null;
+  evidence: string;
+  verified_push: boolean | null;
+  detail: string;
+  taken_over_by: string | null;
+}
+export interface RunDispatch {
+  product_id: string;
+  config: DispatchConfig;
+  cap: number;
+  objectives: DispatchObjective[];
+  excluded: { key: string; reason: string }[];
+  handoff_from: string | null;
+  worktree: string | null;
+  base_sha: string | null;
 }
 export interface PlannerFinding {
   id: string;
@@ -833,11 +870,12 @@ export interface RoutineRevision {
   member_id: string;
   role_id: string;
   requested_model: string;
-  policy: "inspect_only" | "refine_backlog";
+  policy: RunPolicy;
   objective: string;
   trigger: RoutineTrigger;
   limits: { max_issues: number; max_minutes: number; max_cost_usd: number | null };
   notify: string;
+  dispatch?: DispatchConfig | null;
   created_by: string;
   created_at: number;
 }
@@ -864,6 +902,9 @@ export interface RoutineOccurrence {
   run_id: string | null;
   reason: string | null;
   keys: string[];
+  /** Dispatch routines: dispatched, running, blocked or exhausted. */
+  lane?: string | null;
+  excluded?: { key: string; reason: string }[];
   created_at: number;
   updated_at: number;
 }

@@ -608,7 +608,7 @@ pub struct TheoriaDocument {
     pub shared: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct TheoriaReference {
     pub document_id: String,
     pub recorded_fingerprint: Option<String>,
@@ -1315,6 +1315,29 @@ pub enum Command {
         launcher: String,
         harness_version: String,
         credential_sha256: String,
+        /// Dispatch runs (DIR-79): the worktree and base commit the runner prepared.
+        #[serde(default)]
+        worktree: Option<String>,
+        #[serde(default)]
+        base_sha: Option<String>,
+    },
+    /// Runner (DIR-79): the result of a read-only check that a dispatched
+    /// objective's remote branch is at the head the session reported.
+    VerifyDispatchPush {
+        id: String,
+        expected_version: u64,
+        key: String,
+        verified: bool,
+        detail: String,
+    },
+    /// Coordinator (DIR-79): take over the claim a finished dispatch session
+    /// left on its objective, to integrate, test and submit the work.
+    TakeOverDispatch {
+        run_id: String,
+        key: String,
+        expected_version: u64,
+        #[serde(default = "lease")]
+        lease_seconds: i64,
     },
     /// Runner reconciliation: replace a lost run credential for an in-flight
     /// run whose runner process is gone.
@@ -2374,10 +2397,13 @@ pub struct AgentRun {
     /// Cost the harness reported, in USD; `None` is unknown.
     #[serde(default)]
     pub cost_usd: Option<f64>,
+    /// Set for an implementation dispatch (DIR-79); `issue_key` then holds the product key.
+    #[serde(default)]
+    pub dispatch: Option<RunDispatch>,
     pub updated_at: i64,
 }
 
-/// What a queue review run may change (DIR-77).
+/// What a routine run may change (DIR-77, DIR-79).
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
 pub enum RunPolicy {
@@ -2385,6 +2411,88 @@ pub enum RunPolicy {
     InspectOnly,
     /// Findings, plus comments and brief/acceptance edits on scoped Backlog issues.
     RefineBacklog,
+    /// Launch an implementation session for owner-Ready work (DIR-79). The
+    /// session works through a PR and stops; merge, delivery and submission
+    /// stay with an interactive coordinator.
+    DispatchReady,
+}
+
+/// Owner configuration of an implementation dispatch lane (DIR-79).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+pub struct DispatchConfig {
+    /// Local clone to branch from; the product's Windows repository when omitted.
+    #[serde(default)]
+    pub checkout: Option<String>,
+    /// GitHub `owner/name`; PR URLs must be under it.
+    pub repository: String,
+    /// Remote-tracking base, e.g. `origin/main`.
+    pub base_ref: String,
+    /// Directory that receives one fresh worktree per dispatch run.
+    pub worktree_root: String,
+    /// Only issues in this release are dispatched, when set.
+    #[serde(default)]
+    pub release_id: Option<String>,
+    /// Extra command prefixes the session may run (beyond git, gh pr and Direct).
+    #[serde(default)]
+    pub allow_commands: Vec<String>,
+}
+
+/// One queued objective (one issue) of a dispatch run.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct DispatchObjective {
+    pub key: String,
+    /// Issue version when dispatched; the claim must match it.
+    pub version: u64,
+    /// Repairs after owner review feedback lower the session cap to two.
+    pub review_repair: bool,
+    /// pending, claimed, pr_opened, failed, blocked, skipped or unreported.
+    pub state: String,
+    /// Guidance pins (incl. DIR-57 shared references) the objective was dispatched with.
+    #[serde(default)]
+    pub guidance: Vec<TheoriaReference>,
+    #[serde(default)]
+    pub claim_actor: Option<String>,
+    #[serde(default)]
+    pub branch: Option<String>,
+    #[serde(default)]
+    pub base_sha: Option<String>,
+    #[serde(default)]
+    pub head_sha: Option<String>,
+    #[serde(default)]
+    pub pr_url: Option<String>,
+    /// What the session reported: criteria, checks and limitations.
+    #[serde(default)]
+    pub evidence: String,
+    /// The runner's read-only check that the remote branch is at `head_sha`.
+    #[serde(default)]
+    pub verified_push: Option<bool>,
+    #[serde(default)]
+    pub detail: String,
+    /// The coordinator that took over the claim after the session stopped.
+    #[serde(default)]
+    pub taken_over_by: Option<String>,
+}
+
+/// An implementation dispatch of a product lane (DIR-79).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunDispatch {
+    pub product_id: String,
+    pub config: DispatchConfig,
+    /// Objectives this session may take: three, or two with a review repair.
+    pub cap: u32,
+    pub objectives: Vec<DispatchObjective>,
+    /// Eligible-looking issues left out, each with its reason.
+    #[serde(default)]
+    pub excluded: Vec<BlockedKey>,
+    /// The previous dispatch run of this lane, whose results this session inherits.
+    #[serde(default)]
+    pub handoff_from: Option<String>,
+    /// The worktree and base commit the runner prepared.
+    #[serde(default)]
+    pub worktree: Option<String>,
+    #[serde(default)]
+    pub base_sha: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -2470,6 +2578,9 @@ pub struct RoutineConfig {
     pub limits: RoutineLimits,
     #[serde(default = "local_notify")]
     pub notify: String,
+    /// Required for, and only for, the `dispatch_ready` policy.
+    #[serde(default)]
+    pub dispatch: Option<DispatchConfig>,
 }
 
 fn local_notify() -> String {
@@ -2518,6 +2629,8 @@ pub struct RoutineRevision {
     pub limits: RoutineLimits,
     /// Only `local`: external notifications need separate authorization.
     pub notify: String,
+    #[serde(default)]
+    pub dispatch: Option<DispatchConfig>,
     pub created_by: String,
     pub created_at: i64,
 }
@@ -2568,6 +2681,11 @@ pub struct RoutineOccurrence {
     pub reason: Option<String>,
     #[serde(default)]
     pub keys: Vec<String>,
+    /// For dispatch routines: dispatched, running, blocked or exhausted.
+    #[serde(default)]
+    pub lane: Option<String>,
+    #[serde(default)]
+    pub excluded: Vec<BlockedKey>,
     pub created_at: i64,
     pub updated_at: i64,
 }

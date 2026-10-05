@@ -635,7 +635,7 @@ fn definitions_and_assignments_survive_restart_archive_and_legacy_formats() {
     let i = issue(&mut s, "DIR", "Defaulted");
     assert_eq!(ids(&i), vec![bug["id"].as_str().unwrap().to_string()]);
     let before = serde_json::to_value(s.export().unwrap()).unwrap();
-    assert_eq!(before["format"], 25);
+    assert_eq!(before["format"], 26);
     assert_eq!(before["labels"][0]["aliases"], json!(["defect"]));
     assert_eq!(before["labels"][0]["linear_origins"][0]["id"], "lin-bug");
     assert_eq!(
@@ -782,7 +782,7 @@ fn definitions_and_assignments_survive_restart_archive_and_legacy_formats() {
         "23"
     );
     let archive = upgraded.export().unwrap();
-    assert_eq!(archive.format, 25);
+    assert_eq!(archive.format, 26);
     assert!(archive.labels.is_empty());
     assert_eq!(archive.issues[0].key, before["issues"][0]["key"]);
     assert!(archive.issues[0].labels.is_empty());

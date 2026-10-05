@@ -154,12 +154,46 @@ fn revision(
     required(objective, "objective")?;
     limited(objective, "objective", 2_000)?;
     validate_trigger(&c.trigger)?;
-    if !(1..=20).contains(&c.limits.max_issues) || !(1..=120).contains(&c.limits.max_minutes) {
+    let dispatching = c.policy == RunPolicy::DispatchReady;
+    let max_minutes = if dispatching { 480 } else { 120 };
+    if !(1..=20).contains(&c.limits.max_issues)
+        || !(1..=max_minutes).contains(&c.limits.max_minutes)
+    {
         return Err(err(
             "invalid",
-            "Limits: 1–20 issues and 1–120 minutes per run",
+            format!("Limits: 1–20 issues and 1–{max_minutes} minutes per run"),
         ));
     }
+    let dispatch = match (&c.dispatch, dispatching) {
+        (Some(d), true) => {
+            if !c.states.contains(&Status::Ready) {
+                return Err(err(
+                    "invalid",
+                    "Dispatch takes owner-Ready work: include the Ready state",
+                ));
+            }
+            if m.runtime != HARNESS_CLAUDE_CODE {
+                return Err(err(
+                    "invalid",
+                    "Implementation dispatch supports Claude Code members only",
+                ));
+            }
+            Some(super::dispatch::validate_config(tx, &p, d)?)
+        }
+        (None, true) => {
+            return Err(err(
+                "invalid",
+                "Dispatch needs a repository, base ref and worktree root",
+            ))
+        }
+        (Some(_), false) => {
+            return Err(err(
+                "invalid",
+                "Only the dispatch_ready policy takes a dispatch configuration",
+            ))
+        }
+        (None, false) => None,
+    };
     if c.limits
         .max_cost_usd
         .is_some_and(|v| !(v > 0.0 && v <= 1_000.0))
@@ -188,6 +222,7 @@ fn revision(
         trigger: c.trigger.clone(),
         limits: c.limits.clone(),
         notify: "local".into(),
+        dispatch,
         created_by: actor.into(),
         created_at: at,
     })
@@ -287,6 +322,19 @@ fn notice(
 
 pub(crate) fn preview(conn: &Connection, config: &RoutineConfig, at: i64) -> Result<Value> {
     let rev = revision(conn, config, 0, "preview", at)?;
+    if rev.policy == RunPolicy::DispatchReady {
+        let lane = super::dispatch::lane(conn, &rev, at)?;
+        let (chosen, cap) = super::dispatch::select(&lane.eligible, rev.limits.max_issues);
+        return Ok(json!({
+            "keys": chosen.iter().map(|i| i.key.clone()).collect::<Vec<_>>(),
+            "excluded": lane.excluded,
+            "lane": lane.state,
+            "lane_detail": lane.detail,
+            "cap": cap,
+            "next_due_at": next_due(at, &rev.trigger)?,
+            "dispatch_block": dispatch_block(conn, &rev)?,
+        }));
+    }
     let (keys, excluded) = resolve(conn, &rev)?;
     Ok(json!({
         "keys": keys,
@@ -434,6 +482,8 @@ pub(crate) fn mutate(
                 run_id: None,
                 reason: None,
                 keys: vec![],
+                lane: None,
+                excluded: vec![],
                 created_at: at,
                 updated_at: at,
             };
@@ -525,6 +575,8 @@ pub(crate) fn tick(tx: &Transaction, at: i64) -> Result<Vec<String>> {
                         run_id: None,
                         reason: None,
                         keys: vec![],
+                        lane: None,
+                        excluded: vec![],
                         created_at: at,
                         updated_at: at,
                     },
@@ -575,6 +627,66 @@ pub(crate) fn tick(tx: &Transaction, at: i64) -> Result<Vec<String>> {
                 Some("Fix the member or role, then run the routine again"),
                 at,
             )?;
+            continue;
+        }
+        if rev.policy == RunPolicy::DispatchReady {
+            let lane = super::dispatch::lane(tx, &rev, at)?;
+            o.lane = Some(lane.state.into());
+            o.excluded = lane.excluded.clone();
+            match lane.state {
+                "running" => {
+                    // One writer per product: wait for it, then replenish.
+                    if o.state != "deferred" || o.reason.as_deref() != Some(lane.detail.as_str()) {
+                        o.state = "deferred".into();
+                        o.reason = Some(lane.detail);
+                        put_occurrence(tx, &o)?;
+                        emit(
+                            tx,
+                            "direct-scheduler",
+                            "routine_occurrence_deferred",
+                            &r.id,
+                            at,
+                        )?;
+                    }
+                }
+                "blocked" | "exhausted" => {
+                    o.state = "noop".into();
+                    o.reason = Some(format!("{}: {}", lane.state, lane.detail));
+                    put_occurrence(tx, &o)?;
+                    emit(tx, "direct-scheduler", "routine_occurrence_noop", &r.id, at)?;
+                    if lane.state == "blocked" {
+                        notice(
+                            tx,
+                            &r.id,
+                            Some(&o.id),
+                            "blocked",
+                            format!("{}: nothing dispatched — {}", r.name, lane.detail),
+                            None,
+                            Some("Open the occurrence for each excluded issue's reason"),
+                            at,
+                        )?;
+                    }
+                }
+                _ => {
+                    let routine_actor = format!("routine:{}", r.id);
+                    let mut run = super::dispatch::create_run(tx, &rev, &lane, &routine_actor, at)?;
+                    run.occurrence_id = Some(o.id.clone());
+                    super::runs::put_run(tx, &run)?;
+                    emit(tx, &routine_actor, "agent_run_intent", &run.issue_key, at)?;
+                    emit(tx, &routine_actor, "routine_occurrence_launched", &r.id, at)?;
+                    o.state = "launched".into();
+                    o.run_id = Some(run.id.clone());
+                    o.keys = run
+                        .dispatch
+                        .as_ref()
+                        .map(|d| d.objectives.iter().map(|x| x.key.clone()).collect())
+                        .unwrap_or_default();
+                    o.lane = Some("dispatched".into());
+                    o.reason = None;
+                    put_occurrence(tx, &o)?;
+                    launched.push(run.id);
+                }
+            }
             continue;
         }
         let busy = all::<AgentRun>(tx, "agent_runs")?.iter().any(|x| {
@@ -656,7 +768,42 @@ pub(crate) fn on_run_finished(tx: &Transaction, run: &AgentRun, at: i64) -> Resu
         return Ok(());
     };
     let mut r = routine(tx, &o.routine_id)?;
+    if let Some(d) = &run.dispatch {
+        // One notice per objective the session took; untouched ones stay quiet.
+        for x in d
+            .objectives
+            .iter()
+            .filter(|x| !matches!(x.state.as_str(), "pending"))
+        {
+            let action = match x.state.as_str() {
+                "pr_opened" => {
+                    "Coordinator: take over, integrate, test at the Windows entrypoint and submit"
+                }
+                "skipped" => "Refresh the issue; it can be dispatched again",
+                _ => "Coordinator: take over and repair, or release the claim",
+            };
+            let message = match x.state.as_str() {
+                "pr_opened" => format!(
+                    "{}: PR {} ready for integration",
+                    x.key,
+                    x.pr_url.as_deref().unwrap_or("")
+                ),
+                state => format!("{}: dispatch {state} — {}", x.key, x.detail),
+            };
+            notice(
+                tx,
+                &r.id,
+                Some(&o.id),
+                "changed_finding",
+                message,
+                Some(&x.key),
+                Some(action),
+                at,
+            )?;
+        }
+    }
     match run.state {
+        RunState::Succeeded if run.dispatch.is_some() => {}
         RunState::Succeeded => {
             for a in run.actions.iter().filter(|a| a.outcome == "applied") {
                 let key = a.proposal["issue_key"].as_str();
