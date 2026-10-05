@@ -319,7 +319,11 @@ async fn command(
         );
     };
     let store = app.store.clone();
-    let dispatch = role == Role::Human && matches!(request.command, Command::CreateAgentRun { .. });
+    let dispatch = role == Role::Human
+        && matches!(
+            request.command,
+            Command::CreateAgentRun { .. } | Command::CreateQueueRun { .. }
+        );
     match tokio::task::spawn_blocking(move || lock_store(&store).execute(request, role)).await {
         Ok(Ok(value)) => {
             if dispatch {

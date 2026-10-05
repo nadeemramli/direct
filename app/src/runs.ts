@@ -33,7 +33,7 @@ export function runBlockers(
   if (!assignment) return ["Assign an agent first."];
   if (assignment.member && !assignment.member.enabled) out.push(`${assignment.member.name} is disabled.`);
   if (assignment.role && assignment.role.status !== "active") out.push("The assigned role revision is not active.");
-  const open = runs.find((r) => !TERMINAL.includes(r.state));
+  const open = runs.find((r) => !r.queue && !TERMINAL.includes(r.state));
   if (open) out.push("A run for this issue has not finished.");
   if (runs.some((r) => r.state === "unknown" && r.assignment_id === assignment.assignment.id))
     out.push("A previous run has an unknown outcome; reassign to resume dispatch.");

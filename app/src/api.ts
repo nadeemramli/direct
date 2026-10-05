@@ -459,7 +459,8 @@ export type DeletionBlockerKind =
   | "context_links"
   | "cloud_handoffs"
   | "assignments"
-  | "agent_runs";
+  | "agent_runs"
+  | "planner_findings";
 export interface DeletionBlocker {
   kind: DeletionBlockerKind;
   count: number;
@@ -543,6 +544,7 @@ export interface Context {
   cloud_handoffs?: CloudHandoff[];
   assignment?: AssignmentContext | null;
   agent_runs?: AgentRun[];
+  planner_findings?: PlannerFinding[];
   context_authority?: string;
   issue: Issue;
   product: Product;
@@ -789,7 +791,35 @@ export interface AgentRun {
   summary: string;
   reason: string | null;
   cancel_requested_by: string | null;
+  queue: RunQueue | null;
   updated_at: number;
+}
+export interface PlannerFinding {
+  id: string;
+  product_id: string;
+  issue_key: string;
+  kind: string;
+  route: string | null;
+  summary: string;
+  evidence: string[];
+  recommendation: string;
+  escalation: unknown;
+  confirmation: { by: string; at: number; confirmed: boolean; note: string } | null;
+  input_fingerprint: string;
+  first_run: string;
+  last_run: string;
+  seen: number;
+  revisions: { run_id: string; at: number; summary: string; input_fingerprint: string }[];
+  version: number;
+  created_at: number;
+  updated_at: number;
+}
+export interface RunQueue {
+  product_id: string;
+  keys: string[];
+  versions: number[];
+  policy: "inspect_only" | "refine_backlog";
+  blocked: { key: string; reason: string }[];
 }
 export interface Snapshot {
   review_ready_runs?: string[];
@@ -806,6 +836,7 @@ export interface Snapshot {
   agent_members?: AgentMember[];
   issue_assignments?: IssueAssignment[];
   agent_runs?: AgentRun[];
+  planner_findings?: PlannerFinding[];
   projects: Project[];
   project_progress?: ProjectProgress[];
   goals: Goal[];

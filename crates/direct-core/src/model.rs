@@ -883,6 +883,8 @@ pub enum DeletionBlockerKind {
     Assignments,
     /// Dispatched agent runs for the issue (retained).
     AgentRuns,
+    /// Product Planner findings about the issue (retained).
+    PlannerFindings,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1240,6 +1242,23 @@ pub enum Command {
         hypothesis: String,
         proposal: String,
         evidence: Vec<EvidencePointer>,
+    },
+    /// Owner only: record a Product Planner queue review run (DIR-77).
+    CreateQueueRun {
+        product: String,
+        keys: Vec<String>,
+        member_id: String,
+        role_id: String,
+        requested_model: String,
+        policy: RunPolicy,
+        objective: String,
+    },
+    /// A coordinator (never the run itself) confirms or dismisses an escalation.
+    ConfirmPlannerFinding {
+        id: String,
+        expected_version: u64,
+        confirmed: bool,
+        note: String,
     },
     /// Owner only: record a run intent for an issue's active assignment (DIR-76).
     CreateAgentRun {
@@ -2301,6 +2320,86 @@ pub struct AgentRun {
     pub reason: Option<String>,
     #[serde(default)]
     pub cancel_requested_by: Option<String>,
+    /// Set for a Product Planner queue review (DIR-77); `issue_key` then holds the product key.
+    #[serde(default)]
+    pub queue: Option<RunQueue>,
+    pub updated_at: i64,
+}
+
+/// What a queue review run may change (DIR-77).
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum RunPolicy {
+    /// Findings only; every issue write is denied.
+    InspectOnly,
+    /// Findings, plus comments and brief/acceptance edits on scoped Backlog issues.
+    RefineBacklog,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct BlockedKey {
+    pub key: String,
+    pub reason: String,
+}
+
+/// The explicit queue a Product Planner run reviews.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct RunQueue {
+    pub product_id: String,
+    /// Reviewable issue keys with the version each was dispatched at.
+    pub keys: Vec<String>,
+    pub versions: Vec<u64>,
+    pub policy: RunPolicy,
+    /// Requested keys excluded before launch, e.g. stale or unavailable guidance.
+    #[serde(default)]
+    pub blocked: Vec<BlockedKey>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FindingRevision {
+    pub run_id: String,
+    pub at: i64,
+    pub summary: String,
+    pub input_fingerprint: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct FindingConfirmation {
+    pub by: String,
+    pub at: i64,
+    pub confirmed: bool,
+    pub note: String,
+}
+
+/// One retained planning finding per issue and kind (format 23). Findings are
+/// proposals for the owner; they never change an issue by themselves.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct PlannerFinding {
+    pub id: String,
+    pub product_id: String,
+    pub issue_key: String,
+    /// unclear_outcome, oversized, missing_criteria, duplicate, dependency or route_mismatch.
+    pub kind: String,
+    /// bounded_brief, discovery or reviewed_design.
+    #[serde(default)]
+    pub route: Option<String>,
+    pub summary: String,
+    pub evidence: Vec<String>,
+    pub recommendation: String,
+    /// criterion, evidence, impact, options and recommendation for escalations.
+    #[serde(default)]
+    pub escalation: Option<serde_json::Value>,
+    #[serde(default)]
+    pub confirmation: Option<FindingConfirmation>,
+    /// Hash of the issue inputs the finding was drawn from.
+    pub input_fingerprint: String,
+    pub first_run: String,
+    pub last_run: String,
+    pub seen: u32,
+    #[serde(default)]
+    pub revisions: Vec<FindingRevision>,
+    pub version: u64,
+    pub created_at: i64,
     pub updated_at: i64,
 }
 
@@ -2336,6 +2435,9 @@ pub struct Archive {
     /// Agent run history (format 22). Run credentials are never archived.
     #[serde(default)]
     pub agent_runs: Vec<AgentRun>,
+    /// Product Planner findings (format 23).
+    #[serde(default)]
+    pub planner_findings: Vec<PlannerFinding>,
     #[serde(default)]
     pub projects: Vec<Project>,
     #[serde(default)]

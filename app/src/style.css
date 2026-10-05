@@ -2992,3 +2992,19 @@ dialog::backdrop {
 .source-state.role-retired {
   color: #68737b;
 }
+
+.planner-queue {
+  max-height: 260px;
+  overflow-y: auto;
+  border: 1px solid #343d3f;
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+.planner-queue small {
+  color: #8c9c95;
+  margin: 0 4px;
+}
+.planner-finding b {
+  display: block;
+  margin: 4px 0;
+}
