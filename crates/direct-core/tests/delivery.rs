@@ -107,6 +107,9 @@ fn the_full_chain_reaches_delivered_only_with_every_fact_and_merge_is_not_instal
     // Installing a file that matches no built artifact is rejected.
     assert!(fact(&mut s, &k, "ok", json!({"kind":"install","build_fact_id":build["id"],"path":"C:/d/direct.exe","sha256":hash('9')}), 20).unwrap_err().message.contains("matches none"));
     fact(&mut s, &k, "ok", json!({"kind":"install","build_fact_id":build["id"],"path":"C:/d/direct.exe","sha256":hash('1')}), 21).unwrap();
+    // The desktop artifact installed after the service must not make the
+    // running service look drifted.
+    fact(&mut s, &k, "ok", json!({"kind":"install","build_fact_id":build["id"],"path":"C:/d/direct-desktop.exe","sha256":hash('2')}), 21).unwrap();
     assert_eq!(
         gap(&mut s, &k)["gap"],
         "unknown",
@@ -121,7 +124,7 @@ fn the_full_chain_reaches_delivered_only_with_every_fact_and_merge_is_not_instal
     fact(&mut s, &k, "ok", json!({"kind":"running","path":"C:/d/direct.exe","sha256":hash('7'),"service_commit":sha('b')}), 30).unwrap();
     let drift = gap(&mut s, &k);
     assert_eq!(drift["gap"], "drifted");
-    assert_eq!(drift["last_known_good"]["sha256"], hash('1'));
+    assert_eq!(drift["last_known_good"]["commit"], sha('b'));
     fact(&mut s, &k, "ok", json!({"kind":"running","path":"C:/d/direct.exe","sha256":hash('1'),"service_commit":sha('b'),"bundle_commit":sha('c')}), 31).unwrap();
     assert!(gap(&mut s, &k)["detail"]
         .as_str()
@@ -133,7 +136,7 @@ fn the_full_chain_reaches_delivered_only_with_every_fact_and_merge_is_not_instal
     let s = Store::open(&path).unwrap();
     let archive = s.export().unwrap();
     assert_eq!(archive.format, 25);
-    assert_eq!(archive.delivery_facts.len(), 13);
+    assert_eq!(archive.delivery_facts.len(), 14);
     validate_archive(&archive).unwrap();
     let mut restored = Store::open(&dir.path().join("restored")).unwrap();
     restored.restore(archive.clone()).unwrap();
@@ -290,11 +293,12 @@ fn facts_recorded_in_the_same_second_keep_their_order() {
     let dir = TempDir::new().unwrap();
     let mut s = Store::open(&dir.path().join("db")).unwrap();
     let k = issue(&mut s);
+    let mut recorded = Vec::new();
     for _ in 0..5 {
-        fact(&mut s, &k, "ok", json!({"kind":"working_tree","checkout":"C:/wt","branch":"b","head":sha('a'),"dirty_files":3}), 10).unwrap();
-        fact(&mut s, &k, "ok", json!({"kind":"working_tree","checkout":"C:/wt","branch":"b","head":sha('a'),"dirty_files":0}), 10).unwrap();
+        recorded.push(fact(&mut s, &k, "ok", json!({"kind":"working_tree","checkout":"C:/wt","branch":"b","head":sha('a'),"dirty_files":3}), 10).unwrap()["id"].as_str().unwrap().to_string());
+        recorded.push(fact(&mut s, &k, "ok", json!({"kind":"working_tree","checkout":"C:/wt","branch":"b","head":sha('a'),"dirty_files":0}), 10).unwrap()["id"].as_str().unwrap().to_string());
     }
-    fact(
+    let commit = fact(
         &mut s,
         &k,
         "ok",
@@ -302,9 +306,39 @@ fn facts_recorded_in_the_same_second_keep_their_order() {
         10,
     )
     .unwrap();
+    recorded.push(commit["id"].as_str().unwrap().to_string());
     assert_eq!(
         gap(&mut s, &k)["gap"],
         "unpushed",
         "the last observation (clean) wins"
     );
+    // Snapshots, archives and restores keep the recorded order too.
+    let ids: Vec<String> = s
+        .export()
+        .unwrap()
+        .delivery_facts
+        .iter()
+        .map(|f| f.id.clone())
+        .collect();
+    let snapshot = send(&mut s, json!({"op":"snapshot"}), Role::Agent, 11).unwrap();
+    let snap_ids: Vec<String> = snapshot["delivery_facts"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| f["id"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(ids, recorded);
+    assert_eq!(snap_ids, ids);
+    let restored_dir = TempDir::new().unwrap();
+    let mut restored = Store::open(&restored_dir.path().join("db")).unwrap();
+    restored.restore(s.export().unwrap()).unwrap();
+    let restored_ids: Vec<String> = restored
+        .export()
+        .unwrap()
+        .delivery_facts
+        .iter()
+        .map(|f| f.id.clone())
+        .collect();
+    assert_eq!(restored_ids, ids);
+    assert_eq!(gap(&mut restored, &k)["gap"], "unpushed");
 }
